@@ -213,6 +213,12 @@ After setup:
 Codex loads `model_catalog_json` only at app startup. If models are still
 missing, run `./bin/refresh-catalog`, fully quit Codex, and reopen it.
 
+Large compressed Codex contexts use separate safety limits for bytes received
+on the loopback socket and bytes produced after decompression. The defaults are
+64 MiB encoded and 256 MiB decoded. Override them with
+`MODEL_ROUTER_MAX_BODY_BYTES` and `MODEL_ROUTER_MAX_DECODED_BODY_BYTES`
+respectively when a deliberately larger local workload requires it.
+
 The integration preserves the built-in OpenAI provider, native GPT models,
 ChatGPT sign-in, profiles, MCP settings, project trust, and reasoning defaults.
 It adds one marked root block and one inert custom-provider table to the user's

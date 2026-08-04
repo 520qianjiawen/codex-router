@@ -35,6 +35,10 @@ const startMarker = "# BEGIN codex-router-managed";
 const endMarker = "# END codex-router-managed";
 const providerStartMarker = "# BEGIN codex-router-provider-managed";
 const providerEndMarker = "# END codex-router-provider-managed";
+const agentConcurrencyStartMarker = "# BEGIN codex-router-agent-concurrency-managed";
+const agentConcurrencyEndMarker = "# END codex-router-agent-concurrency-managed";
+const createdAgentsTableMarker = "# codex-router-created-agents-table";
+const managedAgentMaxConcurrency = 6;
 const routerProviderId = "codex-router";
 const defaultChatgptBaseUrl = "https://chatgpt.com/backend-api";
 const defaultRealtimeWebsocketBaseUrl = "https://api.openai.com/v1";
@@ -43,6 +47,7 @@ const realtimeWebsocketBaseUrlKey = "experimental_realtime_ws_base_url";
 const markerPairs = [
   [startMarker, endMarker],
   [providerStartMarker, providerEndMarker],
+  [agentConcurrencyStartMarker, agentConcurrencyEndMarker],
   ["# BEGIN kimi-codex-router-managed", "# END kimi-codex-router-managed"],
   ["# BEGIN kimi-codex-proxy-managed", "# END kimi-codex-proxy-managed"],
 ];
@@ -81,15 +86,93 @@ function isRecognizedRouterBaseUrl(value) {
   }
 }
 
+function removeMarkerPair(input, start, end) {
+  const escapedStart = start.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedEnd = end.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return input.replace(
+    new RegExp(`(?:^|\\n)${escapedStart}\\n[\\s\\S]*?\\n${escapedEnd}(?:\\n|$)`, "g"),
+    "\n",
+  );
+}
+
 function removeMarkedBlock(input) {
-  return markerPairs.reduce((contents, [start, end]) => {
-    const escapedStart = start.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const escapedEnd = end.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return contents.replace(
-      new RegExp(`(?:^|\\n)${escapedStart}\\n[\\s\\S]*?\\n${escapedEnd}(?:\\n|$)`, "g"),
-      "\n",
-    );
-  }, input);
+  return markerPairs.reduce(
+    (contents, [start, end]) => removeMarkerPair(contents, start, end),
+    input,
+  );
+}
+
+function removeCreatedAgentsTableIfEmpty(input) {
+  const lines = input.split("\n");
+  const markerIndex = lines.findIndex(
+    (line) => line.trim() === createdAgentsTableMarker,
+  );
+  if (markerIndex === -1) return input;
+
+  let headerIndex = markerIndex + 1;
+  while (headerIndex < lines.length && !lines[headerIndex].trim()) headerIndex += 1;
+  if (!/^\s*\[\s*agents\s*\]\s*(?:#.*)?$/.test(lines[headerIndex] || "")) {
+    lines.splice(markerIndex, 1);
+    return lines.join("\n");
+  }
+
+  let tableEnd = headerIndex + 1;
+  while (tableEnd < lines.length && !/^\s*\[/.test(lines[tableEnd])) tableEnd += 1;
+  const hasUserValues = lines
+    .slice(headerIndex + 1, tableEnd)
+    .some((line) => line.trim() && !line.trim().startsWith("#"));
+  if (hasUserValues) {
+    lines.splice(markerIndex, 1);
+  } else {
+    lines.splice(headerIndex, 1);
+    lines.splice(markerIndex, 1);
+  }
+  return lines.join("\n");
+}
+
+function withoutManagedAgentConcurrency(input) {
+  return removeCreatedAgentsTableIfEmpty(
+    removeMarkerPair(input, agentConcurrencyStartMarker, agentConcurrencyEndMarker),
+  );
+}
+
+function withManagedAgentConcurrency(input) {
+  const cleaned = withoutManagedAgentConcurrency(input);
+  const { rootLines } = splitRoot(cleaned);
+  if (
+    rootLines.some((line) =>
+      /^\s*agents(?:\.(?:max_concurrent_threads_per_session|max_threads))?\s*=/.test(
+        line,
+      ),
+    )
+  ) {
+    return cleaned;
+  }
+
+  const lines = cleaned.split("\n");
+  const agentsHeader = lines.findIndex((line) =>
+    /^\s*\[\s*agents\s*\]\s*(?:#.*)?$/.test(line),
+  );
+  const managedLines = [
+    agentConcurrencyStartMarker,
+    `max_concurrent_threads_per_session = ${managedAgentMaxConcurrency}`,
+    agentConcurrencyEndMarker,
+  ];
+  if (agentsHeader !== -1) {
+    let tableEnd = agentsHeader + 1;
+    while (tableEnd < lines.length && !/^\s*\[/.test(lines[tableEnd])) tableEnd += 1;
+    const userConfigured = lines
+      .slice(agentsHeader + 1, tableEnd)
+      .some((line) =>
+        /^\s*(?:max_concurrent_threads_per_session|max_threads)\s*=/.test(line),
+      );
+    if (userConfigured) return cleaned;
+    lines.splice(agentsHeader + 1, 0, ...managedLines);
+  } else {
+    while (lines.length && !lines.at(-1).trim()) lines.pop();
+    lines.push("", createdAgentsTableMarker, "[agents]", ...managedLines);
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
 }
 
 function splitRoot(input) {
@@ -224,7 +307,7 @@ function legacyManagedRouterProvider(contents) {
   const fields = new Map();
   for (const line of lines.slice(start + 1, end)) {
     const trimmed = line.trim();
-    if (!trimmed) continue;
+    if (!trimmed || trimmed === createdAgentsTableMarker) continue;
     const match = trimmed.match(/^([A-Za-z0-9_-]+)\s*=/);
     if (!match || fields.has(match[1])) return undefined;
     fields.set(match[1], assignmentValue(trimmed));
@@ -263,7 +346,7 @@ function clean(contents) {
   const knownManaged =
     markerPairs.some(([start]) => contents.includes(start)) ||
     knownCatalogPaths.some((catalogPath) => contents.includes(catalogPath));
-  const withoutBlock = removeMarkedBlock(contents);
+  const withoutBlock = removeCreatedAgentsTableIfEmpty(removeMarkedBlock(contents));
   const { rootLines, tableLines } = splitRoot(withoutBlock);
   const filtered = rootLines.filter((line) => {
     if (/^\s*openai_base_url\s*=/.test(line)) {
@@ -361,7 +444,7 @@ function enabledContents(contents) {
     'wire_api = "responses"',
     providerEndMarker,
   ];
-  return `${next.join("\n").trimEnd()}\n`;
+  return withManagedAgentConcurrency(`${next.join("\n").trimEnd()}\n`);
 }
 
 function atomicWrite(contents) {

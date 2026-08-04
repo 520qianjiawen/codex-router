@@ -549,6 +549,256 @@ test("router preserves native auth and isolates every external route", async () 
   }
 });
 
+test("router permits a compressed context larger than the encoded request limit", async () => {
+  let receivedInputLength = 0;
+  const native = await mockServer(async (request, response) => {
+    const payload = await bodyJson(request);
+    receivedInputLength = payload.input.length;
+    json(response, 200, { id: "large-context-ok", output: [] });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}`,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${native.port}`,
+    CODEX_ROUTER_QUIET: "1",
+    MODEL_ROUTER_MAX_BODY_BYTES: String(64 * 1024),
+    MODEL_ROUTER_MAX_DECODED_BODY_BYTES: String(4 * 1024 * 1024),
+  });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const input = "x".repeat(1_500_000);
+    const compressed = zstdCompressSync(
+      Buffer.from(JSON.stringify({ model: "gpt-5.6-sol", input })),
+    );
+    assert.ok(compressed.length < 64 * 1024);
+
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${CALLER_KEY}`,
+        "Content-Type": "application/json",
+        "Content-Encoding": "zstd",
+      },
+      body: compressed,
+    });
+
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(receivedInputLength, input.length);
+  } finally {
+    await stopChild(router);
+    await closeServer(native.server);
+  }
+});
+
+test("router relays encrypted Codex subagent payloads before external routing", async () => {
+  const nativeRequests = [];
+  const native = await mockServer(async (request, response) => {
+    nativeRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    const relayArguments = JSON.stringify({ payload: "Inspect /tmp/capture.png harshly." });
+    const relayEvents = [
+      {
+        type: "response.output_item.added",
+        item: {
+          type: "function_call",
+          id: "fc_relay",
+          name: "relay_external_agent_payload",
+          arguments: "",
+        },
+      },
+      {
+        type: "response.function_call_arguments.delta",
+        item_id: "fc_relay",
+        delta: relayArguments.slice(0, 17),
+      },
+      {
+        type: "response.function_call_arguments.delta",
+        item_id: "fc_relay",
+        delta: relayArguments.slice(17),
+      },
+      {
+        type: "response.function_call_arguments.done",
+        item_id: "fc_relay",
+        arguments: relayArguments,
+      },
+    ];
+    const event = `${relayEvents
+      .map((entry) => `event: ${entry.type}\ndata: ${JSON.stringify(entry)}\n\n`)
+      .join("")}data: [DONE]\n\n`;
+    response.writeHead(200, { "Content-Type": "application/octet-stream" });
+    response.write(event.slice(0, 37));
+    response.write(event.slice(37, 103));
+    response.end(event.slice(103));
+  });
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { route: "external" });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CHATGPT_SESSION_TOKEN",
+        "ChatGPT-Account-Id": "account-id",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "kimi-oauth/k3",
+        stream: false,
+        input: [
+          {
+            type: "agent_message",
+            author: "/root",
+            recipient: "/root/critic",
+            content: [
+              {
+                type: "input_text",
+                text: "Message Type: NEW_TASK\nTask name: /root/critic\nSender: /root\nPayload:\n",
+              },
+              { type: "encrypted_content", encrypted_content: "gAAAAA-test-payload=" },
+            ],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(nativeRequests.length, 1);
+    assert.equal(nativeRequests[0].headers.authorization, "Bearer CHATGPT_SESSION_TOKEN");
+    assert.equal(nativeRequests[0].headers["chatgpt-account-id"], "account-id");
+    assert.equal(nativeRequests[0].body.model, "gpt-5.6-sol");
+    assert.equal(nativeRequests[0].body.stream, true);
+    assert.equal(nativeRequests[0].body.tool_choice.name, "relay_external_agent_payload");
+    assert.equal(gatewayRequests.length, 1);
+    const content = gatewayRequests[0].body.input[0].content;
+    assert.equal(content.some((part) => part.type === "encrypted_content"), false);
+    assert.equal(content.at(-1).text, "Inspect /tmp/capture.png harshly.");
+
+    const cachedResponse = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CHATGPT_SESSION_TOKEN",
+        "ChatGPT-Account-Id": "account-id",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "kimi-oauth/k3",
+        stream: false,
+        input: [
+          {
+            type: "agent_message",
+            content: [
+              {
+                type: "input_text",
+                text: "Message Type: NEW_TASK\nTask name: /root/critic\nSender: /root\nPayload:\n",
+              },
+              { type: "encrypted_content", encrypted_content: "gAAAAA-test-payload=" },
+            ],
+          },
+        ],
+      }),
+    });
+    assert.equal(cachedResponse.status, 200, await cachedResponse.text());
+    assert.equal(nativeRequests.length, 1);
+
+    const plaintextResponse = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CHATGPT_SESSION_TOKEN",
+        "ChatGPT-Account-Id": "account-id",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "kimi-oauth/k3",
+        stream: false,
+        input: [
+          {
+            type: "agent_message",
+            content: [
+              {
+                type: "input_text",
+                text: "Message Type: NEW_TASK\nTask name: /root/critic\nSender: /root\nPayload:\n",
+              },
+              {
+                type: "encrypted_content",
+                encrypted_content: "External parent returned plaintext directly.",
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    assert.equal(plaintextResponse.status, 200, await plaintextResponse.text());
+    assert.equal(nativeRequests.length, 1);
+    const plaintextContent = gatewayRequests[2].body.input[0].content;
+    assert.equal(plaintextContent.some((part) => part.type === "encrypted_content"), false);
+    assert.equal(
+      plaintextContent.at(-1).text,
+      "External parent returned plaintext directly.",
+    );
+  } finally {
+    await stopChild(router);
+    await Promise.all([closeServer(native.server), closeServer(gateway.server)]);
+  }
+});
+
+test("router fails closed when an encrypted subagent payload cannot be relayed", async () => {
+  const native = await mockServer(async (_request, response) => {
+    json(response, 401, { error: { message: "native sign-in required" } });
+  });
+  let gatewayRequests = 0;
+  const gateway = await mockServer(async (_request, response) => {
+    gatewayRequests += 1;
+    json(response, 200, { route: "external" });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer expired-session",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "grok-oauth/grok-4.5",
+        input: [
+          {
+            type: "agent_message",
+            content: [
+              { type: "input_text", text: "Message Type: MESSAGE\nPayload:\n" },
+              { type: "encrypted_content", encrypted_content: "gAAAAA-unreadable=" },
+            ],
+          },
+        ],
+      }),
+    });
+    assert.equal(response.status, 502);
+    assert.equal(gatewayRequests, 0);
+  } finally {
+    await stopChild(router);
+    await Promise.all([closeServer(native.server), closeServer(gateway.server)]);
+  }
+});
+
 test("router sends standalone image requests only to the native OpenAI backend", async () => {
   const nativeRequests = [];
   const native = await mockServer(async (request, response) => {

@@ -95,6 +95,12 @@ function modelProblem(model, providers, slugs, gatewayModels) {
   if (model.requestProfile !== undefined && typeof model.requestProfile !== "string") {
     return `model ${model.slug} has an invalid requestProfile`;
   }
+  if (
+    model.multiAgentVersion !== undefined &&
+    !["v1", "v2"].includes(model.multiAgentVersion)
+  ) {
+    return `model ${model.slug} has an invalid multiAgentVersion`;
+  }
   if (slugs.has(model.slug)) return `duplicate model slug ${model.slug}`;
   if (gatewayModels.has(model.gatewayModel)) {
     return `duplicate gateway model ${model.gatewayModel}`;

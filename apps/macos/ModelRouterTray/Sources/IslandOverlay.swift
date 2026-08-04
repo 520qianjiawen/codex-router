@@ -1344,27 +1344,14 @@ private struct LiveOrb: View {
       pulsing = false
       rippling = false
     }
-    guard !reduceMotion else { return }
+    // ThinkingOrbView owns animation for idle, generating, and error. These
+    // state values only affect the fallback status-dot branch used at startup.
+    guard !reduceMotion, state == .starting else { return }
 
-    if state == .error {
-      effectTask = Task { @MainActor in
-        withAnimation(.easeOut(duration: 0.28)) {
-          pulsing = true
-          rippling = true
-        }
-        try? await Task.sleep(nanoseconds: 520_000_000)
-        guard !Task.isCancelled else { return }
-        withAnimation(.easeInOut(duration: 0.32)) { pulsing = false }
-      }
-      return
-    }
-
-    let pulseDuration = state == .idle ? 2.6 : 1.35
-    withAnimation(.easeInOut(duration: pulseDuration).repeatForever(autoreverses: true)) {
+    withAnimation(.easeInOut(duration: 1.35).repeatForever(autoreverses: true)) {
       pulsing = true
     }
-    let rippleDuration = state == .idle ? 3.2 : 1.9
-    withAnimation(.easeOut(duration: rippleDuration).repeatForever(autoreverses: false)) {
+    withAnimation(.easeOut(duration: 1.9).repeatForever(autoreverses: false)) {
       rippling = true
     }
   }

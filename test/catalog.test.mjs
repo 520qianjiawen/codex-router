@@ -31,6 +31,7 @@ const grok = {
   autoCompact: 440000,
   inputModalities: ["text", "image"],
   compHash: "grok-oauth-grok-4-5-v1",
+  multiAgentVersion: "v2",
 };
 
 test("routed models rewrite GPT identity text to the external model name", () => {
@@ -42,6 +43,23 @@ test("routed models rewrite GPT identity text to the external model name", () =>
   assert.match(model.model_messages.instructions_template, /based on Grok 4\.5/);
   assert.doesNotMatch(model.model_messages.instructions_template, /GPT-5/);
   assert.equal(model.model_messages.instructions_variables.personality_default, "");
+  assert.equal(model.multi_agent_version, "v2");
+});
+
+test("routed models are native v2 spawn-agent model overrides", () => {
+  const model = routedModel(template, grok);
+  assert.equal(model.visibility, "list");
+  assert.equal(model.supported_in_api, true);
+  assert.equal(model.multi_agent_version, "v2");
+});
+
+test("unverified routed models retain conservative v1 collaboration", () => {
+  const model = routedModel(template, {
+    ...grok,
+    slug: "example/model",
+    multiAgentVersion: undefined,
+  });
+  assert.equal(model.multi_agent_version, "v1");
 });
 
 test("merged catalog preserves native GPT identity while rewriting routed models", () => {

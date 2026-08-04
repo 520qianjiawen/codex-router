@@ -109,6 +109,46 @@ final class RouterStore: ObservableObject {
   private var manuallySelectedUsageProvider = false
   private var latestObservedActivityRequestID: String?
   private var activityHealthFailureStartedAt: Date?
+  private var dailyUsageCache: [DailyUsageCacheKey: [DailyUsagePoint]] = [:]
+  private var localUsageTotalsCache: [LocalUsageTotalsCacheKey: UsageTotals] = [:]
+
+  private struct DailyUsageCacheBucket: Hashable {
+    let startDate: String
+    let tokens: Int64
+  }
+
+  private struct DailyUsageCacheKey: Hashable {
+    let providerID: String
+    let days: Int
+    let today: Date
+    let buckets: [DailyUsageCacheBucket]
+  }
+
+  private struct LocalUsageTotalsCacheBucket: Hashable {
+    let startDate: String
+    let tokens: Int64
+    let requests: Int
+  }
+
+  private struct LocalUsageTotalsCacheKey: Hashable {
+    let providerID: String
+    let days: Int
+    let today: Date
+    let buckets: [LocalUsageTotalsCacheBucket]
+  }
+
+  private struct UsageTotals {
+    let tokens: Double
+    let requests: Int
+  }
+
+  private static let dayKeyFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.dateFormat = "yyyy-MM-dd"
+    return formatter
+  }()
 
   init() {
     selectedUsageProviderID = "openai"
@@ -396,9 +436,8 @@ final class RouterStore: ObservableObject {
 
   private func focusUsageProvider(_ providerID: String) {
     guard usageProviderChoices.contains(where: { $0.id == providerID }) else { return }
-    let previousProvider = selectedUsageProviderID
+    guard selectedUsageProviderID != providerID else { return }
     selectedUsageProviderID = providerID
-    guard previousProvider != providerID else { return }
     Task {
       if providerID == "openai" {
         await refreshAccountUsage()
@@ -464,10 +503,12 @@ final class RouterStore: ObservableObject {
   func refreshAccountUsage() async {
     do {
       let output = try await runControl(arguments: ["account", "--json"])
-      accountUsage = try JSONDecoder().decode(CodexAccountUsage.self, from: output)
-      accountUsageError = nil
+      let nextUsage = try JSONDecoder().decode(CodexAccountUsage.self, from: output)
+      if accountUsage != nextUsage { accountUsage = nextUsage }
+      if accountUsageError != nil { accountUsageError = nil }
     } catch {
-      accountUsageError = error.localizedDescription
+      let nextError = error.localizedDescription
+      if accountUsageError != nextError { accountUsageError = nextError }
     }
     accountUsageResolved = true
     resolveInitialUsageProvider()
@@ -476,11 +517,13 @@ final class RouterStore: ObservableObject {
   func refreshProviderUsage() async {
     do {
       let output = try await runControl(arguments: ["provider-usage", "--json"])
-      providerUsage = try JSONDecoder().decode(ProviderUsageSnapshot.self, from: output)
-      providerUsageError = nil
+      let nextUsage = try JSONDecoder().decode(ProviderUsageSnapshot.self, from: output)
+      if providerUsage != nextUsage { providerUsage = nextUsage }
+      if providerUsageError != nil { providerUsageError = nil }
       resolveInitialUsageProvider()
     } catch {
-      providerUsageError = error.localizedDescription
+      let nextError = error.localizedDescription
+      if providerUsageError != nextError { providerUsageError = nextError }
     }
   }
 
@@ -502,10 +545,12 @@ final class RouterStore: ObservableObject {
     do {
       let output = try await runControl(arguments: ["providers", "--json"])
       let snapshot = try JSONDecoder().decode(ProviderSetupSnapshot.self, from: output)
-      providerSetup = Dictionary(uniqueKeysWithValues: snapshot.providers.map { ($0.id, $0) })
+      let nextSetup = Dictionary(uniqueKeysWithValues: snapshot.providers.map { ($0.id, $0) })
+      if providerSetup != nextSetup { providerSetup = nextSetup }
       resolveInitialUsageProvider()
     } catch {
-      message = error.localizedDescription
+      let nextMessage = error.localizedDescription
+      if message != nextMessage { message = nextMessage }
     }
   }
 
@@ -554,28 +599,39 @@ final class RouterStore: ObservableObject {
   }
 
   func dailyUsage(days: Int) -> [DailyUsagePoint] {
-    let indexed: [String: Double]
+    let buckets: [DailyUsageCacheBucket]
     if selectedUsageUsesChatGPT {
-      guard let accountUsage else { return placeholderDailyUsage(days: days) }
-      indexed = Dictionary(uniqueKeysWithValues: accountUsage.dailyUsageBuckets.map {
-        ($0.startDate, Double($0.tokens))
-      })
+      buckets = accountUsage?.dailyUsageBuckets.map {
+        DailyUsageCacheBucket(startDate: $0.startDate, tokens: $0.tokens)
+      } ?? []
     } else {
-      guard let usage = selectedProviderUsage else { return placeholderDailyUsage(days: days) }
-      indexed = Dictionary(uniqueKeysWithValues: usage.dailyUsageBuckets.map {
-        ($0.startDate, Double($0.tokens))
-      })
+      buckets = selectedProviderUsage?.dailyUsageBuckets.map {
+        DailyUsageCacheBucket(startDate: $0.startDate, tokens: $0.tokens)
+      } ?? []
     }
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.calendar = Calendar(identifier: .gregorian)
-    formatter.dateFormat = "yyyy-MM-dd"
     let calendar = Calendar.current
     let today = calendar.startOfDay(for: .now)
-    return (0..<days).map { offset in
+    let cacheKey = DailyUsageCacheKey(
+      providerID: selectedUsageProviderID,
+      days: days,
+      today: today,
+      buckets: buckets
+    )
+    if let cached = dailyUsageCache[cacheKey] { return cached }
+
+    let indexed = Dictionary(uniqueKeysWithValues: buckets.map {
+      ($0.startDate, Double($0.tokens))
+    })
+    let points = (0..<days).map { offset in
       let date = calendar.date(byAdding: .day, value: offset - (days - 1), to: today) ?? today
-      return DailyUsagePoint(date: date, tokens: indexed[formatter.string(from: date)] ?? 0)
+      return DailyUsagePoint(
+        date: date,
+        tokens: indexed[Self.dayKeyFormatter.string(from: date)] ?? 0
+      )
     }
+    if dailyUsageCache.count >= 24 { dailyUsageCache.removeAll(keepingCapacity: true) }
+    dailyUsageCache[cacheKey] = points
+    return points
   }
 
   func localUsageTotals(days: Int) -> (tokens: Double, requests: Int) {
@@ -586,16 +642,37 @@ final class RouterStore: ObservableObject {
     guard providerID != "openai", let usage = providerUsage(for: providerID) else { return (0, 0) }
     let calendar = Calendar.current
     let today = calendar.startOfDay(for: .now)
+    let buckets = usage.dailyUsageBuckets.map {
+      LocalUsageTotalsCacheBucket(
+        startDate: $0.startDate,
+        tokens: $0.tokens,
+        requests: $0.requests
+      )
+    }
+    let cacheKey = LocalUsageTotalsCacheKey(
+      providerID: providerID,
+      days: days,
+      today: today,
+      buckets: buckets
+    )
+    if let cached = localUsageTotalsCache[cacheKey] {
+      return (cached.tokens, cached.requests)
+    }
+
     let firstDay = calendar.date(byAdding: .day, value: -(days - 1), to: today) ?? today
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.calendar = Calendar(identifier: .gregorian)
-    formatter.dateFormat = "yyyy-MM-dd"
-    return usage.dailyUsageBuckets.reduce(into: (tokens: 0.0, requests: 0)) { totals, bucket in
-      guard let date = formatter.date(from: bucket.startDate), date >= firstDay, date <= today else { return }
+    let totals = usage.dailyUsageBuckets.reduce(into: (tokens: 0.0, requests: 0)) { totals, bucket in
+      guard let date = Self.dayKeyFormatter.date(from: bucket.startDate),
+            date >= firstDay,
+            date <= today
+      else { return }
       totals.tokens += Double(bucket.tokens)
       totals.requests += bucket.requests
     }
+    if localUsageTotalsCache.count >= 48 {
+      localUsageTotalsCache.removeAll(keepingCapacity: true)
+    }
+    localUsageTotalsCache[cacheKey] = UsageTotals(tokens: totals.tokens, requests: totals.requests)
+    return totals
   }
 
   func localUsageSummary(for providerID: String, days: Int = 7) -> String {
@@ -609,17 +686,6 @@ final class RouterStore: ObservableObject {
     return "No traffic"
   }
 
-
-  private func placeholderDailyUsage(days: Int) -> [DailyUsagePoint] {
-    let calendar = Calendar.current
-    let today = calendar.startOfDay(for: .now)
-    return (0..<days).map { offset in
-      DailyUsagePoint(
-        date: calendar.date(byAdding: .day, value: offset - (days - 1), to: today) ?? today,
-        tokens: 0
-      )
-    }
-  }
 
   func setProvider(_ provider: String, enabled: Bool) async {
     guard providerOperation == nil else { return }
@@ -734,18 +800,22 @@ final class RouterStore: ObservableObject {
       }
       let health = try JSONDecoder().decode(RouterHealth.self, from: data)
       let previousActivityState = activityState
+      let nextActiveRequests = health.activity.active ?? []
+      let nextActiveRequestCount = health.activity.activeCount ?? nextActiveRequests.count
       activityHealthFailureStartedAt = nil
-      activityState = health.activity.state
-      activeRequests = health.activity.active ?? []
-      activeRequestCount = health.activity.activeCount ?? activeRequests.count
-      activeModel = health.activity.model
+      if activityState != health.activity.state { activityState = health.activity.state }
+      if activeRequests != nextActiveRequests { activeRequests = nextActiveRequests }
+      if activeRequestCount != nextActiveRequestCount {
+        activeRequestCount = nextActiveRequestCount
+      }
+      if activeModel != health.activity.model { activeModel = health.activity.model }
       if let sessionName = health.activity.sessionName, !sessionName.isEmpty {
-        activitySessionName = sessionName
+        if activitySessionName != sessionName { activitySessionName = sessionName }
       }
       if health.activity.state == .generating,
          let provider = health.activity.provider {
         hasObservedActiveProvider = true
-        if let requestID = activeRequests.last?.id {
+        if let requestID = nextActiveRequests.last?.id {
           if requestID != latestObservedActivityRequestID {
             latestObservedActivityRequestID = requestID
             manuallySelectedUsageProvider = false
@@ -765,16 +835,18 @@ final class RouterStore: ObservableObject {
   }
 
   private func recordActivityHealthFailure() {
-    activeRequests = []
-    activeRequestCount = 0
-    activeModel = nil
+    if !activeRequests.isEmpty { activeRequests = [] }
+    if activeRequestCount != 0 { activeRequestCount = 0 }
+    if activeModel != nil { activeModel = nil }
     let now = Date()
+    let nextState: RouterActivityState
     if let startedAt = activityHealthFailureStartedAt {
-      activityState = now.timeIntervalSince(startedAt) < 30 ? .starting : .error
+      nextState = now.timeIntervalSince(startedAt) < 30 ? .starting : .error
     } else {
       activityHealthFailureStartedAt = now
-      activityState = .starting
+      nextState = .starting
     }
+    if activityState != nextState { activityState = nextState }
   }
 
   private func resolveInitialUsageProvider() {
@@ -978,7 +1050,7 @@ enum UsageRange: Int, CaseIterable, Identifiable {
   }
 }
 
-struct CodexAccountUsage: Decodable {
+struct CodexAccountUsage: Decodable, Equatable {
   let fetchedAt: String
   let planType: String?
   let limitId: String?
@@ -986,9 +1058,18 @@ struct CodexAccountUsage: Decodable {
   let secondary: CodexRateLimitWindow?
   let dailyUsageBuckets: [CodexDailyUsageBucket]
   let summary: CodexUsageSummary
+
+  static func == (lhs: CodexAccountUsage, rhs: CodexAccountUsage) -> Bool {
+    lhs.planType == rhs.planType
+      && lhs.limitId == rhs.limitId
+      && lhs.primary == rhs.primary
+      && lhs.secondary == rhs.secondary
+      && lhs.dailyUsageBuckets == rhs.dailyUsageBuckets
+      && lhs.summary == rhs.summary
+  }
 }
 
-struct CodexRateLimitWindow: Decodable {
+struct CodexRateLimitWindow: Decodable, Equatable {
   let usedPercent: Int
   let remainingPercent: Int
   let windowDurationMins: Int?
@@ -1011,30 +1092,34 @@ struct CodexRateLimitWindow: Decodable {
   }
 }
 
-struct CodexDailyUsageBucket: Decodable {
+struct CodexDailyUsageBucket: Decodable, Equatable {
   let startDate: String
   let tokens: Int64
 }
 
-struct DailyUsagePoint: Identifiable {
+struct DailyUsagePoint: Identifiable, Equatable {
   let date: Date
   let tokens: Double
   var id: Date { date }
 }
 
-struct CodexUsageSummary: Decodable {
+struct CodexUsageSummary: Decodable, Equatable {
   let lifetimeTokens: Int64?
   let peakDailyTokens: Int64?
   let currentStreakDays: Int?
 }
 
-struct ProviderUsageSnapshot: Decodable {
+struct ProviderUsageSnapshot: Decodable, Equatable {
   let fetchedAt: String
   let scope: String
   let providers: [RouterProviderUsage]
+
+  static func == (lhs: ProviderUsageSnapshot, rhs: ProviderUsageSnapshot) -> Bool {
+    lhs.scope == rhs.scope && lhs.providers == rhs.providers
+  }
 }
 
-struct RouterProviderUsage: Decodable, Identifiable {
+struct RouterProviderUsage: Decodable, Identifiable, Equatable {
   let id: String
   let displayName: String
   let credentialType: String
@@ -1049,7 +1134,7 @@ struct RouterProviderUsage: Decodable, Identifiable {
   let account: ProviderAccountUsage
 }
 
-struct ProviderAccountUsage: Decodable {
+struct ProviderAccountUsage: Decodable, Equatable {
   let status: String
   let source: String
   let metrics: [ProviderAccountMetric]
@@ -1058,7 +1143,7 @@ struct ProviderAccountUsage: Decodable {
   let dashboardUrl: String?
 }
 
-struct ProviderAccountMetric: Decodable {
+struct ProviderAccountMetric: Decodable, Equatable {
   let kind: String
   let label: String
   let usedPercent: Double?
@@ -1076,7 +1161,7 @@ struct ProviderAccountMetric: Decodable {
   var resetDate: Date? { resetAt.map(Date.init(timeIntervalSince1970:)) }
 }
 
-struct ProviderDailyUsageBucket: Decodable {
+struct ProviderDailyUsageBucket: Decodable, Equatable {
   let startDate: String
   let tokens: Int64
   let requests: Int
@@ -1166,7 +1251,7 @@ struct ProviderSetupSnapshot: Decodable {
   let providers: [ProviderSetupState]
 }
 
-struct ProviderSetupState: Decodable, Identifiable {
+struct ProviderSetupState: Decodable, Identifiable, Equatable {
   let id: String
   let displayName: String
   let kind: String

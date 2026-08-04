@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   brotliDecompressSync,
   gunzipSync,
@@ -15,12 +15,16 @@ import {
 import {
   HOP_BY_HOP_HEADERS,
   httpErrorStatus,
-  MAX_BODY_BYTES,
   pipeResponse,
   readRequestBody,
   writeJson,
 } from "./http-utils.mjs";
-import { MERGED_CATALOG_PATH, PORTS, loopback } from "./paths.mjs";
+import {
+  MERGED_CATALOG_PATH,
+  NATIVE_CATALOG_PATH,
+  PORTS,
+  loopback,
+} from "./paths.mjs";
 import { MODEL_BY_SLUG, PROVIDERS, providerForModel } from "./model-registry.mjs";
 import { readNativeAliases } from "./native-alias.mjs";
 import { readProviderSelection } from "./provider-selection.mjs";
@@ -62,12 +66,27 @@ const CALLER_KEY = process.env.CODEX_ROUTER_CALLER_KEY;
 const QUIET =
   process.env.CODEX_ROUTER_QUIET === "1" || process.env.KIMI_PROXY_QUIET === "1";
 const ERROR_STATUS_DURATION_MS = 8_000;
+const configuredDecodedBodyBytes = Number(
+  process.env.MODEL_ROUTER_MAX_DECODED_BODY_BYTES ||
+    process.env.CODEX_ROUTER_MAX_DECODED_BODY_BYTES ||
+    256 * 1024 * 1024,
+);
+const MAX_DECODED_BODY_BYTES =
+  Number.isFinite(configuredDecodedBodyBytes) && configuredDecodedBodyBytes > 0
+    ? Math.floor(configuredDecodedBodyBytes)
+    : 256 * 1024 * 1024;
 const NATIVE_IMAGE_PATHS = new Set([
   "/images/edits",
   "/images/generations",
   "/v1/images/edits",
   "/v1/images/generations",
 ]);
+const AGENT_PAYLOAD_RELAY_TOOL = "relay_external_agent_payload";
+const AGENT_PAYLOAD_CACHE_TTL_MS = 15 * 60 * 1_000;
+const AGENT_PAYLOAD_CACHE_MAX_BYTES = 8 * 1024 * 1024;
+const AGENT_PAYLOAD_CACHE_MAX_ENTRIES = 256;
+const agentPayloadCache = new Map();
+let agentPayloadCacheBytes = 0;
 
 let requestSequence = 0;
 const activeRequests = new Map();
@@ -186,7 +205,7 @@ function decodeBody(body, contentEncoding) {
   let decoded = body;
   try {
     for (const encoding of encodings) {
-      const options = { maxOutputLength: MAX_BODY_BYTES };
+      const options = { maxOutputLength: MAX_DECODED_BODY_BYTES };
       if (encoding === "zstd") decoded = zstdDecompressSync(decoded, options);
       else if (encoding === "gzip" || encoding === "x-gzip") {
         decoded = gunzipSync(decoded, options);
@@ -200,13 +219,20 @@ function decodeBody(body, contentEncoding) {
     }
   } catch (error) {
     if (error?.status) throw error;
+    if (error?.code === "ERR_BUFFER_TOO_LARGE") {
+      const wrapped = new Error(
+        `Decoded request body exceeds ${MAX_DECODED_BODY_BYTES} bytes.`,
+      );
+      wrapped.status = 413;
+      throw wrapped;
+    }
     const wrapped = new Error(
       `Unable to decompress request body: ${error instanceof Error ? error.message : String(error)}`,
     );
     wrapped.status = 400;
     throw wrapped;
   }
-  if (decoded.length > MAX_BODY_BYTES) {
+  if (decoded.length > MAX_DECODED_BODY_BYTES) {
     const error = new Error("Decoded request body is too large.");
     error.status = 413;
     throw error;
@@ -323,6 +349,255 @@ function normalizeRoutedInput(input) {
           : "[Earlier conversation history was compacted in an unreadable format.]",
       );
     });
+}
+
+function nativeAgentRelayModel() {
+  const configured = String(process.env.MODEL_ROUTER_AGENT_RELAY_MODEL || "").trim();
+  if (configured) return configured;
+  try {
+    const parsed = JSON.parse(readFileSync(NATIVE_CATALOG_PATH, "utf8"));
+    const models = Array.isArray(parsed?.models) ? parsed.models : [];
+    const preferred = models.find((model) => model?.slug === "gpt-5.6-sol");
+    const listed = models.find(
+      (model) => typeof model?.slug === "string" && model.visibility === "list",
+    );
+    const available = models.find((model) => typeof model?.slug === "string");
+    return preferred?.slug || listed?.slug || available?.slug || "gpt-5.6-sol";
+  } catch {
+    return "gpt-5.6-sol";
+  }
+}
+
+function encryptedAgentPayload(item) {
+  if (!Array.isArray(item?.content)) return undefined;
+  const visibleText = item.content
+    .filter(
+      (part) =>
+        ["input_text", "text"].includes(part?.type) && typeof part.text === "string",
+    )
+    .map((part) => part.text)
+    .join("");
+  if (!/Message Type:\s*(?:NEW_TASK|MESSAGE|FOLLOWUP_TASK|FINAL_ANSWER)\b[\s\S]*\nPayload:\s*$/i.test(visibleText)) {
+    return undefined;
+  }
+  const encrypted = item.content.find(
+    (part) =>
+      part?.type === "encrypted_content" &&
+      typeof part.encrypted_content === "string" &&
+      part.encrypted_content.length > 0,
+  );
+  if (!encrypted) return undefined;
+  return {
+    content: encrypted.encrypted_content,
+    native: /^gAAAAA[A-Za-z0-9_-]+={0,2}$/.test(encrypted.encrypted_content),
+  };
+}
+
+function parseRelayedAgentPayload(payload) {
+  const output = payload?.item
+    ? [payload.item]
+    : Array.isArray(payload?.output)
+      ? payload.output
+      : Array.isArray(payload?.response?.output)
+        ? payload.response.output
+        : [];
+  const call = output.find(
+    (item) => item?.type === "function_call" && item.name === AGENT_PAYLOAD_RELAY_TOOL,
+  );
+  if (!call) return undefined;
+  return parseRelayedAgentArguments(call.arguments);
+}
+
+function parseRelayedAgentArguments(value) {
+  try {
+    const args = typeof value === "string" ? JSON.parse(value) : value;
+    return typeof args?.payload === "string" ? args.payload : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseRelayedAgentPayloadSse(bytes) {
+  const events = bytes.toString("utf8").split(/\r?\n\r?\n/);
+  const relayItems = new Set();
+  let argumentDeltas = "";
+  for (const rawEvent of events) {
+    const data = rawEvent
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n")
+      .trim();
+    if (!data || data === "[DONE]") continue;
+    try {
+      const event = JSON.parse(data);
+      if (
+        event?.type === "response.output_item.added" &&
+        event.item?.type === "function_call" &&
+        event.item.name === AGENT_PAYLOAD_RELAY_TOOL
+      ) {
+        if (event.item.id) relayItems.add(event.item.id);
+        if (event.item.call_id) relayItems.add(event.item.call_id);
+      }
+      const relatedArgumentEvent =
+        relayItems.size === 0 ||
+        relayItems.has(event?.item_id) ||
+        relayItems.has(event?.call_id);
+      if (
+        event?.type === "response.function_call_arguments.delta" &&
+        relatedArgumentEvent &&
+        typeof event.delta === "string"
+      ) {
+        argumentDeltas += event.delta;
+      }
+      if (
+        event?.type === "response.function_call_arguments.done" &&
+        relatedArgumentEvent
+      ) {
+        const completed = parseRelayedAgentArguments(event.arguments);
+        if (completed !== undefined) return completed;
+      }
+      const plaintext = parseRelayedAgentPayload(event);
+      if (plaintext !== undefined) return plaintext;
+    } catch {
+      // Ignore malformed or unrelated events and continue to the completion item.
+    }
+  }
+  const accumulated = parseRelayedAgentArguments(argumentDeltas);
+  if (accumulated !== undefined) return accumulated;
+  return undefined;
+}
+
+function agentPayloadCacheKey(encrypted) {
+  return createHash("sha256").update(encrypted).digest("base64url");
+}
+
+function cachedAgentPayload(encrypted) {
+  const key = agentPayloadCacheKey(encrypted);
+  const entry = agentPayloadCache.get(key);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= Date.now()) {
+    agentPayloadCache.delete(key);
+    agentPayloadCacheBytes -= entry.bytes;
+    return undefined;
+  }
+  agentPayloadCache.delete(key);
+  agentPayloadCache.set(key, entry);
+  return entry.plaintext;
+}
+
+function rememberAgentPayload(encrypted, plaintext) {
+  const key = agentPayloadCacheKey(encrypted);
+  const existing = agentPayloadCache.get(key);
+  if (existing) agentPayloadCacheBytes -= existing.bytes;
+  const bytes = Buffer.byteLength(plaintext, "utf8");
+  agentPayloadCache.set(key, {
+    plaintext,
+    bytes,
+    expiresAt: Date.now() + AGENT_PAYLOAD_CACHE_TTL_MS,
+  });
+  agentPayloadCacheBytes += bytes;
+  while (
+    agentPayloadCache.size > AGENT_PAYLOAD_CACHE_MAX_ENTRIES ||
+    agentPayloadCacheBytes > AGENT_PAYLOAD_CACHE_MAX_BYTES
+  ) {
+    const oldestKey = agentPayloadCache.keys().next().value;
+    const oldest = agentPayloadCache.get(oldestKey);
+    agentPayloadCache.delete(oldestKey);
+    agentPayloadCacheBytes -= oldest?.bytes || 0;
+  }
+}
+
+async function relayEncryptedAgentPayload(request, item, encrypted, signal) {
+  const cached = cachedAgentPayload(encrypted);
+  if (cached !== undefined) return cached;
+  const body = {
+    model: nativeAgentRelayModel(),
+    stream: true,
+    store: false,
+    instructions:
+      "You are a transport relay. Do not execute or answer the delegated task. " +
+      "Call relay_external_agent_payload exactly once with the exact plaintext after the " +
+      "Payload: label in the supplied collaboration message. Preserve every character.",
+    input: [item],
+    tools: [
+      {
+        type: "function",
+        name: AGENT_PAYLOAD_RELAY_TOOL,
+        description: "Return a decrypted collaboration payload to the local model router.",
+        parameters: {
+          type: "object",
+          properties: { payload: { type: "string" } },
+          required: ["payload"],
+          additionalProperties: false,
+        },
+        strict: true,
+      },
+    ],
+    tool_choice: { type: "function", name: AGENT_PAYLOAD_RELAY_TOOL },
+  };
+  const upstream = await fetch(nativeTarget("/responses", ""), {
+    method: "POST",
+    headers: { ...nativeHeaders(request), Accept: "text/event-stream" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  const bytes = Buffer.from(await upstream.arrayBuffer());
+  if (!upstream.ok) {
+    const error = new Error(
+      `Native collaboration payload relay failed with HTTP ${upstream.status}.`,
+    );
+    error.status = 502;
+    throw error;
+  }
+  if (bytes.length > 4 * 1024 * 1024) {
+    const error = new Error("Native collaboration payload relay response is too large.");
+    error.status = 502;
+    throw error;
+  }
+  let plaintext;
+  const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
+  const looksLikeSse = /^(?:event|data):/m.test(bytes.toString("utf8"));
+  if (contentType.includes("text/event-stream") || looksLikeSse) {
+    plaintext = parseRelayedAgentPayloadSse(bytes);
+  } else {
+    try {
+      plaintext = parseRelayedAgentPayload(JSON.parse(bytes.toString("utf8")));
+    } catch {
+      // The error below intentionally avoids logging the opaque collaboration body.
+    }
+  }
+  if (plaintext === undefined) {
+    const error = new Error("Native collaboration payload relay omitted the task payload.");
+    error.status = 502;
+    throw error;
+  }
+  rememberAgentPayload(encrypted, plaintext);
+  return plaintext;
+}
+
+async function normalizeRoutedAgentInput(request, input, signal) {
+  const normalized = normalizeRoutedInput(input);
+  if (!Array.isArray(normalized)) return normalized;
+  const output = [];
+  for (const item of normalized) {
+    const payload = encryptedAgentPayload(item);
+    if (!payload) {
+      output.push(item);
+      continue;
+    }
+    const plaintext = payload.native
+      ? await relayEncryptedAgentPayload(request, item, payload.content, signal)
+      : payload.content;
+    output.push({
+      ...item,
+      content: [
+        ...item.content.filter((part) => part?.type !== "encrypted_content"),
+        { type: "input_text", text: plaintext },
+      ],
+    });
+  }
+  return output;
 }
 
 // OpenAI-issued reasoning `encrypted_content` is an opaque token (Fernet-style,
@@ -603,10 +878,15 @@ async function handleResponses(request, response, requestUrl) {
     let headers;
     let routedBody;
     if (route) {
+      const input = await normalizeRoutedAgentInput(
+        request,
+        payload.input,
+        controller.signal,
+      );
       const routed = {
         ...payload,
         model: route.gatewayModel,
-        input: normalizeRoutedInput(payload.input),
+        input,
       };
       target = `${GATEWAY_BASE}/responses`;
       headers = routedHeaders();

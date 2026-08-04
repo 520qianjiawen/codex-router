@@ -160,7 +160,10 @@ export function routedModel(template, model) {
     supports_search_tool: false,
     supports_image_detail_original: false,
     use_responses_lite: false,
-    multi_agent_version: "v1",
+    // Codex v2 collaboration only exposes spawn_agent model overrides whose
+    // catalog entry advertises the same backend version as the parent. Models
+    // opt in after their tool and encrypted-payload relay paths are verified.
+    multi_agent_version: model.multiAgentVersion || "v1",
   };
   if (typeof next.base_instructions === "string") {
     next.base_instructions = rewriteIdentity(next.base_instructions, model);

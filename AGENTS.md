@@ -29,7 +29,7 @@ user.
 3. Never ask the user to paste OAuth tokens or API keys into chat, command
    arguments, logs, environment snippets, or tracked files.
 4. Determine which provider IDs the user requested: `anthropic-api`,
-   `kimi-oauth`, `kimi-api`, `deepseek`, `grok-api`, `qwen-plan`,
+   `kimi-oauth`, `kimi-api`, `deepseek`, `grok-oauth`, `grok-api`, `qwen-plan`,
    `zai-coding`, `ollama-cloud`, and/or `minimax-token-plan`. The
    catalog-only providers `groq`, `openrouter`, `together`, `fireworks`,
    `cerebras`, `mistral`, `nvidia-nim`, `siliconflow`, `huggingface`, and
@@ -62,11 +62,74 @@ user.
 10. Do not terminate Codex. Tell the user to fully quit it, reopen it, create a
     new task, and choose the new model.
 
+## Requests to install or expose more models
+
+First distinguish a local model addition from a repository-wide model change.
+Prefer local curation when one user wants a model that an already registered
+provider advertises. Change the checked-in registry only when the user intends
+to ship tested support to every installer.
+
+### Add models for the current user
+
+1. Inspect the installed selection with
+   `./bin/model-router codex providers list --json`. Do not assume that a stored
+   credential means the provider is intentionally visible.
+2. If authentication is missing, use the provider's official OAuth CLI or run
+   `./bin/model-router codex provider-key PROVIDER set` in a PTY. Keep secrets
+   out of chat, arguments, logs, environment snippets, and tracked files.
+3. If the requested model is already in `config/providers.json`, run
+   `./bin/model-router codex providers enable PROVIDER`. This preserves the
+   other selected providers and refreshes the installed picker catalog.
+4. If the provider is registered but the model is not checked in, run
+   `./bin/curate-models PROVIDER` in an interactive terminal. When the user gave
+   exact IDs and the live catalog confirms them, the deterministic form is
+   `./bin/curate-models PROVIDER --models ID1,ID2 --apply`. On Windows use
+   `node .\src\curate-models.mjs` with the same arguments.
+5. Local curation writes protected `user-models.json` state and survives router
+   updates. Never edit `config/providers.json` merely to satisfy one machine's
+   request. Curated models receive conservative metadata and are not implicitly
+   approved as native v2 subagent model overrides.
+6. Run `./bin/model-router codex doctor`. A live `bin/test-model` request uses
+   provider quota, so run it only with the user's approval. Finally, tell the
+   user to fully quit and reopen Codex before checking the picker.
+
+If the provider itself is unknown to the registry, stop treating the request as
+installation. It is repository development and requires the process below.
+
+### Ship a model to every installer
+
+1. Run `./bin/discover-models PROVIDER`; discovery is read-only. Confirm the
+   model ID and capabilities against the provider's current official
+   documentation. Never infer tools, images, context size, reasoning, or billing
+   behavior from the model name.
+2. Add the model declaratively in `config/providers.json` with unique `slug`,
+   `gatewayModel`, and provider/upstream IDs; complete picker metadata;
+   supported reasoning levels; input modalities; context/compaction limits;
+   and the correct request profile. Use `listed: false` for compatibility-only
+   aliases.
+3. A new provider also needs credential isolation, discovery metadata,
+   selection/onboarding support, request translation, health behavior, and
+   tests. Never place an API key or OAuth artifact in the registry.
+4. Set `multiAgentVersion: "v2"` only after the model is proven through native
+   Codex collaboration: tool calls work, encrypted subagent payload relay works
+   without disclosure, a marker-return spawn succeeds, and a same-thread
+   follow-up succeeds. Otherwise omit it and retain conservative v1 behavior.
+5. Remember that Codex advertises only a small priority-ordered subset of native
+   spawn-model overrides. Adjust priority intentionally and keep the desired
+   Kimi/Grok/GPT choices in that visible subset; do not crowd them out
+   accidentally when adding a model.
+6. Add registry, catalog, routing/request-profile, and failure-path regression
+   tests. Run `npm run check` and `npm test`. With explicit quota approval, run
+   `./bin/test-model 'provider/model' --live --yes`, reinstall, fully restart
+   Codex, and perform the native subagent probe before claiming support.
+
 ## Codex safety boundaries
 
 - The config manager owns its marked root `openai_base_url` and
   `model_catalog_json` block plus its marked `model_providers.codex-router`
-  table. It may change the root `model_provider` only when the user explicitly
+  table and, when the user has no concurrency preference, its marked
+  `[agents].max_concurrent_threads_per_session` default. It may change the root
+  `model_provider` only when the user explicitly
   enables the tray's login-free mode. In that mode it may also select an
   enabled external `model`; snapshot both previous values in protected router
   state and restore them exactly when the mode is disabled.
@@ -85,3 +148,18 @@ user.
 - Do not delete retained keys, logs, backups, snapshots, or old state
   directories.
 - Do not restart or quit the Codex App from the installation task.
+
+## Routed subagent regression prevention
+
+- A normal `/responses` smoke test does not cover Codex collaboration. Current
+  model-generated subagent tasks and messages can arrive as native
+  `encrypted_content`, with visible text ending at `Payload:`. External models
+  cannot read that payload directly.
+- The compatibility relay must remain signed-in-only and fail closed. Send its
+  native request with `stream: true`, accept SSE by body framing as well as
+  content type, recognize padded `gAAAA...=` ciphertext, and treat non-Fernet
+  `encrypted_content` from an external parent as plaintext.
+- Never log relay response bodies, decrypted task text, or exception messages
+  that can echo either. Regressions require fragmented/mislabeled SSE tests and
+  real marker-return probes through every installed routed agent plus a
+  same-thread follow-up.

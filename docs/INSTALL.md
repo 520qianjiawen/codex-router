@@ -166,19 +166,24 @@ Setup performs these operations in order:
 5. Generates separate random Codex caller and internal-service keys.
 6. Captures the native Codex model catalog and adds only selected provider models.
 7. Generates gateway routes from `config/providers.json`.
-8. Adds the marked capability-bearing base URL and catalog block, then protects
-   the Codex config and its backup for the current user.
-9. Installs the platform's per-user background service.
-10. Waits for every local layer to report its expected service identity.
-11. Records the installed commit and provider selection.
-12. Runs the doctor.
+8. Adds the marked capability-bearing base URL and catalog block. When the user
+   has not set an agent concurrency limit, it also configures six spawned-agent
+   slots so native Kimi/Grok/GPT collaboration does not remain on Codex's small
+   v2 default. Existing `[agents]` limits are preserved.
+9. Protects the Codex config and its backup for the current user.
+10. Installs the platform's per-user background service.
+11. Waits for every local layer to report its expected service identity.
+12. Records the installed commit and provider selection.
+13. Runs the doctor.
 
 If config or service installation fails, the new service and marked config block
 are removed. If a legacy migration was part of the transaction, its exact config
 and service definition are restored as well.
 
 The installer does not kill an unknown process on ports 4100–4103 and does not
-replace an unmarked user-owned `openai_base_url` or `model_catalog_json`.
+replace an unmarked user-owned `openai_base_url`, `model_catalog_json`, or agent
+concurrency value. Disabling the router removes only its marked concurrency
+default; a user-owned value remains intact.
 
 ## Recognized older installations
 

@@ -72,6 +72,9 @@ approval_policy = "never"
     const configured = readFileSync(configPath, "utf8");
     assert.match(configured, /# BEGIN codex-router-managed/);
     assert.match(configured, /# BEGIN codex-router-provider-managed/);
+    assert.match(configured, /# BEGIN codex-router-agent-concurrency-managed/);
+    assert.match(configured, /\[agents\]/);
+    assert.match(configured, /max_concurrent_threads_per_session = 6/);
     assert.match(configured, /\[model_providers\.codex-router\]/);
     assert.match(configured, /wire_api = "responses"/);
     assert.ok(
@@ -114,12 +117,74 @@ approval_policy = "never"
     const restored = readFileSync(configPath, "utf8");
     assert.doesNotMatch(
       restored,
-      /codex-router-(?:provider-)?managed|openai_base_url|model_catalog_json|experimental_realtime_(?:webrtc_call|ws)_base_url/,
+      /codex-router-(?:(?:provider|agent-concurrency)-)?managed|codex-router-created-agents-table|openai_base_url|model_catalog_json|experimental_realtime_(?:webrtc_call|ws)_base_url/,
     );
+    assert.doesNotMatch(restored, /\[agents\]|max_concurrent_threads_per_session/);
     assert.match(restored, /model = "gpt-5\.6-sol"/);
     assert.match(restored, /model_provider = "openai"/);
     assert.match(restored, /model_reasoning_effort = "xhigh"/);
     assert.match(restored, /\[profiles\.work\]/);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("config manager preserves a user-owned agent concurrency limit", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-agent-limit-"));
+  const configPath = path.join(codexHome, "config.toml");
+  const original = `[agents]
+max_concurrent_threads_per_session = 3
+default_subagent_model = "gpt-5.6-terra"
+`;
+  writeFileSync(configPath, original, { mode: 0o600 });
+
+  try {
+    run("enable", codexHome);
+    const enabled = readFileSync(configPath, "utf8");
+    assert.equal(
+      (enabled.match(/^max_concurrent_threads_per_session\s*=/gm) || []).length,
+      1,
+    );
+    assert.match(enabled, /^max_concurrent_threads_per_session = 3$/m);
+    assert.match(enabled, /^default_subagent_model = "gpt-5\.6-terra"$/m);
+    assert.doesNotMatch(enabled, /codex-router-agent-concurrency-managed/);
+
+    run("disable", codexHome);
+    const restored = readFileSync(configPath, "utf8");
+    assert.match(restored, /^max_concurrent_threads_per_session = 3$/m);
+    assert.match(restored, /^default_subagent_model = "gpt-5\.6-terra"$/m);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("config manager adds concurrency inside an existing agents table and removes only its value", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-agent-default-"));
+  const configPath = path.join(codexHome, "config.toml");
+  writeFileSync(
+    configPath,
+    `[agents]
+default_subagent_model = "gpt-5.6-terra"
+
+[profiles.work]
+model_reasoning_effort = "high"
+`,
+    { mode: 0o600 },
+  );
+
+  try {
+    run("enable", codexHome);
+    const enabled = readFileSync(configPath, "utf8");
+    assert.equal((enabled.match(/^\[agents\]$/gm) || []).length, 1);
+    assert.match(enabled, /^max_concurrent_threads_per_session = 6$/m);
+    assert.match(enabled, /^default_subagent_model = "gpt-5\.6-terra"$/m);
+
+    run("disable", codexHome);
+    const restored = readFileSync(configPath, "utf8");
+    assert.match(restored, /^\[agents\]$/m);
+    assert.match(restored, /^default_subagent_model = "gpt-5\.6-terra"$/m);
+    assert.doesNotMatch(restored, /max_concurrent_threads_per_session/);
+    assert.doesNotMatch(restored, /codex-router-agent-concurrency-managed/);
   } finally {
     rmSync(codexHome, { recursive: true, force: true });
   }

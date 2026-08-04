@@ -48,6 +48,12 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(PROVIDERS.get("grok-api").baseUrl, "https://api.x.ai/v1");
   assert.equal(PROVIDERS.get("grok-oauth").proxyBaseEnv, "GROK_OAUTH_FORWARD_BASE_URL");
   assert.equal(PROVIDERS.get("anthropic-api").protocol, "anthropic");
+  for (const model of LISTED_MODELS.filter(({ provider }) =>
+    /^(?:kimi|grok)-/.test(provider),
+  )) {
+    assert.equal(model.multiAgentVersion, "v2", model.slug);
+  }
+  assert.equal(MODEL_BY_SLUG.get("deepseek/deepseek-v4-pro").multiAgentVersion, undefined);
   for (const slug of [
     "kimi-oauth/kimi-for-coding-highspeed",
     "kimi-oauth/kimi-for-coding",
