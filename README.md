@@ -93,6 +93,14 @@ The Codex catalog is credential-aware. It includes models only from enabled
 external providers with a stored API key or valid OAuth session. Native GPT
 models are included only when `codex login status` confirms an OpenAI login.
 
+Qwen is key-only. Alibaba discontinued the Qwen Code OAuth free tier on
+2026-04-15, so the Model Studio plan key is the sole Qwen surface; `qwen-plan`
+points at the token-plan endpoint. Set `QWEN_PLAN_BASE_URL` to
+`https://dashscope-intl.aliyuncs.com/compatible-mode/v1` to bill a
+pay-as-you-go DashScope key through the same provider. Alibaba publishes no
+quota or balance API on either endpoint, so the tray shows router-observed
+traffic and links to the console for actual spend.
+
 Grok OAuth reuses the official CLI credential at `~/.grok/auth.json` and sends
 it only to xAI's documented Grok CLI inference proxy. On that path the router
 also attaches bare hosted `web_search` and `x_search` tools, the same agentic

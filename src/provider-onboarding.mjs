@@ -12,7 +12,13 @@ import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { KIMI_CLI_NPM_PACKAGE } from "./kimi-oauth-onboarding.mjs";
 import { PROVIDERS } from "./model-registry.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
-import { credentialStatus, writeProviderCredential } from "./provider-credentials.mjs";
+import {
+  apiProvider,
+  credentialStatus,
+  removeProviderCredential,
+  writeProviderCredential,
+} from "./provider-credentials.mjs";
+import { disableProvider } from "./provider-selection.mjs";
 
 const OAUTH_CLIS = Object.freeze({
   "kimi-oauth": {
@@ -163,4 +169,21 @@ export function loginOauthProvider(providerId) {
 
 export function saveApiCredential(providerId, value) {
   writeProviderCredential(providerId, value);
+}
+
+// Deleting the managed key files cannot reach a key that also lives in the
+// macOS Keychain or the environment, so report what still resolves afterwards
+// instead of claiming the provider is disconnected.
+export function removeApiCredential(providerId) {
+  const provider = apiProvider(providerId);
+  const removedFiles = removeProviderCredential(provider);
+  if (removedFiles) disableProvider(provider.id);
+  const remaining = credentialStatus(provider, { persistent: true });
+  return {
+    provider: provider.id,
+    displayName: provider.displayName,
+    removedFiles,
+    stillConfigured: remaining.configured === true,
+    remainingSource: remaining.configured ? remaining.source : undefined,
+  };
 }

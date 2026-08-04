@@ -16,12 +16,18 @@ import {
   targetPickerName,
 } from "./target-integration.mjs";
 
+// One entry per OAuth vendor keeps adding a provider a registry-plus-map
+// change instead of another branch in a nested conditional.
+const OAUTH_STATUS = Object.freeze({
+  "kimi-oauth": { status: kimiOAuthStatus, setup: "run `kimi login`" },
+  "grok-oauth": { status: grokOAuthStatus, setup: "run `grok login --oauth`" },
+});
+
 function configured(provider) {
-  return provider.kind === "oauth"
-    ? provider.id === "kimi-oauth"
-      ? kimiOAuthStatus().configured
-      : provider.id === "grok-oauth" && grokOAuthStatus().configured
-    : credentialStatus(provider, { persistent: true }).configured;
+  if (provider.kind === "oauth") {
+    return Boolean(OAUTH_STATUS[provider.id]?.status().configured);
+  }
+  return credentialStatus(provider, { persistent: true }).configured;
 }
 
 function list() {
@@ -56,9 +62,7 @@ function main() {
   }
   if (command === "enable" && !configured(provider)) {
     const setup = provider.kind === "oauth"
-      ? provider.id === "grok-oauth"
-        ? "run `grok login --oauth`"
-        : "run `kimi login`"
+      ? OAUTH_STATUS[provider.id]?.setup || "sign in with the provider CLI"
       : `run \`${targetCli(`provider-key ${provider.id} set`)}\``;
     throw new Error(`${provider.displayName} is not configured; ${setup} first.`);
   }

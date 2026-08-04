@@ -5,10 +5,10 @@ import {
   apiProvider,
   credentialStatus,
   primaryCredentialPath,
-  removeProviderCredential,
   writeProviderCredential,
 } from "./provider-credentials.mjs";
-import { disableProvider, enableProvider } from "./provider-selection.mjs";
+import { removeApiCredential } from "./provider-onboarding.mjs";
+import { enableProvider } from "./provider-selection.mjs";
 import { secretEntryFeedback, secretEntryProblem } from "./secret-entry.mjs";
 import {
   refreshTargetPickerIfInstalled,
@@ -212,14 +212,18 @@ if (command === "status") {
     }\n`,
   );
 } else {
-  const removedCount = removeProviderCredential(provider);
-  if (removedCount) disableProvider(provider.id);
-  const refreshed = removedCount ? refreshTargetPickerIfInstalled() : false;
+  const removal = removeApiCredential(provider.id);
+  const refreshed = removal.removedFiles ? refreshTargetPickerIfInstalled() : false;
   process.stdout.write(
-    removedCount
-      ? `Removed ${removedCount} managed ${provider.displayName} key file${removedCount === 1 ? "" : "s"} and disabled the provider.${
+    removal.removedFiles
+      ? `Removed ${removal.removedFiles} managed ${provider.displayName} key file${removal.removedFiles === 1 ? "" : "s"} and disabled the provider.${
           refreshed ? ` Fully quit and reopen ${targetPickerName()} to refresh the model picker.` : ""
         }\n`
       : `No managed ${provider.displayName} key file exists.\n`,
   );
+  if (removal.stillConfigured) {
+    process.stdout.write(
+      `A ${provider.displayName} key is still available from ${removal.remainingSource}; remove it there to fully disconnect.\n`,
+    );
+  }
 }

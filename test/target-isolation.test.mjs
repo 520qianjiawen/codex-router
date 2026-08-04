@@ -41,7 +41,7 @@ test("Cursor path defaults are its own dedicated ports", () => {
   });
 });
 
-test("every target's five ports are pairwise disjoint across all targets", () => {
+test("every target's ports are pairwise disjoint across all targets", () => {
   const targets = ["codex", "cursor"];
   const seen = new Map();
   for (const target of targets) {

@@ -1323,6 +1323,15 @@ test("API forwarder routes Qwen plan models without unsupported parameters", asy
     for (const [gatewayModel, upstreamModel] of [
       ["qwen-plan-qwen3-7-max", "qwen3.7-max"],
       ["qwen-plan-qwen3-7-plus", "qwen3.7-plus"],
+      ["qwen-plan-qwen3-8-max", "qwen3.8-max"],
+      ["qwen-plan-qwen3-8-max-preview", "qwen3.8-max-preview"],
+      ["qwen-plan-qwen3-6-flash", "qwen3.6-flash"],
+      // DeepSeek and GLM reach this provider through DashScope's compatible
+      // mode, so they take the Qwen plan profile rather than each vendor's
+      // native thinking profile, which sends parameters DashScope rejects.
+      ["qwen-plan-deepseek-v4-pro", "deepseek-v4-pro"],
+      ["qwen-plan-deepseek-v4-flash-0731", "deepseek-v4-flash-0731"],
+      ["qwen-plan-glm-5-2", "glm-5.2"],
     ]) {
       const response = await fetch(
         `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,

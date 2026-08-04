@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { validCallerSecret } from "./caller-auth.mjs";
-import { findCodexBinary } from "./codex-binary.mjs";
+import { codexAuthStatus, findCodexBinary } from "./codex-binary.mjs";
 import { routedCodexAgentStatus } from "./codex-agent-catalog.mjs";
 import { privateFileIsProtected } from "./file-security.mjs";
 import { grokCliPreflight } from "./grok-cli.mjs";
@@ -23,6 +23,7 @@ import {
   SOURCE_ROOT,
 } from "./paths.mjs";
 import { credentialStatus } from "./provider-credentials.mjs";
+import { stateOwnershipStatus } from "./state-owner.mjs";
 import {
   providerSelectionStatus,
   selectedConfiguredListedModels,
@@ -130,6 +131,18 @@ add(
   codex || "not found",
   "Install Codex or set CODEX_BIN to the Codex CLI binary.",
 );
+// A Codex binary that cannot be spawned reads as "signed out" everywhere it is
+// probed, which silently removes every native model from the picker. Surface it
+// as its own failure instead of letting it masquerade as a logged-out session.
+const codexAuth = codexAuthStatus();
+add(
+  codexAuth.reason === "probe-failed" ? "fail" : "ok",
+  "Codex sign-in probe",
+  codexAuth.reason === "probe-failed"
+    ? `could not run ${codexAuth.binary} (${codexAuth.code || "spawn failed"})`
+    : codexAuth.reason,
+  "Set CODEX_BIN to a Codex CLI Node can spawn; on Windows use the codex.cmd shim, not the extensionless one.",
+);
 add(
   existsSync(CONFIG_PATH) ? "ok" : "fail",
   "Codex config",
@@ -190,6 +203,36 @@ add(
   "Merged catalog",
   catalogOk ? `${requiredModels.size} routed models` : MERGED_CATALOG_PATH,
   "Run ./bin/refresh-catalog, or ./bin/doctor --fix if files are missing.",
+);
+// The catalog tells Codex which models to offer; the gateway config decides
+// which it can actually route. When a second checkout writes one of them the
+// two drift apart, and Codex forwards the unroutable model upstream, where it
+// fails with a confusing account-level error instead of a routing error.
+const ownership = stateOwnershipStatus();
+add(
+  ownership.foreign ? "fail" : "ok",
+  "State directory owner",
+  ownership.foreign
+    ? `owned by ${ownership.owner}, running from ${ownership.current}`
+    : ownership.owner || "unowned (first install)",
+  "Run router commands from the owning checkout, or reinstall from this one to take ownership.",
+);
+let unroutable = [];
+try {
+  const rendered = readFileSync(LITELLM_CONFIG_PATH, "utf8");
+  unroutable = requiredRoutedModels
+    .filter((model) => !rendered.includes(`model_name: "${model.gatewayModel}"`))
+    .map((model) => model.slug);
+} catch {
+  // The missing-config case is already reported by the gateway config check.
+}
+add(
+  unroutable.length ? "fail" : "ok",
+  "Catalog matches gateway routes",
+  unroutable.length
+    ? `${unroutable.length} offered model(s) have no gateway route: ${unroutable.join(", ")}`
+    : `${requiredRoutedModels.length} routed models`,
+  "Run ./bin/doctor --fix from the owning checkout, then fully quit and reopen Codex.",
 );
 const agentStatus = routedCodexAgentStatus(requiredRoutedModels);
 add(

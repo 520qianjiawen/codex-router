@@ -290,6 +290,14 @@ async function saveProviderCredential(providerId) {
   process.stdout.write(`${JSON.stringify(providerOnboardingSnapshot())}\n`);
 }
 
+async function deleteProviderCredential(providerId) {
+  const { providerOnboardingSnapshot, removeApiCredential } = await import("./provider-onboarding.mjs");
+  const removal = removeApiCredential(providerId);
+  process.stdout.write(
+    `${JSON.stringify({ ...providerOnboardingSnapshot(), removal })}\n`,
+  );
+}
+
 async function setLoginFreeMode(desired) {
   if (desired !== "on" && desired !== "off") {
     throw new Error("Usage: control auth-mode <on|off>");
@@ -418,8 +426,12 @@ if (args.includes("--probe")) {
   if (!args[1]) throw new Error("Usage: control login <oauth-provider>");
   await loginProvider(args[1]);
 } else if (args[0] === "credential") {
-  if (!args[1]) throw new Error("Usage: control credential <api-provider>");
-  await saveProviderCredential(args[1]);
+  if (!args[1]) throw new Error("Usage: control credential <api-provider> [--remove]");
+  if (args.includes("--remove")) {
+    await deleteProviderCredential(args[1]);
+  } else {
+    await saveProviderCredential(args[1]);
+  }
 } else if (args[0] === "auth-mode") {
   await setLoginFreeMode(args[1]);
 } else if (args[0] === "model-set") {

@@ -12,7 +12,14 @@ mkdir -p "$bundle_dir/Contents/MacOS" "$bundle_dir/Contents/Resources"
 cp "$binary_dir/ModelRouterTray" "$bundle_dir/Contents/MacOS/ModelRouterTray"
 cp "$tray_dir/Resources/Info.plist" "$bundle_dir/Contents/Info.plist"
 if [ -d "$binary_dir/ModelRouterTray_ModelRouterTray.bundle" ]; then
+  rm -rf "$bundle_dir/Contents/Resources/ModelRouterTray_ModelRouterTray.bundle" \
+    "$bundle_dir/ModelRouterTray_ModelRouterTray.bundle"
   cp -R "$binary_dir/ModelRouterTray_ModelRouterTray.bundle" "$bundle_dir/Contents/Resources/"
+  # SwiftPM's generated accessor resolves resources from Bundle.main.bundleURL
+  # (the .app itself) and falls back to the build directory — it never looks in
+  # Contents/Resources. Without this copy the app runs only while .build
+  # survives, and dies with a fatalError once that is cleaned.
+  cp -R "$binary_dir/ModelRouterTray_ModelRouterTray.bundle" "$bundle_dir/"
 fi
 printf '%s\n' "$repo_dir" > "$bundle_dir/Contents/Resources/router-root"
 

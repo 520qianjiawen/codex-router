@@ -9,6 +9,7 @@ let routerYellow = Color(red: 0.94, green: 0.68, blue: 0.25)
 let routerRed = Color(red: 0.91, green: 0.35, blue: 0.32)
 let routerInk = Color(red: 0.035, green: 0.043, blue: 0.055)
 let routerMuted = Color.secondary.opacity(0.72)
+let removalArmWindow: TimeInterval = 4
 
 enum RouterActivityState: String, Decodable {
   case idle
@@ -252,13 +253,24 @@ final class RouterStore: ObservableObject {
     return selectedAccountMetric?.resetDate
   }
 
+  /// Running chats, not in-flight HTTP requests. One chat fans out into many
+  /// requests (turns, subagents, compactions) and counting those reads as a
+  /// runaway number that never matches what the user has open.
+  var activeChatCount: Int {
+    var seen = Set<String>()
+    for request in activeRequests {
+      seen.insert(request.sessionId ?? request.sessionName ?? "request-\(request.id)")
+    }
+    return seen.count
+  }
+
   var hasConcurrentActivity: Bool {
-    activeRequestCount > 1
+    activeChatCount > 1
   }
 
   var activitySummaryLabel: String {
-    if activityState == .generating, activeRequestCount > 1 {
-      return "\(activeRequestCount) active"
+    if activityState == .generating, activeChatCount > 1 {
+      return "\(activeChatCount) chats"
     }
     return activityState.label
   }
@@ -316,6 +328,36 @@ final class RouterStore: ObservableObject {
 
   var visibleUsageCards: [UsageOverviewCard] {
     visibleUsageProviders.flatMap(usageCards(for:))
+  }
+
+  /// Every model the router has served, across all providers, heaviest first.
+  var overallModelUsage: [ModelUsageRow] {
+    guard let snapshot = providerUsage else { return [] }
+    return snapshot.providers
+      .flatMap { provider in
+        (provider.models ?? []).map { model in
+          ModelUsageRow(
+            providerID: provider.id,
+            providerName: provider.displayName,
+            model: model
+          )
+        }
+      }
+      .filter { $0.model.requests > 0 }
+      .sorted {
+        if $0.model.totalTokens != $1.model.totalTokens {
+          return $0.model.totalTokens > $1.model.totalTokens
+        }
+        return $0.model.requests > $1.model.requests
+      }
+  }
+
+  var overallTokenTotal: Int64 {
+    overallModelUsage.reduce(0) { $0 + $1.model.totalTokens }
+  }
+
+  var overallRequestTotal: Int {
+    overallModelUsage.reduce(0) { $0 + $1.model.requests }
   }
 
   func usageCards(for provider: UsageProviderChoice) -> [UsageOverviewCard] {
@@ -591,6 +633,18 @@ final class RouterStore: ObservableObject {
     ) {
       _ = try await runControl(arguments: ["credential", provider], stdin: secret)
       try await updateProviderSelection(provider, enabled: true)
+    }
+  }
+
+  // The control plane already drops the provider from the Codex selection when
+  // the key file is deleted; this only makes that selection live.
+  func removeProviderKey(_ provider: String) async {
+    await performProviderOperation(
+      provider,
+      successMessage: "API key removed. Restart Codex to refresh its model picker."
+    ) {
+      _ = try await runControl(arguments: ["credential", provider, "--remove"])
+      _ = try? await runControl(arguments: ["apply", "--targets", "codex", "--activate"])
     }
   }
 
@@ -1132,6 +1186,30 @@ struct RouterProviderUsage: Decodable, Identifiable, Equatable {
   let totalTokens: Int64
   let dailyUsageBuckets: [ProviderDailyUsageBucket]
   let account: ProviderAccountUsage
+  // Optional so a newer tray still decodes snapshots from an older router.
+  let models: [RouterModelUsage]?
+}
+
+struct RouterModelUsage: Decodable, Identifiable {
+  let slug: String
+  let displayName: String
+  let requests: Int
+  let successfulRequests: Int
+  let meteredRequests: Int
+  let inputTokens: Int64
+  let outputTokens: Int64
+  let totalTokens: Int64
+  let lastUsedAt: String?
+
+  var id: String { slug }
+}
+
+struct ModelUsageRow: Identifiable {
+  let providerID: String
+  let providerName: String
+  let model: RouterModelUsage
+
+  var id: String { "\(providerID)/\(model.slug)" }
 }
 
 struct ProviderAccountUsage: Decodable, Equatable {
@@ -1283,8 +1361,25 @@ private struct StatusItemLabel: View {
   }
 }
 
+enum TrayTab: String, CaseIterable, Identifiable {
+  case usage
+  case status
+  case settings
+
+  var id: String { rawValue }
+
+  var label: String {
+    switch self {
+    case .usage: return "Usage"
+    case .status: return "Status"
+    case .settings: return "Settings"
+    }
+  }
+}
+
 private struct TrayView: View {
   @ObservedObject var store: RouterStore
+  @AppStorage("trayTab") private var tab: TrayTab = .usage
 
   private var target: RouterTarget? { store.snapshot.targets["codex"] }
   private var providers: [(id: String, enabled: Bool)] {
@@ -1344,78 +1439,204 @@ private struct TrayView: View {
   }
 
   private func content(for target: RouterTarget) -> some View {
-    ScrollView(showsIndicators: false) {
-      VStack(alignment: .leading, spacing: 14) {
-        if !store.visibleUsageProviders.isEmpty {
-          sectionLabel("Current usage", detail: store.selectedUsageProvider.displayName)
-          ProviderUsageSection(store: store)
-            .id(store.selectedUsageProviderID)
-          sectionLabel("All usage", detail: "7-day snapshot")
-          AllProviderUsageGrid(store: store)
+    VStack(alignment: .leading, spacing: 12) {
+      Picker("", selection: $tab) {
+        ForEach(TrayTab.allCases) { item in
+          Text(item.label).tag(item)
         }
-        HStack(spacing: 12) {
-          VStack(alignment: .leading, spacing: 3) {
-            Text("Dynamic Island")
-              .font(.system(size: 12, weight: .medium))
-            Text(store.islandMode == .desktop
-              ? "Quotas and live activity pinned to the desktop"
-              : "Show provider usage and activity status")
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+
+      ScrollView(showsIndicators: false) {
+        VStack(alignment: .leading, spacing: 14) {
+          switch tab {
+          case .usage: usageTab
+          case .status: statusTab
+          case .settings: settingsTab(for: target)
+          }
+        }
+        .padding(.vertical, 1)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var usageTab: some View {
+    if store.visibleUsageProviders.isEmpty && store.overallModelUsage.isEmpty {
+      emptyNotice("No usage recorded yet")
+    }
+    if !store.visibleUsageProviders.isEmpty {
+      sectionLabel("Current usage", detail: store.selectedUsageProvider.displayName)
+      ProviderUsageSection(store: store)
+        .id(store.selectedUsageProviderID)
+      sectionLabel("All usage", detail: "7-day snapshot")
+      AllProviderUsageGrid(store: store)
+    }
+    if !store.overallModelUsage.isEmpty {
+      sectionLabel(
+        "Tokens by model",
+        detail: "\(compactTokenCount(Double(store.overallTokenTotal))) tok · \(store.overallRequestTotal) req"
+      )
+      ModelUsageBreakdown(store: store)
+    }
+  }
+
+  @ViewBuilder
+  private var statusTab: some View {
+    sectionLabel("Router", detail: store.activitySummaryLabel)
+    HStack(spacing: 8) {
+      Circle()
+        .fill(store.activityState.tint)
+        .frame(width: 7, height: 7)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(store.activityState.label)
+          .font(.system(size: 12, weight: .medium))
+        Text(activityDetail)
+          .font(.system(size: 9))
+          .foregroundStyle(routerMuted)
+      }
+      Spacer()
+    }
+
+    sectionLabel(
+      "Live requests",
+      detail: store.activeRequests.isEmpty ? "None" : "\(store.activeRequests.count)"
+    )
+    if store.activeRequests.isEmpty {
+      emptyNotice("Nothing in flight")
+    } else {
+      VStack(spacing: 6) {
+        ForEach(store.activeRequests) { request in
+          HStack(spacing: 6) {
+            Text(store.modelLabel(for: request))
+              .font(.system(size: 10, weight: .medium))
+              .lineLimit(1)
+            Text(store.displayName(forProvider: request.provider))
+              .font(.system(size: 8))
+              .foregroundStyle(routerMuted)
+              .lineLimit(1)
+            Spacer(minLength: 6)
+            Text(elapsedLabel(for: request))
               .font(.system(size: 10))
-              .foregroundStyle(.secondary)
-          }
-          Spacer()
-          Picker("", selection: Binding(
-            get: { store.islandMode },
-            set: { store.setIslandMode($0) }
-          )) {
-            ForEach(IslandMode.allCases) { mode in
-              Text(mode.label).tag(mode)
-            }
-          }
-          .pickerStyle(.segmented)
-          .labelsHidden()
-          .frame(width: 168)
-        }
-        .padding(.vertical, 2)
-        settingRow(
-          title: "Use without OpenAI login",
-          detail: store.loginFree
-            ? "External providers · Codex restarts automatically"
-            : "Use connected models and restart Codex",
-          isOn: Binding(
-            get: { store.loginFree },
-            set: { enabled in Task { await store.setLoginFree(enabled) } }
-          ),
-          isDisabled: store.providerOperation != nil
-        )
-        sectionLabel(
-          "Maintenance",
-          detail: store.maintenanceRunning ? "Updating & checking…" : "Update + doctor"
-        )
-        maintenanceRow
-        sectionLabel("Providers", detail: store.providerOperation == nil ? "Auto-saved" : "Applying…")
-        VStack(spacing: 0) {
-          ForEach(providers, id: \.id) { provider in
-            ProviderSetupRow(
-              provider: provider,
-              setup: store.providerSetup[provider.id],
-              account: store.providerUsage(for: provider.id)?.account,
-              isBusy: store.providerOperation == provider.id,
-              controlsDisabled: store.providerOperation != nil,
-              onToggle: { enabled in
-                Task { await store.setProvider(provider.id, enabled: enabled) }
-              },
-              onInstall: { Task { await store.installProviderCLI(provider.id) } },
-              onLogin: { Task { await store.loginProvider(provider.id) } },
-              onSaveKey: { key in Task { await store.saveProviderKey(provider.id, key: key) } }
-            )
-            if provider.id != providers.last?.id {
-              Divider()
-            }
+              .monospacedDigit()
+              .foregroundStyle(routerMuted)
           }
         }
       }
-      .padding(.vertical, 1)
+    }
+
+    if !quotaResets.isEmpty {
+      sectionLabel("Quota resets", detail: "\(quotaResets.count)")
+      VStack(spacing: 5) {
+        ForEach(quotaResets, id: \.id) { entry in
+          HStack {
+            Text(entry.title)
+              .font(.system(size: 10, weight: .medium))
+              .lineLimit(1)
+            Spacer(minLength: 6)
+            Text(usageResetCaption(entry.date))
+              .font(.system(size: 9))
+              .foregroundStyle(routerMuted)
+          }
+        }
+      }
+    }
+  }
+
+  private var quotaResets: [(id: String, title: String, date: Date)] {
+    store.visibleUsageCards.compactMap { card in
+      guard let date = card.resetDate else { return nil }
+      return (id: card.id, title: card.title, date: date)
+    }
+  }
+
+  private var activityDetail: String {
+    guard store.activeRequestCount > 0 else { return "No traffic right now" }
+    let chats = store.activeChatCount
+    let requests = store.activeRequestCount
+    return "\(chats) chat\(chats == 1 ? "" : "s") · \(requests) request\(requests == 1 ? "" : "s") in flight"
+  }
+
+  // `startedAt` arrives as epoch milliseconds from the router health payload.
+  private func elapsedLabel(for request: RouterActiveRequest) -> String {
+    let elapsed = max(0, Date().timeIntervalSince1970 - request.startedAt / 1_000)
+    if elapsed >= 60 {
+      return String(format: "%dm %02ds", Int(elapsed) / 60, Int(elapsed) % 60)
+    }
+    return String(format: "%.1fs", elapsed)
+  }
+
+  private func emptyNotice(_ text: String) -> some View {
+    Text(text)
+      .font(.system(size: 10))
+      .foregroundStyle(routerMuted)
+      .padding(.vertical, 2)
+  }
+
+  @ViewBuilder
+  private func settingsTab(for target: RouterTarget) -> some View {
+    HStack(spacing: 12) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text("Dynamic Island")
+          .font(.system(size: 12, weight: .medium))
+        Text(store.islandMode == .desktop
+          ? "Quotas and live activity pinned to the desktop"
+          : "Show provider usage and activity status")
+          .font(.system(size: 10))
+          .foregroundStyle(.secondary)
+      }
+      Spacer()
+      Picker("", selection: Binding(
+        get: { store.islandMode },
+        set: { store.setIslandMode($0) }
+      )) {
+        ForEach(IslandMode.allCases) { mode in
+          Text(mode.label).tag(mode)
+        }
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .frame(width: 168)
+    }
+    .padding(.vertical, 2)
+    settingRow(
+      title: "Use without OpenAI login",
+      detail: store.loginFree
+        ? "External providers · Codex restarts automatically"
+        : "Use connected models and restart Codex",
+      isOn: Binding(
+        get: { store.loginFree },
+        set: { enabled in Task { await store.setLoginFree(enabled) } }
+      ),
+      isDisabled: store.providerOperation != nil
+    )
+    sectionLabel(
+      "Maintenance",
+      detail: store.maintenanceRunning ? "Updating & checking…" : "Update + doctor"
+    )
+    maintenanceRow
+    sectionLabel("Providers", detail: store.providerOperation == nil ? "Auto-saved" : "Applying…")
+    VStack(spacing: 0) {
+      ForEach(providers, id: \.id) { provider in
+        ProviderSetupRow(
+          provider: provider,
+          setup: store.providerSetup[provider.id],
+          account: store.providerUsage(for: provider.id)?.account,
+          isBusy: store.providerOperation == provider.id,
+          controlsDisabled: store.providerOperation != nil,
+          onToggle: { enabled in
+            Task { await store.setProvider(provider.id, enabled: enabled) }
+          },
+          onInstall: { Task { await store.installProviderCLI(provider.id) } },
+          onLogin: { Task { await store.loginProvider(provider.id) } },
+          onSaveKey: { key in Task { await store.saveProviderKey(provider.id, key: key) } },
+          onRemoveKey: { Task { await store.removeProviderKey(provider.id) } }
+        )
+        if provider.id != providers.last?.id {
+          Divider()
+        }
+      }
     }
   }
 
@@ -1561,9 +1782,14 @@ private struct ProviderSetupRow: View {
   let onInstall: () -> Void
   let onLogin: () -> Void
   let onSaveKey: (String) -> Void
+  let onRemoveKey: () -> Void
 
   @State private var showingKeyField = false
   @State private var apiKey = ""
+  // A sheet or confirmation dialog resigns key and closes the menu bar popover
+  // before it can be answered, so removal is confirmed by arming the button.
+  @State private var removalArmed = false
+  @State private var armGeneration = 0
 
   var body: some View {
     VStack(alignment: .leading, spacing: 9) {
@@ -1573,15 +1799,15 @@ private struct ProviderSetupRow: View {
             .font(.system(size: 12, weight: .medium))
           Text(detail)
             .font(.system(size: 9, weight: .regular))
-            .foregroundStyle(setup?.configured == true ? routerMuted : routerYellow.opacity(0.9))
+            .foregroundStyle(detailTint)
         }
         Spacer()
         actionControl
       }
 
-      if showingKeyField, setup?.action == "add-key" {
+      if showingKeyField, setup?.kind == "api" {
         VStack(alignment: .leading, spacing: 5) {
-          Text("API key")
+          Text(setup?.configured == true ? "Replacement API key" : "API key")
             .font(.system(size: 9, weight: .medium))
             .foregroundStyle(routerMuted)
           HStack(spacing: 7) {
@@ -1606,15 +1832,23 @@ private struct ProviderSetupRow: View {
     }
     .padding(.vertical, 7)
     .animation(.easeOut(duration: 0.18), value: showingKeyField)
+    .animation(.easeOut(duration: 0.15), value: removalArmed)
     .onChange(of: setup?.configured) { configured in
       if configured == true {
         apiKey = ""
         showingKeyField = false
+        disarmRemoval()
       }
     }
   }
 
+  private var detailTint: Color {
+    if removalArmed { return routerRed }
+    return setup?.configured == true ? routerMuted : routerYellow.opacity(0.9)
+  }
+
   private var detail: String {
+    if removalArmed { return "Click the check again to delete this key" }
     guard let setup else { return "Checking setup…" }
     if oauthNeedsReconnect {
       return "Session expired · reconnect for account usage"
@@ -1658,6 +1892,27 @@ private struct ProviderSetupRow: View {
             .disabled(controlsDisabled)
           }
         }
+        if setup?.kind == "api" {
+          Button(action: { toggleKeyField() }) {
+            Image(systemName: showingKeyField ? "xmark" : "pencil")
+              .font(.system(size: 10, weight: .semibold))
+              .frame(width: 20, height: 20)
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(routerAccent)
+          .help(showingKeyField ? "Cancel key replacement" : "Replace API key")
+          .disabled(controlsDisabled)
+
+          Button(action: { tapRemove() }) {
+            Image(systemName: removalArmed ? "checkmark.circle.fill" : "trash")
+              .font(.system(size: removalArmed ? 12 : 10, weight: .semibold))
+              .frame(width: 20, height: 20)
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(removalArmed ? routerRed : routerYellow)
+          .help(removalArmed ? "Click again to delete the stored key" : "Remove stored API key")
+          .disabled(controlsDisabled)
+        }
         Toggle("", isOn: Binding(get: { provider.enabled }, set: onToggle))
           .labelsHidden()
           .toggleStyle(.switch)
@@ -1692,11 +1947,38 @@ private struct ProviderSetupRow: View {
     switch setup?.action {
     case "install": onInstall()
     case "login": onLogin()
-    case "add-key":
-      apiKey = ""
-      showingKeyField.toggle()
+    case "add-key": toggleKeyField()
     default: break
     }
+  }
+
+  private func toggleKeyField() {
+    apiKey = ""
+    disarmRemoval()
+    showingKeyField.toggle()
+  }
+
+  // First click arms, second click deletes. The armed state expires on its own
+  // so a stray click never leaves a live delete button sitting in the row.
+  private func tapRemove() {
+    if removalArmed {
+      disarmRemoval()
+      apiKey = ""
+      showingKeyField = false
+      onRemoveKey()
+      return
+    }
+    removalArmed = true
+    armGeneration += 1
+    let generation = armGeneration
+    DispatchQueue.main.asyncAfter(deadline: .now() + removalArmWindow) {
+      if generation == armGeneration { removalArmed = false }
+    }
+  }
+
+  private func disarmRemoval() {
+    armGeneration += 1
+    removalArmed = false
   }
 }
 
@@ -1897,6 +2179,88 @@ private struct CurrentUsageLimitCard: View {
   private var remainingFraction: CGFloat? {
     guard let remaining = card.remainingPercent else { return nil }
     return CGFloat(max(0, min(100, remaining))) / 100
+  }
+}
+
+private struct ModelUsageBreakdown: View {
+  @ObservedObject var store: RouterStore
+
+  private static let visibleRowLimit = 8
+
+  private var rows: [ModelUsageRow] {
+    Array(store.overallModelUsage.prefix(Self.visibleRowLimit))
+  }
+
+  private var hiddenCount: Int {
+    max(0, store.overallModelUsage.count - rows.count)
+  }
+
+  private var heaviestTokens: Double {
+    Double(rows.map(\.model.totalTokens).max() ?? 0)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      ForEach(rows) { row in
+        VStack(alignment: .leading, spacing: 3) {
+          HStack(spacing: 6) {
+            Text(row.model.displayName)
+              .font(.system(size: 10, weight: .medium))
+              .lineLimit(1)
+            Text(row.providerName)
+              .font(.system(size: 8))
+              .foregroundStyle(routerMuted)
+              .lineLimit(1)
+            Spacer(minLength: 6)
+            Text(primaryLabel(for: row))
+              .font(.system(size: 10, weight: .semibold))
+              .monospacedDigit()
+          }
+
+          GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+              Capsule().fill(Color.primary.opacity(0.09))
+              Capsule()
+                .fill(routerAccent.opacity(0.84))
+                .frame(width: geometry.size.width * fraction(for: row))
+            }
+          }
+          .frame(height: 4)
+
+          Text(detailLabel(for: row))
+            .font(.system(size: 8))
+            .foregroundStyle(routerMuted)
+            .lineLimit(1)
+        }
+      }
+
+      if hiddenCount > 0 {
+        Text("+\(hiddenCount) more model\(hiddenCount == 1 ? "" : "s")")
+          .font(.system(size: 8.5))
+          .foregroundStyle(routerMuted)
+      }
+    }
+  }
+
+  private func fraction(for row: ModelUsageRow) -> Double {
+    guard heaviestTokens > 0 else { return 0 }
+    return min(1, Double(row.model.totalTokens) / heaviestTokens)
+  }
+
+  private func primaryLabel(for row: ModelUsageRow) -> String {
+    guard row.model.totalTokens > 0 else { return "\(row.model.requests) req" }
+    return "\(compactTokenCount(Double(row.model.totalTokens))) tok"
+  }
+
+  private func detailLabel(for row: ModelUsageRow) -> String {
+    // A model with traffic but no metered response carries no token counts;
+    // say so rather than implying it burned nothing.
+    guard row.model.totalTokens > 0 else {
+      return "\(row.model.requests) req · not metered"
+    }
+    let input = compactTokenCount(Double(row.model.inputTokens))
+    let output = compactTokenCount(Double(row.model.outputTokens))
+    return "\(input) in · \(output) out · \(row.model.requests) req"
   }
 }
 

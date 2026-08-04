@@ -106,6 +106,18 @@ API-key providers use hidden prompts:
 ./bin/provider-key zai-coding set
 ```
 
+Replace a stored key by running `set` again. Delete one with `remove`, which
+also hides the provider from the model picker:
+
+```sh
+./bin/provider-key deepseek remove
+```
+
+The desktop app and macOS tray expose the same two actions per API provider:
+**Replace key** and **Remove**. Removal only deletes the key files the router
+manages — a key that also lives in the macOS Keychain or in an environment
+variable is reported as still active so you can clear it at the source.
+
 Grok OAuth uses the official Grok CLI session:
 
 ```sh

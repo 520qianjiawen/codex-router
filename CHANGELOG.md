@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- Fixed native OpenAI models disappearing from the Codex picker on Windows when
+  the Codex CLI is installed through npm (#46). `where.exe codex` lists the
+  extensionless POSIX shim before `codex.cmd`, and Node cannot spawn the former
+  without a shell, so every probe threw ENOENT. The router now picks a shim Node
+  can execute and runs `.cmd`/`.bat` through a shell with the path quoted.
+- A Codex binary that cannot be spawned is no longer reported as a signed-out
+  session. That conflation is what let one spawn error silently strip every
+  native model from the catalog; the catalog build now refuses to run rather
+  than guess, and the doctor reports the probe failure on its own line.
+
+- `DASHSCOPE_API_KEY` is documented as a `qwen-plan` credential alongside
+  `QWEN_PLAN_API_KEY`, and the README now records that Qwen is key-only:
+  Alibaba discontinued the Qwen Code OAuth free tier on 2026-04-15, so there is
+  no OAuth path to add. Point `QWEN_PLAN_BASE_URL` at the DashScope
+  compatible-mode endpoint to bill a pay-as-you-go key through the same
+  provider.
+
+- The Alibaba Model Studio plan provider (`qwen-plan`) now lists every chat
+  model the Individual Plan serves, not just Qwen3.7: Qwen3.8 Max, Qwen3.8 Max
+  Preview and Qwen3.6 Flash (all with vision input), plus the cross-vendor
+  models the plan resells — DeepSeek V4 Pro, DeepSeek V4 Flash (0731) and
+  GLM-5.2. The cross-vendor entries use the DashScope compatible-mode request
+  profile rather than each vendor's native thinking profile, because DashScope
+  rejects the vendor-specific parameters. The plan's speech, image and video
+  models are deliberately not listed — they are not chat-completions models
+  and would fail on every request from a model picker.
+
+- API keys can now be replaced or removed from the desktop app and the macOS
+  tray, not just the terminal. Each connected API provider gains a **Replace
+  key** action and a confirmed **Remove** action; removing deletes the managed
+  key files and hides the provider from the Codex model picker. If a key is
+  also present in the macOS Keychain or the environment, the removal result
+  says where it still resolves from instead of claiming a clean disconnect.
+  `control credential <provider> --remove` exposes the same operation.
+
 - The Dynamic Island setting is now a three-way mode: Off, Notch (the
   existing top-of-screen overlay), or Desktop — a draggable widget-style
   panel pinned just above the desktop icons that always shows live router

@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -16,11 +15,12 @@ import {
   NATIVE_ALIAS_PATH,
   NATIVE_CATALOG_PATH,
 } from "./paths.mjs";
-import { codexIsAuthenticated, requireCodexBinary } from "./codex-binary.mjs";
+import { codexAuthStatus, runCodex } from "./codex-binary.mjs";
 import { syncRoutedCodexAgents } from "./codex-agent-catalog.mjs";
 import { MODEL_BY_SLUG } from "./model-registry.mjs";
 import { buildNativeAliasAssignments } from "./native-alias.mjs";
 import { selectedConfiguredListedModels } from "./provider-selection.mjs";
+import { assertStateOwnership } from "./state-owner.mjs";
 
 const refresh = process.argv.includes("--refresh-native");
 const bundled = process.argv.includes("--bundled-native");
@@ -42,14 +42,14 @@ function captureNative() {
   if (bundled) args.push("--bundled");
   let output;
   try {
-    output = execFileSync(requireCodexBinary(), args, {
+    output = runCodex(args, {
       encoding: "utf8",
       timeout: 30_000,
       maxBuffer: 32 * 1024 * 1024,
     });
   } catch (error) {
     if (bundled) throw error;
-    output = execFileSync(requireCodexBinary(), ["debug", "models", "--bundled"], {
+    output = runCodex(["debug", "models", "--bundled"], {
       encoding: "utf8",
       timeout: 30_000,
       maxBuffer: 32 * 1024 * 1024,
@@ -223,9 +223,25 @@ export function buildLoginFreeCatalog(native, routedModelsList) {
 }
 
 function main() {
+  // The catalog is what Codex offers in its picker. Writing it from a checkout
+  // that does not own this state directory is how the picker ends up
+  // advertising models the running gateway has no route for.
+  assertStateOwnership("write the Codex model catalog");
   const routedModels = selectedConfiguredListedModels();
   const native = nativeCatalog();
-  const openaiAuthenticated = codexIsAuthenticated();
+  // Dropping every native model is destructive, so only do it when Codex
+  // actually answered that the session is signed out. If the probe could not
+  // run at all we do not know, and guessing "signed out" is what silently
+  // emptied the picker for Windows npm installs.
+  const auth = codexAuthStatus();
+  if (auth.reason === "probe-failed") {
+    throw new Error(
+      `Could not ask Codex whether it is signed in (${auth.code || "spawn failed"} running ${auth.binary}). ` +
+        "Refusing to rebuild the catalog, because assuming a signed-out session would remove every native model. " +
+        "Set CODEX_BIN to a runnable Codex CLI and try again.",
+    );
+  }
+  const openaiAuthenticated = auth.authenticated;
   const loginFree = loginFreeConfigured();
   const { models: merged, aliases } = loginFree
     ? buildLoginFreeCatalog(native, routedModels)
@@ -250,11 +266,22 @@ function main() {
       aliased_models: Object.keys(aliases).length,
       login_free: loginFree,
       openai_authenticated: openaiAuthenticated,
+      openai_auth_reason: auth.reason,
       selected_model: selectedModel() || null,
     })}\n`,
   );
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main();
+  try {
+    main();
+  } catch (error) {
+    // Ownership conflicts are an operator mistake with a specific remedy, so
+    // print the guidance rather than a stack trace.
+    if (error?.code === "foreign_state_owner") {
+      console.error(error.message);
+      process.exit(1);
+    }
+    throw error;
+  }
 }

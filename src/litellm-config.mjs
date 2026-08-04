@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { protectPrivateFile } from "./file-security.mjs";
 import { LITELLM_CONFIG_PATH } from "./paths.mjs";
 import { MODELS, providerForModel } from "./model-registry.mjs";
+import { assertStateOwnership } from "./state-owner.mjs";
 
 function yamlString(value) {
   return JSON.stringify(String(value));
@@ -45,6 +46,11 @@ export function renderLiteLlmConfig() {
 }
 
 export function writeLiteLlmConfig(target = LITELLM_CONFIG_PATH) {
+  // Only guard the managed path. Tests and tooling that render to an explicit
+  // temporary file are not touching the live gateway config.
+  if (target === LITELLM_CONFIG_PATH) {
+    assertStateOwnership("write the gateway routing config");
+  }
   mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
   const temporary = `${target}.tmp.${process.pid}`;
   writeFileSync(temporary, renderLiteLlmConfig(), { encoding: "utf8", mode: 0o600 });

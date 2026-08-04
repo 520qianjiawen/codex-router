@@ -139,7 +139,8 @@ installation. It is repository development and requires the process below.
 - A user-initiated macOS tray login-mode change may gracefully restart only the
   registered Codex desktop app. This does not authorize an installation task to
   quit Codex, and the tray must never force-terminate it.
-- Do not kill unknown processes on ports 4100-4103.
+- Do not kill unknown processes on ports 4100-4103, or on the Grok OAuth
+  forwarder port 4108.
 - Do not print or read credential-file contents. Status commands report presence
   and source only.
 - Treat the generated `/_codex-router/.../v1` config path as sensitive local

@@ -27,6 +27,12 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "zai-coding/glm-5-turbo",
       "qwen-plan/qwen3.7-max",
       "qwen-plan/qwen3.7-plus",
+      "qwen-plan/qwen3.8-max",
+      "qwen-plan/qwen3.8-max-preview",
+      "qwen-plan/qwen3.6-flash",
+      "qwen-plan/deepseek-v4-pro",
+      "qwen-plan/deepseek-v4-flash-0731",
+      "qwen-plan/glm-5.2",
       "ollama-cloud/glm-5.2",
       "ollama-cloud/kimi-k2.7-code",
       "ollama-cloud/minimax-m3",
@@ -47,6 +53,17 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(PROVIDERS.get("minimax-token-plan").baseUrl, "https://api.minimax.io/v1");
   assert.equal(PROVIDERS.get("grok-api").baseUrl, "https://api.x.ai/v1");
   assert.equal(PROVIDERS.get("grok-oauth").proxyBaseEnv, "GROK_OAUTH_FORWARD_BASE_URL");
+  // Qwen OAuth was discontinued upstream on 2026-04-15, so the plan key is the
+  // only Qwen surface. A second key-based provider would differ only by base
+  // URL, which QWEN_PLAN_BASE_URL already covers.
+  assert.deepEqual(
+    [...PROVIDERS.values()].filter((p) => p.ownedBy === "alibaba").map((p) => p.id),
+    ["qwen-plan"],
+  );
+  assert.deepEqual(PROVIDERS.get("qwen-plan").credential.environment, [
+    "QWEN_PLAN_API_KEY",
+    "DASHSCOPE_API_KEY",
+  ]);
   assert.equal(PROVIDERS.get("anthropic-api").protocol, "anthropic");
   for (const model of LISTED_MODELS.filter(({ provider }) =>
     /^(?:kimi|grok)-/.test(provider),
