@@ -28,6 +28,22 @@ via `swift run` provides no bundle identity, so the toggle is hidden there.
 The router's background service is a separate launchd agent and keeps running
 regardless of this setting.
 
+## Show tray only while Codex runs
+
+The Settings tab's **Show tray** control chooses when the tray surfaces are
+visible. **Always** (the default) keeps the menu bar icon present like any
+menu bar app. **With Codex** ties every surface — menu bar icon, Dynamic
+Island, and desktop panel — to the Codex and ChatGPT desktop apps
+(`com.openai.codex`, `com.openai.chat`): the tray appears when either app
+launches and disappears when the last one quits. The tray process itself
+stays resident as a lightweight watcher; quitting on app exit would leave
+nothing around to notice the next launch. Combined with **Start at login**,
+this makes the tray fully automatic: it waits invisibly after a reboot and
+shows up exactly while Codex is open. While hidden, reopen Codex (or run
+`defaults write io.github.codex-router.tray ModelRouterTray.presenceMode
+always` and relaunch) to reach the toggle again. The router's background
+service is unaffected by visibility.
+
 ## Provider usage
 
 The tray's **All usage** grid shows only connected accounts: ChatGPT when native

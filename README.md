@@ -400,8 +400,11 @@ overview of every configured or previously used provider, and auto-applied
 provider controls in a native glass macOS interface. On first launch the app
 registers itself as a login item, so it reopens automatically after a reboot;
 the Settings tab's **Start at login** toggle or System Settings › Login Items
-turns that off, and the choice is never re-applied behind your back. See the
-[macOS tray guide](docs/MACOS-TRAY.md) for behavior and rebuild notes.
+turns that off, and the choice is never re-applied behind your back. A
+**Show tray** setting can additionally tie every tray surface to the Codex
+and ChatGPT desktop apps, appearing when they launch and hiding when they
+quit. See the [macOS tray guide](docs/MACOS-TRAY.md) for behavior and
+rebuild notes.
 
 The app also places a Dynamic-Island-style overlay at the top center of the
 active display. It follows the provider handling the latest request, reveals

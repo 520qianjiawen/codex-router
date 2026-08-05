@@ -39,14 +39,20 @@ enum RouterActivityState: String, Decodable {
 
 @main
 struct ModelRouterTrayApp: App {
-  @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+  @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
+  @ObservedObject private var store = RouterStore.shared
 
   var body: some Scene {
-    MenuBarExtra {
-      TrayView(store: appDelegate.store)
+    // The insertion binding is read-only from our side: visibility is decided
+    // by the presence mode, not by the system writing back.
+    MenuBarExtra(isInserted: Binding(
+      get: { store.surfacesVisible },
+      set: { _ in }
+    )) {
+      TrayView(store: store)
         .frame(width: 352, height: 560)
     } label: {
-      StatusItemLabel(store: appDelegate.store)
+      StatusItemLabel(store: store)
     }
     .menuBarExtraStyle(.window)
   }
@@ -54,22 +60,23 @@ struct ModelRouterTrayApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-  let store = RouterStore()
+  let store = RouterStore.shared
   private var islandController: IslandWindowController?
   private var desktopPanelController: DesktopPanelWindowController?
-  private var islandVisibility: AnyCancellable?
+  private var surfaceVisibility: AnyCancellable?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.accessory)
     islandController = IslandWindowController(store: store)
     desktopPanelController = DesktopPanelWindowController(store: store)
-    islandVisibility = store.$islandMode
-      .removeDuplicates()
-      .sink { [weak self] mode in
-        self?.islandController?.setVisible(mode == .notch)
-        self?.desktopPanelController?.setVisible(mode == .desktop)
+    surfaceVisibility = store.$surfacesVisible
+      .combineLatest(store.$islandMode)
+      .sink { [weak self] visible, mode in
+        self?.islandController?.setVisible(visible && mode == .notch)
+        self?.desktopPanelController?.setVisible(visible && mode == .desktop)
       }
     store.bootstrapLaunchAtLogin()
+    store.startHostAppObservation()
     Task { await store.startPolling() }
     Task { await store.startActivityPolling() }
     Task { await store.startAccountUsagePolling() }
@@ -79,6 +86,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 @MainActor
 final class RouterStore: ObservableObject {
+  static let shared = RouterStore()
+
   @Published private(set) var snapshot = RouterSnapshot.empty
   @Published private(set) var isRefreshing = false
   @Published private(set) var message: String?
@@ -99,6 +108,9 @@ final class RouterStore: ObservableObject {
   @Published private(set) var maintenanceSucceeded = false
   @Published private(set) var islandMode: IslandMode
   @Published private(set) var launchAtLogin = false
+  @Published private(set) var presenceMode: TrayPresenceMode
+  @Published private(set) var hostAppRunning = false
+  @Published private(set) var surfacesVisible = true
 
   private var polling = false
   private var activityPolling = false
@@ -108,6 +120,11 @@ final class RouterStore: ObservableObject {
   private let islandVisibilityKey = "ModelRouterTray.islandVisible"
   private let islandModeKey = "ModelRouterTray.islandMode"
   private let loginItemAutoRegisteredKey = "ModelRouterTray.loginItemAutoRegistered"
+  private let presenceModeKey = "ModelRouterTray.presenceMode"
+  // The Codex desktop app plus the ChatGPT desktop app, either of which counts
+  // as "Codex is open" for the follow mode.
+  private let hostAppBundleIDs = ["com.openai.codex", "com.openai.chat"]
+  private var workspaceObservers: [NSObjectProtocol] = []
   private var accountUsageResolved = false
   private var hasResolvedInitialUsageProvider = false
   private var hasObservedActiveProvider = false
@@ -165,6 +182,13 @@ final class RouterStore: ObservableObject {
       // Migrate the pre-desktop-mode boolean setting.
       islandMode = defaults.bool(forKey: islandVisibilityKey) ? .notch : .off
     }
+    if let raw = defaults.string(forKey: presenceModeKey),
+      let mode = TrayPresenceMode(rawValue: raw)
+    {
+      presenceMode = mode
+    } else {
+      presenceMode = .always
+    }
   }
 
   var codexActive: Bool {
@@ -203,6 +227,42 @@ final class RouterStore: ObservableObject {
     } catch {
       // Best-effort at launch; the Settings toggle surfaces errors on demand.
     }
+  }
+
+  // In follow mode every tray surface tracks the Codex/ChatGPT desktop apps.
+  // The process itself stays resident as the watcher — quitting on app exit
+  // would leave nothing around to notice the next launch.
+  func startHostAppObservation() {
+    let center = NSWorkspace.shared.notificationCenter
+    for name in [
+      NSWorkspace.didLaunchApplicationNotification,
+      NSWorkspace.didTerminateApplicationNotification,
+    ] {
+      workspaceObservers.append(
+        center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+          Task { @MainActor in self?.refreshHostAppRunning() }
+        }
+      )
+    }
+    refreshHostAppRunning()
+  }
+
+  func setPresenceMode(_ mode: TrayPresenceMode) {
+    presenceMode = mode
+    defaults.set(mode.rawValue, forKey: presenceModeKey)
+    refreshSurfacesVisible()
+  }
+
+  private func refreshHostAppRunning() {
+    hostAppRunning = hostAppBundleIDs.contains { identifier in
+      NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+        .contains { !$0.isTerminated }
+    }
+    refreshSurfacesVisible()
+  }
+
+  private func refreshSurfacesVisible() {
+    surfacesVisible = presenceMode == .always || hostAppRunning
   }
 
   func setLaunchAtLogin(_ enabled: Bool) {
@@ -1337,6 +1397,19 @@ struct UsageProviderChoice: Identifiable {
   let isEnabled: Bool
 }
 
+enum TrayPresenceMode: String, CaseIterable, Identifiable {
+  case always
+  case followCodex
+
+  var id: String { rawValue }
+  var label: String {
+    switch self {
+    case .always: return "Always"
+    case .followCodex: return "With Codex"
+    }
+  }
+}
+
 enum IslandMode: String, CaseIterable, Identifiable {
   case off
   case notch
@@ -1624,6 +1697,30 @@ private struct TrayView: View {
 
   @ViewBuilder
   private func settingsTab(for target: RouterTarget) -> some View {
+    HStack(spacing: 12) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text("Show tray")
+          .font(.system(size: 12, weight: .medium))
+        Text(store.presenceMode == .followCodex
+          ? "Appears with Codex or ChatGPT, hides when they quit"
+          : "Menu bar icon stays visible")
+          .font(.system(size: 10))
+          .foregroundStyle(.secondary)
+      }
+      Spacer()
+      Picker("", selection: Binding(
+        get: { store.presenceMode },
+        set: { store.setPresenceMode($0) }
+      )) {
+        ForEach(TrayPresenceMode.allCases) { mode in
+          Text(mode.label).tag(mode)
+        }
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .frame(width: 168)
+    }
+    .padding(.vertical, 2)
     HStack(spacing: 12) {
       VStack(alignment: .leading, spacing: 3) {
         Text("Dynamic Island")

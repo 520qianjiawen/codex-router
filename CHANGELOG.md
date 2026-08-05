@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A **Show tray** mode in the macOS tray's Settings tab can tie the menu bar
+  icon, Dynamic Island, and desktop panel to the Codex/ChatGPT desktop apps:
+  the surfaces appear when either app launches and hide when the last one
+  quits, while the tray process stays resident as the watcher. The default
+  remains always-visible.
+
 - The macOS tray registers itself as a login item on its first launch, so it
   reopens automatically after a reboot instead of requiring a manual
   `./bin/model-router-tray`. A **Start at login** toggle in the Settings tab
