@@ -369,6 +369,26 @@
         ],
         "prompt": "Google Gemini API key"
       }
+    },
+    {
+      "id": "opencode-go",
+      "displayName": "opencode Go",
+      "kind": "openai-compatible",
+      "ownedBy": "opencode",
+      "baseUrl": "https://opencode.ai/zen/go/v1",
+      "baseUrlEnv": "OPENCODE_GO_BASE_URL",
+      "credential": {
+        "environment": [
+          "OPENCODE_API_KEY",
+          "OPENCODE_GO_API_KEY"
+        ],
+        "file": "opencode-go-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-opencode-go"
+        ],
+        "prompt": "opencode Go API key"
+      }
     }
   ],
   "models": [
@@ -1020,6 +1040,190 @@
       ],
       "requestProfile": "minimax-m3",
       "compHash": "minimax-token-plan-minimax-m3-v1"
+    },
+    {
+      "slug": "opencode-go/grok-4.5",
+      "gatewayModel": "opencode-go-grok-4-5",
+      "upstreamModel": "grok-4.5",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "Grok 4.5 (opencode Go)",
+      "description": "Grok 4.5 through the opencode Go subscription.",
+      "priority": 30,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 500000,
+      "autoCompact": 440000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-grok-4-5-v1"
+    },
+    {
+      "slug": "opencode-go/glm-5.2",
+      "gatewayModel": "opencode-go-glm-5-2",
+      "upstreamModel": "glm-5.2",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "GLM-5.2 (opencode Go)",
+      "description": "GLM-5.2 through the opencode Go subscription.",
+      "priority": 31,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-glm-5-2-v1"
+    },
+    {
+      "slug": "opencode-go/glm-5.1",
+      "gatewayModel": "opencode-go-glm-5-1",
+      "upstreamModel": "glm-5.1",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "GLM-5.1 (opencode Go)",
+      "description": "GLM-5.1 through the opencode Go subscription.",
+      "priority": 32,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-glm-5-1-v1"
+    },
+    {
+      "slug": "opencode-go/kimi-k3",
+      "gatewayModel": "opencode-go-kimi-k3",
+      "upstreamModel": "kimi-k3",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "Kimi K3 (opencode Go)",
+      "description": "Kimi K3 through the opencode Go subscription.",
+      "priority": 33,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-kimi-k3-v1"
+    },
+    {
+      "slug": "opencode-go/kimi-k2.7-code",
+      "gatewayModel": "opencode-go-kimi-k2-7-code",
+      "upstreamModel": "kimi-k2.7-code",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "Kimi K2.7 Code (opencode Go)",
+      "description": "Kimi K2.7 Code through the opencode Go subscription.",
+      "priority": 34,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-kimi-k2-7-code-v1"
+    },
+    {
+      "slug": "opencode-go/kimi-k2.6",
+      "gatewayModel": "opencode-go-kimi-k2-6",
+      "upstreamModel": "kimi-k2.6",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "Kimi K2.6 (opencode Go)",
+      "description": "Kimi K2.6 through the opencode Go subscription.",
+      "priority": 35,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-kimi-k2-6-v1"
+    },
+    {
+      "slug": "opencode-go/deepseek-v4-pro",
+      "gatewayModel": "opencode-go-deepseek-v4-pro",
+      "upstreamModel": "deepseek-v4-pro",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "DeepSeek V4 Pro (opencode Go)",
+      "description": "DeepSeek V4 Pro through the opencode Go subscription.",
+      "priority": 36,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-deepseek-v4-pro-v1"
+    },
+    {
+      "slug": "opencode-go/deepseek-v4-flash",
+      "gatewayModel": "opencode-go-deepseek-v4-flash",
+      "upstreamModel": "deepseek-v4-flash",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "DeepSeek V4 Flash (opencode Go)",
+      "description": "DeepSeek V4 Flash through the opencode Go subscription.",
+      "priority": 37,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-deepseek-v4-flash-v1"
     }
   ]
 }

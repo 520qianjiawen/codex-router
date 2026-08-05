@@ -38,6 +38,14 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "ollama-cloud/minimax-m3",
       "ollama-cloud/deepseek-v4-pro",
       "minimax-token-plan/minimax-m3",
+      "opencode-go/grok-4.5",
+      "opencode-go/glm-5.2",
+      "opencode-go/glm-5.1",
+      "opencode-go/kimi-k3",
+      "opencode-go/kimi-k2.7-code",
+      "opencode-go/kimi-k2.6",
+      "opencode-go/deepseek-v4-pro",
+      "opencode-go/deepseek-v4-flash",
     ],
   );
   assert.equal(PROVIDERS.get("deepseek").baseUrl, "https://api.deepseek.com");
@@ -51,6 +59,8 @@ test("provider registry exposes configured API and OAuth model families", () => 
   );
   assert.equal(PROVIDERS.get("ollama-cloud").baseUrl, "https://ollama.com/v1");
   assert.equal(PROVIDERS.get("minimax-token-plan").baseUrl, "https://api.minimax.io/v1");
+  // Go is its own endpoint, not the pay-per-use Zen one.
+  assert.equal(PROVIDERS.get("opencode-go").baseUrl, "https://opencode.ai/zen/go/v1");
   assert.equal(PROVIDERS.get("grok-api").baseUrl, "https://api.x.ai/v1");
   assert.equal(PROVIDERS.get("grok-oauth").proxyBaseEnv, "GROK_OAUTH_FORWARD_BASE_URL");
   // Qwen OAuth was discontinued upstream on 2026-04-15, so the plan key is the
