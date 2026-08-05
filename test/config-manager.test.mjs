@@ -21,17 +21,23 @@ const CALLER_KEY = "test-config-caller-capability-with-sufficient-length";
 
 // The config manager probes the installed Codex binary to learn whether its
 // schema accepts the managed [agents] concurrency scalar. Point it at stubs so
-// the tests do not depend on whichever Codex build this machine has.
+// the tests do not depend on whichever Codex build this machine has. Windows
+// cannot execute shebang scripts, so the stubs are batch files there — the
+// same .cmd shape codexSpawnTarget already handles for npm-installed Codex.
 const codexStubDir = mkdtempSync(path.join(os.tmpdir(), "codex-router-codex-stub-"));
-const scalarAcceptingCodex = path.join(codexStubDir, "codex-accepts-scalar");
-writeFileSync(scalarAcceptingCodex, "#!/bin/sh\necho 'Not logged in' >&2\nexit 1\n", {
-  mode: 0o755,
-});
-const scalarRejectingCodex = path.join(codexStubDir, "codex-rejects-scalar");
-writeFileSync(
-  scalarRejectingCodex,
-  "#!/bin/sh\necho 'Error loading configuration: invalid type: integer, expected struct AgentRoleToml' >&2\nexit 1\n",
-  { mode: 0o755 },
+function writeCodexStub(name, message) {
+  const isWindows = process.platform === "win32";
+  const file = path.join(codexStubDir, isWindows ? `${name}.cmd` : name);
+  const contents = isWindows
+    ? `@echo ${message} 1>&2\r\n@exit /b 1\r\n`
+    : `#!/bin/sh\necho '${message}' >&2\nexit 1\n`;
+  writeFileSync(file, contents, { mode: 0o755 });
+  return file;
+}
+const scalarAcceptingCodex = writeCodexStub("codex-accepts-scalar", "Not logged in");
+const scalarRejectingCodex = writeCodexStub(
+  "codex-rejects-scalar",
+  "Error loading configuration: invalid type: integer, expected struct AgentRoleToml",
 );
 
 function run(
