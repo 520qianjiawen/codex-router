@@ -247,7 +247,7 @@ Only enabled providers appear in the Codex picker:
 ./bin/model-router codex provider-key anthropic-api set
 ```
 
-On Windows, use `./model-router.ps1` with the same target and command.
+On Windows, use `./model-router.ps1 codex` with the same commands.
 
 The API-key prompt disables terminal echo. Protected files use mode `600` on
 POSIX and an inheritance-disabled, current-user ACL on Windows. Diagnostics
@@ -481,13 +481,13 @@ LiteLLM translates that contract to each provider's native protocol,
 including OpenAI-compatible Chat Completions and Anthropic Messages, with
 streaming and tool-call shapes preserved. Every listener binds to `127.0.0.1`.
 
-Every frontend authenticates the caller before reading model traffic and
-passes only its own random internal key to LiteLLM. The final forwarder discards
+The router authenticates the caller before reading model traffic and
+passes only a random internal key to LiteLLM. The final forwarder discards
 that key and injects only the selected provider credential. Browser-originated
 requests are rejected, secrets are never exposed by public health routes, and
 network-facing errors are sanitized.
 
-The host app still owns the agent loop, tools, permissions, files, plugins,
+Codex still owns the agent loop, tools, permissions, files, plugins,
 skills, MCP servers, and conversation state. The router handles model inference
 and protocol translation; it cannot add a capability the selected model or
 provider does not implement.
@@ -497,8 +497,8 @@ provider does not implement.
 [`config/providers.json`](config/providers.json) is the validated registry for
 provider metadata, picker entries, upstream IDs, API protocols, context limits, request
 profiles, modalities, and credential sources. Tested OpenAI-compatible and
-Anthropic API providers share one credential-isolating forwarder and become
-available to every implemented app target after compatibility tests pass.
+Anthropic API providers share one credential-isolating forwarder and appear
+in the Codex picker after compatibility tests pass.
 
 Discovery does not publish every upstream model blindly:
 

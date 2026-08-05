@@ -16,7 +16,7 @@
 - `src/provider-selection.mjs` controls which tested models enter the picker.
 - `src/start.mjs` supervises the loopback processes.
 - `src/service-*.mjs` install per-user services for macOS, Linux, and Windows.
-- `src/paths.mjs` isolates app targets, state roots, ports, and service names.
+- `src/paths.mjs` defines state roots, ports, and service names.
 
 ## Add an API-key provider
 
@@ -82,7 +82,7 @@ npm audit --omit=dev
 The test suite verifies native header forwarding, external credential
 isolation, Kimi and DeepSeek rewriting, registry-generated gateway routes,
 Zstandard request decoding, both Codex compaction formats, legacy migration,
-provider selection, target isolation, Anthropic API forwarding, discovery
+provider selection, port defaults, Anthropic API forwarding, discovery
 comparison, and service rendering for all three service platforms.
 
 CI runs the Node suite on macOS, Linux, and Windows. Tagged releases are built
