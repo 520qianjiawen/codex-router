@@ -30,7 +30,9 @@ user.
    arguments, logs, environment snippets, or tracked files.
 4. Determine which provider IDs the user requested: `anthropic-api`,
    `kimi-oauth`, `kimi-api`, `deepseek`, `grok-oauth`, `grok-api`, `qwen-plan`,
-   `zai-coding`, `ollama-cloud`, and/or `minimax-token-plan`. The
+   `zai-coding`, `ollama-cloud`, `minimax-token-plan`, and/or `opencode-go`
+   (whose `opencode-go-messages` and `opencode-go-responses` protocol variants
+   share its stored key). The
    catalog-only providers `groq`, `openrouter`, `together`, `fireworks`,
    `cerebras`, `mistral`, `nvidia-nim`, `siliconflow`, `huggingface`, and
    `gemini-api` are also selectable, but they ship no preselected models: after

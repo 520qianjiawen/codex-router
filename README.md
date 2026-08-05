@@ -1,7 +1,8 @@
 # Codex Router
 
-Use Anthropic, Kimi, DeepSeek, xAI, and future external models inside supported
-AI desktop apps through one local, credential-isolating router.
+Use Anthropic, Kimi, DeepSeek, xAI, opencode Go, and future external models
+inside supported AI desktop apps through one local, credential-isolating
+router.
 
 | Target | Integration | Status |
 | --- | --- | --- |
@@ -15,8 +16,8 @@ Installing the Cursor target does not edit Codex, and installing Codex does not
 edit Cursor or opencode.
 
 Codex Router is an independent community project. It is not affiliated with or
-endorsed by OpenAI, Anthropic, Moonshot AI, DeepSeek, OpenRouter, or the
-referenced opencodex project.
+endorsed by OpenAI, Anthropic, Moonshot AI, DeepSeek, OpenRouter, opencode, or
+the referenced opencodex project.
 
 ## Give the link to your agent
 
@@ -85,8 +86,14 @@ Linux installations support the Codex CLI and the Cursor target's local gateway.
 | MiniMax M3 (Ollama Cloud) | `ollama-cloud/minimax-m3` | Ollama Cloud API key |
 | DeepSeek V4 Pro (Ollama Cloud) | `ollama-cloud/deepseek-v4-pro` | Ollama Cloud API key |
 | MiniMax M3 | `minimax-token-plan/minimax-m3` | MiniMax Token Plan API key |
+| Qwen3.8 Max (Plan) | `qwen-plan/qwen3.8-max` | Alibaba Model Studio plan API key |
+| Qwen3.8 Max Preview (Plan) | `qwen-plan/qwen3.8-max-preview` | Alibaba Model Studio plan API key |
 | Qwen3.7 Max (Plan) | `qwen-plan/qwen3.7-max` | Alibaba Model Studio plan API key |
 | Qwen3.7 Plus (Plan) | `qwen-plan/qwen3.7-plus` | Alibaba Model Studio plan API key |
+| Qwen3.6 Flash (Plan) | `qwen-plan/qwen3.6-flash` | Alibaba Model Studio plan API key |
+| DeepSeek V4 Pro (Qwen Plan) | `qwen-plan/deepseek-v4-pro` | Alibaba Model Studio plan API key |
+| DeepSeek V4 Flash (Qwen Plan) | `qwen-plan/deepseek-v4-flash-0731` | Alibaba Model Studio plan API key |
+| GLM-5.2 (Qwen Plan) | `qwen-plan/glm-5.2` | Alibaba Model Studio plan API key |
 | GLM-5.2 (Coding Plan) | `zai-coding/glm-5.2` | Z.ai GLM Coding Plan API key |
 | GLM-5-Turbo (Coding Plan) | `zai-coding/glm-5-turbo` | Z.ai GLM Coding Plan API key |
 
@@ -127,6 +134,11 @@ The Ollama Cloud entries bill through an ollama.com account and can host the
 same model families as other providers under a separate quota. Matching entries
 (for example DeepSeek V4 Pro) intentionally coexist with the vendor-direct
 providers because credentials and billing differ.
+The Qwen plan entries cover every chat model the Individual Plan serves,
+including the cross-vendor models it resells (DeepSeek V4 and GLM-5.2) under
+the same plan key and quota. The cross-vendor entries use DashScope's
+compatible-mode request profile because DashScope rejects each vendor's native
+thinking parameters.
 The Qwen entries default to the Alibaba Model Studio Token Plan endpoint in
 the Singapore region. Coding Plan subscribers or other regions can point
 `QWEN_PLAN_BASE_URL` at their dashboard-issued base URL. Plan keys use the
@@ -144,6 +156,48 @@ metadata in protected state (surviving updates, editable in place, and
 removable by re-running the command and deselecting). Curated models are
 local to your machine and are not vetted by the repository's compatibility
 tests.
+
+### opencode Go subscription
+
+opencode Go is opencode's flat-rate subscription that fronts popular open
+coding models at `https://opencode.ai/zen/go/v1`, separate from opencode's
+pay-per-use Zen endpoint. The catalog is split across three provider IDs by
+the protocol each model speaks upstream, and all three read the same stored
+opencode API key (`OPENCODE_API_KEY` or `OPENCODE_GO_API_KEY` in the
+environment). Set the key once, then enable the provider IDs whose models you
+want:
+
+```sh
+./bin/model-router codex provider-key opencode-go set
+./bin/model-router codex providers enable opencode-go
+```
+
+| Picker label | Model ID |
+| --- | --- |
+| Grok 4.5 (opencode Go) | `opencode-go/grok-4.5` |
+| GLM-5.2 (opencode Go) | `opencode-go/glm-5.2` |
+| GLM-5.1 (opencode Go) | `opencode-go/glm-5.1` |
+| Kimi K3 (opencode Go) | `opencode-go/kimi-k3` |
+| Kimi K2.7 Code (opencode Go) | `opencode-go/kimi-k2.7-code` |
+| Kimi K2.6 (opencode Go) | `opencode-go/kimi-k2.6` |
+| DeepSeek V4 Pro (opencode Go) | `opencode-go/deepseek-v4-pro` |
+| DeepSeek V4 Flash (opencode Go) | `opencode-go/deepseek-v4-flash` |
+| MiMo-V2.5 (opencode Go) | `opencode-go/mimo-v2.5` |
+| MiMo-V2.5-Pro (opencode Go) | `opencode-go/mimo-v2.5-pro` |
+| Hy3 (opencode Go) | `opencode-go/hy3` |
+| MiniMax M3 (opencode Go) | `opencode-go-messages/minimax-m3` |
+| MiniMax M2.7 (opencode Go) | `opencode-go-messages/minimax-m2.7` |
+| Qwen3.8 Max (opencode Go) | `opencode-go-messages/qwen3.8-max` |
+| Qwen3.7 Max (opencode Go) | `opencode-go-messages/qwen3.7-max` |
+| Qwen3.7 Plus (opencode Go) | `opencode-go-messages/qwen3.7-plus` |
+| Qwen3.6 Plus (opencode Go) | `opencode-go-messages/qwen3.6-plus` |
+| GPT 5.6 Luna (opencode Go) | `opencode-go-responses/gpt-5.6-luna` |
+
+`opencode-go` carries the Chat Completions models, `opencode-go-messages` the
+Anthropic Messages models, and `opencode-go-responses` the Responses models.
+Entries that duplicate a vendor-direct provider (for example DeepSeek V4 Pro)
+intentionally coexist because the subscription bills separately. Point
+`OPENCODE_GO_BASE_URL` elsewhere to override the endpoint.
 
 ### Catalog-only providers
 
@@ -201,6 +255,7 @@ selection and API-key files:
 ./bin/model-router cursor providers
 ./bin/model-router cursor providers enable deepseek
 ./bin/model-router cursor provider-key deepseek set
+./bin/model-router opencode providers enable kimi-oauth
 ./bin/model-router codex provider-key anthropic-api set
 ```
 
@@ -379,12 +434,15 @@ packaging, and the platform behavior matrix.
 ```sh
 ./bin/model-router codex setup --guided
 ./bin/model-router cursor setup --guided
+./bin/model-router opencode setup --guided
 ./bin/model-router cursor doctor
 ./bin/model-router cursor status
 ./bin/model-router cursor disable
 ./bin/model-router cursor enable
 ./bin/model-router cursor uninstall
 ```
+
+Every command takes `codex`, `cursor`, or `opencode` as its target.
 
 The optional live check makes one small request per selected provider and may
 consume paid quota:
@@ -412,9 +470,9 @@ Updates require a clean `main` checkout and a recognized repository origin.
 The previous revision is retained as a local rollback ref, and a failed install
 restores the previous source revision. If you already ran `git pull` manually,
 run the update command anyway; it applies the pulled revision when the install
-manifest is older. If both targets are installed, run each
-target's `doctor --fix` after an update or rollback so both generated configs
-and services match the shared source revision.
+manifest is older. If multiple targets are installed, run each
+target's `doctor --fix` after an update or rollback so every generated config
+and service matches the shared source revision.
 
 Tagged releases contain `.tar.gz` and `.zip` source archives, SHA-256 checksums,
 and GitHub build-provenance attestations.
@@ -425,23 +483,29 @@ and GitHub build-provenance attestations.
 flowchart LR
   C["Codex Responses :4102"] --> L1["LiteLLM :4100"]
   U["Cursor Chat Completions :4104"] --> L2["LiteLLM :4105"]
+  O["opencode Chat Completions :4120"] --> L3["LiteLLM :4121"]
   L1 --> K1["Kimi OAuth :4101"]
   L1 --> A1["API keys :4103"]
   L2 --> K2["Kimi OAuth :4106"]
   L2 --> A2["API keys :4107"]
+  L3 --> K3["Kimi OAuth :4122"]
+  L3 --> A3["API keys :4123"]
   K1 --> P["External providers"]
   A1 --> P
   K2 --> P
   A2 --> P
+  K3 --> P
+  A3 --> P
 ```
 
-Codex sends the Responses API; Cursor sends OpenAI-compatible Chat Completions.
+Codex sends the Responses API; Cursor and opencode send OpenAI-compatible
+Chat Completions.
 LiteLLM translates either contract to each provider's native protocol,
 including OpenAI-compatible Chat Completions and Anthropic Messages, with
 streaming and tool-call shapes preserved. Every listener binds to `127.0.0.1`.
 
-Both frontends authenticate the caller before reading model traffic. They pass
-only a different random internal key to LiteLLM. The final forwarder discards
+Every frontend authenticates the caller before reading model traffic and
+passes only its own random internal key to LiteLLM. The final forwarder discards
 that key and injects only the selected provider credential. Browser-originated
 requests are rejected, secrets are never exposed by public health routes, and
 network-facing errors are sanitized.
@@ -474,7 +538,7 @@ target. See [Development](docs/DEVELOPMENT.md) for the registry contract.
 
 - [Installation, migration, and upgrades](docs/INSTALL.md)
 - [Cursor target](docs/CURSOR.md)
-- [Compatible apps: T3 Code and opencode](docs/COMPATIBLE-APPS.md)
+- [opencode target and compatible apps](docs/COMPATIBLE-APPS.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Architecture and request flow](docs/HOW-IT-WORKS.md)
 - [Security and credential handling](SECURITY.md)
