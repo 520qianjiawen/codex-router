@@ -1618,3 +1618,76 @@ test("API forwarder isolates Anthropic credentials on the native Messages route"
     await closeServer(upstream.server);
   }
 });
+
+test("router strips empty text parts and drops the messages left with nothing", async () => {
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayRequests.push(await bodyJson(request));
+    json(response, 200, { route: "external" });
+  });
+  const native = await mockServer(async (_request, response) => {
+    json(response, 200, { id: "unused", output: [] });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CHATGPT_SESSION_TOKEN",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "kimi-oauth/k3",
+        stream: false,
+        input: [
+          // Codex emits these filler assistant turns around tool calls.
+          { type: "message", role: "assistant", content: [{ type: "output_text", text: "   " }] },
+          {
+            type: "message",
+            role: "user",
+            content: [
+              { type: "input_text", text: "" },
+              { type: "input_text", text: "real question" },
+            ],
+          },
+          { type: "function_call", name: "shell", arguments: "{}" },
+        ],
+      }),
+    });
+
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(gatewayRequests.length, 1);
+    const forwarded = gatewayRequests[0].input;
+
+    // The whitespace-only assistant message carries nothing once stripped.
+    assert.equal(forwarded.length, 2);
+    assert.ok(!forwarded.some((item) => item.role === "assistant"));
+
+    // A message keeps its real text and loses only the empty part.
+    const user = forwarded.find((item) => item.role === "user");
+    assert.deepEqual(user.content, [{ type: "input_text", text: "real question" }]);
+
+    // Non-message items are never touched.
+    assert.equal(forwarded.at(-1).type, "function_call");
+
+    // Nothing empty survives anywhere.
+    for (const item of forwarded) {
+      if (!Array.isArray(item.content)) continue;
+      for (const part of item.content) {
+        if (typeof part?.text === "string") assert.notEqual(part.text.trim(), "");
+      }
+    }
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    await closeServer(native.server);
+  }
+});
