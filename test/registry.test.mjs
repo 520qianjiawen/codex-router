@@ -46,6 +46,16 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "opencode-go/kimi-k2.6",
       "opencode-go/deepseek-v4-pro",
       "opencode-go/deepseek-v4-flash",
+      "opencode-go/mimo-v2.5",
+      "opencode-go/mimo-v2.5-pro",
+      "opencode-go-messages/minimax-m3",
+      "opencode-go-messages/minimax-m2.7",
+      "opencode-go-messages/qwen3.8-max",
+      "opencode-go-messages/qwen3.7-max",
+      "opencode-go-messages/qwen3.7-plus",
+      "opencode-go-messages/qwen3.6-plus",
+      "opencode-go/hy3",
+      "opencode-go-responses/gpt-5.6-luna",
     ],
   );
   assert.equal(PROVIDERS.get("deepseek").baseUrl, "https://api.deepseek.com");
@@ -61,6 +71,10 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(PROVIDERS.get("minimax-token-plan").baseUrl, "https://api.minimax.io/v1");
   // Go is its own endpoint, not the pay-per-use Zen one.
   assert.equal(PROVIDERS.get("opencode-go").baseUrl, "https://opencode.ai/zen/go/v1");
+  assert.equal(PROVIDERS.get("opencode-go-messages").baseUrl, "https://opencode.ai/zen/go/v1");
+  assert.equal(PROVIDERS.get("opencode-go-responses").baseUrl, "https://opencode.ai/zen/go/v1");
+  assert.equal(PROVIDERS.get("opencode-go-messages").protocol, "anthropic");
+  assert.equal(PROVIDERS.get("opencode-go-responses").protocol, "openai-responses");
   assert.equal(PROVIDERS.get("grok-api").baseUrl, "https://api.x.ai/v1");
   assert.equal(PROVIDERS.get("grok-oauth").proxyBaseEnv, "GROK_OAUTH_FORWARD_BASE_URL");
   // Qwen OAuth was discontinued upstream on 2026-04-15, so the plan key is the
@@ -95,6 +109,10 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(minimax.contextWindow, 1_000_000);
   assert.equal(minimax.autoCompact, 900_000);
   assert.deepEqual(minimax.inputModalities, ["text", "image"]);
+  assert.equal(
+    MODEL_BY_SLUG.get("opencode-go-responses/gpt-5.6-luna").contextWindow,
+    272_000,
+  );
   assert.deepEqual(
     MODEL_BY_SLUG.get("anthropic-api/claude-opus-4.8").reasoningLevels,
     [{ effort: "high", description: "Adaptive deep reasoning for agentic work" }],
@@ -136,5 +154,15 @@ test("LiteLLM configuration is generated from every registry route", () => {
   assert.match(rendered, /os\.environ\/GROK_OAUTH_FORWARD_BASE_URL/);
   assert.match(rendered, /os\.environ\/CODEX_ROUTER_INTERNAL_KEY/);
   assert.match(rendered, /model: "anthropic\/anthropic-api-claude-opus-4-8"/);
+  assert.match(
+    rendered,
+    /model: "openai\/responses\/opencode-go-responses-gpt-5-6-luna"/,
+  );
+  assert.match(rendered, /model: "anthropic\/opencode-go-messages-minimax-m3"/);
+  const lunaBlock = rendered.slice(
+    rendered.indexOf('model_name: "opencode-go-responses-gpt-5-6-luna"'),
+    rendered.indexOf('model_name:', rendered.indexOf('model_name: "opencode-go-responses-gpt-5-6-luna"') + 1),
+  );
+  assert.doesNotMatch(lunaBlock, /use_chat_completions_api/);
   assert.doesNotMatch(rendered, /ANTHROPIC_API_KEY|DEEPSEEK_API_KEY|KIMI_API_KEY/);
 });

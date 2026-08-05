@@ -1619,6 +1619,141 @@ test("API forwarder isolates Anthropic credentials on the native Messages route"
   }
 });
 
+test("API forwarder routes opencode Go chat, Messages, and Responses surfaces", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({
+      url: request.url,
+      headers: request.headers,
+      body: await bodyJson(request),
+    });
+    if (request.url.endsWith("/messages")) {
+      json(response, 200, {
+        id: "msg_opencode_go",
+        type: "message",
+        role: "assistant",
+        model: "minimax-m3",
+        content: [{ type: "text", text: "MESSAGES_OK" }],
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 2, output_tokens: 2 },
+      });
+      return;
+    }
+    if (request.url.endsWith("/responses")) {
+      json(response, 200, {
+        id: "resp_opencode_go",
+        object: "response",
+        created_at: 1,
+        status: "completed",
+        model: "gpt-5.6-luna",
+        output: [],
+        usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 },
+      });
+      return;
+    }
+    json(response, 200, {
+      id: "chatcmpl_opencode_go",
+      object: "chat.completion",
+      model: "mimo-v2.5",
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: "CHAT_OK" },
+          finish_reason: "stop",
+        },
+      ],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    OPENCODE_GO_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    OPENCODE_GO_API_KEY: "TEST_OPENCODE_GO_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+
+    const chat = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "opencode-go-mimo-v2-5",
+          messages: [{ role: "user", content: "test" }],
+        }),
+      },
+    );
+    assert.equal(chat.status, 200);
+    assert.equal(upstreamRequests[0].url, "/v1/chat/completions");
+    assert.equal(upstreamRequests[0].body.model, "mimo-v2.5");
+    assert.equal(
+      upstreamRequests[0].headers.authorization,
+      "Bearer TEST_OPENCODE_GO_API_KEY",
+    );
+
+    const messages = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/messages`,
+      {
+        method: "POST",
+        headers: {
+          "x-api-key": INTERNAL_KEY,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "opencode-go-messages-minimax-m3",
+          max_tokens: 64,
+          messages: [{ role: "user", content: "test" }],
+        }),
+      },
+    );
+    assert.equal(messages.status, 200);
+    assert.equal(upstreamRequests[1].url, "/v1/messages");
+    assert.equal(upstreamRequests[1].body.model, "minimax-m3");
+    assert.equal(
+      upstreamRequests[1].headers["x-api-key"],
+      "TEST_OPENCODE_GO_API_KEY",
+    );
+    assert.equal(upstreamRequests[1].headers.authorization, undefined);
+
+    const responses = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/responses`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "responses/opencode-go-responses-gpt-5-6-luna",
+          input: "test",
+          stream: false,
+        }),
+      },
+    );
+    assert.equal(responses.status, 200);
+    assert.equal(upstreamRequests[2].url, "/v1/responses");
+    assert.equal(upstreamRequests[2].body.model, "gpt-5.6-luna");
+    assert.equal(
+      upstreamRequests[2].headers.authorization,
+      "Bearer TEST_OPENCODE_GO_API_KEY",
+    );
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
 test("router strips empty text parts and drops the messages left with nothing", async () => {
   const gatewayRequests = [];
   const gateway = await mockServer(async (request, response) => {

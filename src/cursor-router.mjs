@@ -13,6 +13,7 @@ import {
   CALLER_SECRET_PATH,
   INTERNAL_SECRET_PATH,
   PORTS,
+  TARGET,
   loopback,
 } from "./paths.mjs";
 import {
@@ -44,6 +45,8 @@ const GATEWAY_HEALTH =
   process.env.MODEL_ROUTER_GATEWAY_HEALTH_URL ||
   loopback(PORTS.gateway, "/health/liveliness");
 const QUIET = process.env.MODEL_ROUTER_QUIET === "1";
+const ROUTER_LABEL = TARGET === "opencode" ? "opencode" : "Cursor";
+const SERVICE_NAME = TARGET === "opencode" ? "opencode-router" : "cursor-router";
 
 function requiredSecret(target, label) {
   try {
@@ -81,7 +84,7 @@ function requireCallerAuth(request, response) {
   openAiError(
     response,
     401,
-    "The local Cursor router requires its configured caller key.",
+    `The local ${ROUTER_LABEL} router requires its configured caller key.`,
     "authentication_error",
   );
   return false;
@@ -200,7 +203,7 @@ async function healthPayload() {
   ]);
   return {
     ok: oauth.reachable && api.reachable && gateway.reachable,
-    service: "cursor-router",
+    service: SERVICE_NAME,
     version: VERSION,
     router: "ready",
     oauth,
@@ -229,7 +232,7 @@ async function handleChatCompletions(request, response) {
     openAiError(
       response,
       400,
-      "The requested model is not registered with the local Cursor router.",
+      `The requested model is not registered with the local ${ROUTER_LABEL} router.`,
       "model_not_found",
     );
     return;
@@ -238,7 +241,7 @@ async function handleChatCompletions(request, response) {
     openAiError(
       response,
       409,
-      `Provider ${route.model.provider} is not enabled for the Cursor target.`,
+      `Provider ${route.model.provider} is not enabled for the ${ROUTER_LABEL} target.`,
       "provider_not_enabled",
     );
     return;
@@ -266,6 +269,70 @@ async function handleChatCompletions(request, response) {
     signal: controller.signal,
   });
   // OpenAI-to-OpenAI: stream and non-stream responses pipe through unchanged.
+  await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS);
+  if (!QUIET) {
+    console.error(
+      `[cursor-router] model=${route.model.gatewayModel} provider=${route.model.provider} status=${upstream.status}`,
+    );
+  }
+}
+
+async function handleGatewayProxy(request, response, routePath) {
+  if (!requireDesktopTransport(request, response)) return;
+  const raw = await readRequestBody(request);
+  const payload = parsePayload(raw);
+  const requestedModel = typeof payload.model === "string" ? payload.model : "";
+  const route = enabledRoute(requestedModel);
+  if (route.error === "unknown") {
+    openAiError(
+      response,
+      400,
+      `The requested model is not registered with the local ${ROUTER_LABEL} router.`,
+      "model_not_found",
+    );
+    return;
+  }
+  if (route.error === "disabled") {
+    openAiError(
+      response,
+      409,
+      `Provider ${route.model.provider} is not enabled for the ${ROUTER_LABEL} target.`,
+      "provider_not_enabled",
+    );
+    return;
+  }
+  const protocol = providerForModel(route.model).protocol;
+  const expected =
+    routePath === "/messages" ? "anthropic" : "openai-responses";
+  if (protocol !== expected) {
+    openAiError(
+      response,
+      400,
+      `Model ${route.model.gatewayModel} does not support ${routePath}.`,
+      "invalid_request_error",
+    );
+    return;
+  }
+
+  const body =
+    payload.model === route.model.gatewayModel
+      ? raw
+      : Buffer.from(
+          JSON.stringify({ ...payload, model: route.model.gatewayModel }),
+          "utf8",
+        );
+
+  const controller = new AbortController();
+  request.once("aborted", () => controller.abort());
+  response.once("close", () => {
+    if (!response.writableEnded) controller.abort();
+  });
+  const upstream = await fetch(`${GATEWAY_BASE}${routePath}`, {
+    method: "POST",
+    headers: gatewayHeaders(request),
+    body,
+    signal: controller.signal,
+  });
   await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS);
   if (!QUIET) {
     console.error(
@@ -304,7 +371,20 @@ async function handleRequest(request, response) {
     await handleChatCompletions(request, response);
     return;
   }
-  openAiError(response, 404, "Unsupported Cursor router route.", "not_found_error");
+  if (request.method === "POST" && route === "/messages") {
+    await handleGatewayProxy(request, response, "/messages");
+    return;
+  }
+  if (request.method === "POST" && route === "/responses") {
+    await handleGatewayProxy(request, response, "/responses");
+    return;
+  }
+  openAiError(
+    response,
+    404,
+    `Unsupported ${ROUTER_LABEL} router route.`,
+    "not_found_error",
+  );
 }
 
 const server = http.createServer((request, response) => {

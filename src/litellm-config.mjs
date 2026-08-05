@@ -23,13 +23,16 @@ export function renderLiteLlmConfig() {
     const translatedModel =
       provider.kind === "oauth" ? model.upstreamModel : model.gatewayModel;
     const protocol = provider.protocol === "anthropic" ? "anthropic" : "openai";
+    const responsesSurface = provider.protocol === "openai-responses";
     lines.push(
       `  - model_name: ${yamlString(model.gatewayModel)}`,
       "    litellm_params:",
-      `      model: ${yamlString(`${protocol}/${translatedModel}`)}`,
+      `      model: ${yamlString(
+        `${protocol}/${responsesSurface ? "responses/" : ""}${translatedModel}`,
+      )}`,
       `      api_base: ${yamlString(`os.environ/${apiBaseEnv}`)}`,
       '      api_key: "os.environ/CODEX_ROUTER_INTERNAL_KEY"',
-      "      use_chat_completions_api: true",
+      ...(responsesSurface ? [] : ["      use_chat_completions_api: true"]),
       "",
     );
   }

@@ -289,3 +289,109 @@ test("Cursor router rejects disabled and unknown models before reaching the gate
     rmSync(testRoot, { recursive: true, force: true });
   }
 });
+
+test("Cursor router proxies Messages and Responses surfaces with protocol checks", async () => {
+  const requests = [];
+  const gateway = await mockServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/health") {
+      json(response, 200, { ok: true });
+      return;
+    }
+    const body = await bodyJson(request);
+    requests.push({ url: request.url, headers: request.headers, body });
+    if (request.url.endsWith("/messages")) {
+      json(response, 200, {
+        id: "msg_opencode_go",
+        type: "message",
+        role: "assistant",
+        model: body.model,
+        content: [{ type: "text", text: "ok" }],
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+      return;
+    }
+    if (request.url.endsWith("/responses")) {
+      json(response, 200, {
+        id: "resp_opencode_go",
+        object: "response",
+        created_at: 1,
+        status: "completed",
+        model: body.model,
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+      return;
+    }
+    json(response, 200, { choices: [] });
+  });
+  const routerPort = await openPort();
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "cursor-router-surfaces-"));
+  const stateDir = path.join(testRoot, "state");
+  writeSelection(stateDir, ["opencode-go", "opencode-go-messages", "opencode-go-responses"]);
+  const router = runRouter(routerPort, gateway.port, stateDir);
+  const headers = {
+    Authorization: `Bearer ${CALLER_KEY}`,
+    "Content-Type": "application/json",
+  };
+
+  try {
+    await waitFor(`http://127.0.0.1:${routerPort}/health`, router);
+
+    const messages = await fetch(
+      `http://127.0.0.1:${routerPort}/v1/messages`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: "opencode-go-messages-minimax-m3",
+          max_tokens: 64,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      },
+    );
+    assert.equal(messages.status, 200);
+    assert.equal(requests[0].url, "/v1/messages");
+    assert.equal(requests[0].body.model, "opencode-go-messages-minimax-m3");
+    assert.equal(requests[0].headers.authorization, `Bearer ${INTERNAL_KEY}`);
+
+    const responses = await fetch(
+      `http://127.0.0.1:${routerPort}/v1/responses`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: "opencode-go-responses/gpt-5.6-luna",
+          input: "hi",
+          stream: false,
+        }),
+      },
+    );
+    assert.equal(responses.status, 200);
+    assert.equal(requests[1].url, "/v1/responses");
+    assert.equal(requests[1].body.model, "opencode-go-responses-gpt-5-6-luna");
+    assert.equal(requests[1].headers.authorization, `Bearer ${INTERNAL_KEY}`);
+
+    const beforeWrongSurface = requests.length;
+    const wrongSurface = await fetch(
+      `http://127.0.0.1:${routerPort}/v1/messages`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: "opencode-go-mimo-v2-5",
+          max_tokens: 64,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      },
+    );
+    assert.equal(wrongSurface.status, 400);
+    assert.equal((await wrongSurface.json()).error.type, "invalid_request_error");
+    assert.equal(requests.length, beforeWrongSurface);
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});

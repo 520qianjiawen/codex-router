@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { safeIdentifier } from "./codex-agent-catalog.mjs";
 import { protectPrivateFile } from "./file-security.mjs";
+import { providerForModel } from "./model-registry.mjs";
 import {
   CALLER_SECRET_PATH,
   OPENCODE_CONFIG_PATH,
@@ -16,14 +17,33 @@ import { selectedListedModels } from "./provider-selection.mjs";
 
 // Unlike Cursor, opencode keeps its settings in a plain JSON file that is
 // explicitly designed to be merged rather than replaced. So this manager does
-// edit it — but it owns exactly one provider key, provider["codex-router"],
-// plus the subagent entries it generated for that provider. Every other key in
-// the file is read back and written out untouched. A user who hand-edits their
-// opencode.json must never lose that work to an enable or disable run.
+// edit it, but it owns exactly the provider keys it generates
+// (provider["codex-router"] plus Messages/Responses variants), along with the
+// subagent entries for those providers. Every other key in the file is read
+// back and written out untouched. A user who hand-edits their opencode.json
+// must never lose that work to an enable or disable run.
 
 const STATE_VERSION = 2;
 const SCHEMA_URL = "https://opencode.ai/config.json";
 const BACKUP_PATH = `${OPENCODE_CONFIG_PATH}.pre-codex-router`;
+
+const SURFACES = Object.freeze([
+  {
+    providerId: OPENCODE_PROVIDER_ID,
+    npm: "@ai-sdk/openai-compatible",
+    protocol: undefined,
+  },
+  {
+    providerId: `${OPENCODE_PROVIDER_ID}-messages`,
+    npm: "@ai-sdk/anthropic",
+    protocol: "anthropic",
+  },
+  {
+    providerId: `${OPENCODE_PROVIDER_ID}-responses`,
+    npm: "@ai-sdk/openai",
+    protocol: "openai-responses",
+  },
+]);
 
 const command = process.argv[2] || "status";
 const allowedCommands = new Set(["enable", "disable", "status"]);
@@ -117,35 +137,53 @@ function callerKey() {
   return key;
 }
 
-function providerBlock() {
-  const models = {};
-  for (const model of selectedListedModels()) {
-    models[model.gatewayModel] = { name: model.displayName || model.gatewayModel };
+function surfaceForModel(model) {
+  const protocol = providerForModel(model).protocol;
+  return SURFACES.find((surface) => surface.protocol === protocol) || SURFACES[0];
+}
+
+function providerBlock(models) {
+  const entries = {};
+  for (const model of models) {
+    entries[model.gatewayModel] = { name: model.displayName || model.gatewayModel };
   }
   return {
-    npm: "@ai-sdk/openai-compatible",
+    npm: surfaceForModel(models[0]).npm,
     name: "Codex Router (local)",
     options: {
       baseURL: loopback(PORTS.router, "/v1"),
       apiKey: callerKey(),
     },
-    models,
+    models: entries,
   };
+}
+
+function providerSurfaces() {
+  const selected = selectedListedModels();
+  return SURFACES.map((surface) => ({
+    surface,
+    models: selected.filter((model) => surfaceForModel(model) === surface),
+  })).filter(({ models }) => models.length > 0);
 }
 
 // One opencode subagent per selected model. The name is derived from the
 // registry slug (provider/model) so different providers with the same model
 // name, such as deepseek/deepseek-v4-pro and qwen-plan/deepseek-v4-pro, never
 // collide.
-function subagentDefinitions() {
+function subagentDefinitions(surfaces = providerSurfaces()) {
+  const providerByModel = new Map();
+  for (const { surface, models } of surfaces) {
+    for (const model of models) providerByModel.set(model, surface);
+  }
   return selectedListedModels().map((model) => {
     const key = safeIdentifier(model.slug, "-");
     const displayName = model.displayName || model.gatewayModel;
+    const surface = providerByModel.get(model) || SURFACES[0];
     return {
       key,
       definition: {
         mode: "subagent",
-        model: `${OPENCODE_PROVIDER_ID}/${model.gatewayModel}`,
+        model: `${surface.providerId}/${model.gatewayModel}`,
         description: `${displayName} subagent routed through an authenticated Codex Router provider.`,
       },
     };
@@ -160,12 +198,15 @@ function enable() {
     config.provider && typeof config.provider === "object" && !Array.isArray(config.provider)
       ? config.provider
       : {};
-  provider[OPENCODE_PROVIDER_ID] = providerBlock();
+  const surfaces = providerSurfaces();
+  for (const { surface, models } of surfaces) {
+    provider[surface.providerId] = providerBlock(models);
+  }
   config.provider = provider;
 
   const previous = readState();
   const previousAgentKeys = new Set(previous.agentKeys || []);
-  const definitions = subagentDefinitions();
+  const definitions = subagentDefinitions(surfaces);
   const agentKeys = definitions.map(({ key }) => key);
   const agent =
     config.agent && typeof config.agent === "object" && !Array.isArray(config.agent)
@@ -189,7 +230,7 @@ function disable() {
   const config = readOpencodeConfig();
   const provider = config.provider;
   if (provider && typeof provider === "object" && !Array.isArray(provider)) {
-    delete provider[OPENCODE_PROVIDER_ID];
+    for (const { providerId } of SURFACES) delete provider[providerId];
     // Leave no empty scaffolding behind that the user did not ask for.
     if (Object.keys(provider).length === 0) delete config.provider;
   }
@@ -217,7 +258,12 @@ function statusPayload(state) {
     enabled: state.enabled,
     configPath: OPENCODE_CONFIG_PATH,
     providerId: OPENCODE_PROVIDER_ID,
-    providerPresent: Boolean(config.provider?.[OPENCODE_PROVIDER_ID]),
+    providerPresent: SURFACES.some(
+      ({ providerId }) => Boolean(config.provider?.[providerId]),
+    ),
+    providers: SURFACES.map(({ providerId }) => providerId).filter((providerId) =>
+      Boolean(config.provider?.[providerId]),
+    ),
     baseUrl: loopback(PORTS.router, "/v1"),
     models: selectedListedModels().map((model) => model.gatewayModel),
     subagents: subagentDefinitions().map(({ key, definition }) => ({

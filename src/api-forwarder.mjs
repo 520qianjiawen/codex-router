@@ -118,14 +118,24 @@ function normalizeBody(buffer, contentType, route) {
     error.status = 400;
     throw error;
   }
-  const model = MODEL_BY_GATEWAY_ID.get(payload.model);
+  const requestedModel = String(payload.model || "");
+  // LiteLLM's Responses bridge prefixes the gateway id with `responses/` on
+  // the upstream wire format; the forwarder still owns the id translation.
+  const model =
+    MODEL_BY_GATEWAY_ID.get(requestedModel.replace(/^responses\//, "")) ||
+    MODEL_BY_GATEWAY_ID.get(requestedModel);
   const provider = model && providerForModel(model);
   if (!model || provider?.kind !== "openai-compatible") {
     const error = new Error(`Unknown API gateway model: ${String(payload.model || "missing")}`);
     error.status = 400;
     throw error;
   }
-  const expectedRoute = provider.protocol === "anthropic" ? "/messages" : "/chat/completions";
+  const expectedRoute =
+    provider.protocol === "anthropic"
+      ? "/messages"
+      : provider.protocol === "openai-responses"
+        ? "/responses"
+        : "/chat/completions";
   if (route !== expectedRoute) {
     const error = new Error(`Model ${model.gatewayModel} does not support ${route}.`);
     error.status = 400;
@@ -265,7 +275,10 @@ async function handleRequest(request, response) {
     localModels(response);
     return;
   }
-  if (request.method !== "POST" || !["/chat/completions", "/messages"].includes(route)) {
+  if (
+    request.method !== "POST" ||
+    !["/chat/completions", "/messages", "/responses"].includes(route)
+  ) {
     writeJson(response, 404, {
       error: { type: "proxy_route_not_found", message: "Unsupported API-provider route." },
     });

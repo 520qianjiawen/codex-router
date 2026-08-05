@@ -127,6 +127,74 @@ test("opencode config manager drops an empty provider map it created", () => {
   }
 });
 
+test("opencode config manager splits chat, Messages, and Responses surfaces into their own providers", () => {
+  const { stateDir, configPath } = fixture("surfaces");
+  try {
+    writeFileSync(
+      path.join(stateDir, "enabled-providers.json"),
+      `${JSON.stringify({
+        version: 1,
+        providers: ["deepseek", "opencode-go-messages", "opencode-go-responses"],
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    const enabled = run("enable", stateDir, configPath);
+    assert.equal(enabled.enabled, true);
+
+    const written = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.equal(
+      written.provider["codex-router"].npm,
+      "@ai-sdk/openai-compatible",
+    );
+    assert.ok(written.provider["codex-router"].models["deepseek-v4-pro"]);
+    assert.equal(
+      written.provider["codex-router-messages"].npm,
+      "@ai-sdk/anthropic",
+    );
+    assert.ok(
+      written.provider["codex-router-messages"].models[
+        "opencode-go-messages-minimax-m3"
+      ],
+    );
+    assert.ok(
+      written.provider["codex-router-messages"].models[
+        "opencode-go-messages-qwen3-6-plus"
+      ],
+    );
+    assert.equal(
+      written.provider["codex-router-responses"].npm,
+      "@ai-sdk/openai",
+    );
+    assert.deepEqual(
+      written.provider["codex-router-responses"].models,
+      {
+        "opencode-go-responses-gpt-5-6-luna": {
+          name: "GPT 5.6 Luna (opencode Go)",
+        },
+      },
+    );
+    assert.equal(
+      written.agent["opencode-go-messages-minimax-m3"].model,
+      "codex-router-messages/opencode-go-messages-minimax-m3",
+    );
+    assert.equal(
+      written.agent["opencode-go-responses-gpt-5-6-luna"].model,
+      "codex-router-responses/opencode-go-responses-gpt-5-6-luna",
+    );
+
+    run("disable", stateDir, configPath);
+    const after = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.equal(after.provider?.["codex-router"], undefined);
+    assert.equal(after.provider?.["codex-router-messages"], undefined);
+    assert.equal(after.provider?.["codex-router-responses"], undefined);
+    assert.equal(after.agent?.["opencode-go-messages-minimax-m3"], undefined);
+    assert.equal(after.agent?.["opencode-go-responses-gpt-5-6-luna"], undefined);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 test("opencode config manager prunes subagents that are no longer selected", () => {
   const { stateDir, configPath } = fixture("prune");
   try {
