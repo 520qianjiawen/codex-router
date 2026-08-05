@@ -397,7 +397,10 @@ On macOS, build and open the native menu-bar control panel with:
 
 It shows Codex health, detailed usage for the active provider, a seven-day
 overview of every configured or previously used provider, and auto-applied
-provider controls in a native glass macOS interface. See the
+provider controls in a native glass macOS interface. On first launch the app
+registers itself as a login item, so it reopens automatically after a reboot;
+the Settings tab's **Start at login** toggle or System Settings › Login Items
+turns that off, and the choice is never re-applied behind your back. See the
 [macOS tray guide](docs/MACOS-TRAY.md) for behavior and rebuild notes.
 
 The app also places a Dynamic-Island-style overlay at the top center of the

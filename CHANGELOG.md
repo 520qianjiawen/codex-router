@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The macOS tray registers itself as a login item on its first launch, so it
+  reopens automatically after a reboot instead of requiring a manual
+  `./bin/model-router-tray`. A **Start at login** toggle in the Settings tab
+  (backed by `SMAppService`, also visible in System Settings › Login Items)
+  controls it, and the automatic registration happens only once — disabling
+  the item is never overridden.
+
 - The opencode target now generates one subagent per selected model in
   opencode's config, and refreshes those entries when providers are enabled,
   disabled, or given new keys. `setup`, `doctor`, `status`, `enable`, `disable`,

@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import ServiceManagement
 import SwiftUI
 
 let routerAccent = Color(red: 0.36, green: 0.66, blue: 0.91)
@@ -68,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self?.islandController?.setVisible(mode == .notch)
         self?.desktopPanelController?.setVisible(mode == .desktop)
       }
+    store.bootstrapLaunchAtLogin()
     Task { await store.startPolling() }
     Task { await store.startActivityPolling() }
     Task { await store.startAccountUsagePolling() }
@@ -96,6 +98,7 @@ final class RouterStore: ObservableObject {
   @Published private(set) var maintenanceMessage: String?
   @Published private(set) var maintenanceSucceeded = false
   @Published private(set) var islandMode: IslandMode
+  @Published private(set) var launchAtLogin = false
 
   private var polling = false
   private var activityPolling = false
@@ -104,6 +107,7 @@ final class RouterStore: ObservableObject {
   private let defaults = UserDefaults.standard
   private let islandVisibilityKey = "ModelRouterTray.islandVisible"
   private let islandModeKey = "ModelRouterTray.islandMode"
+  private let loginItemAutoRegisteredKey = "ModelRouterTray.loginItemAutoRegistered"
   private var accountUsageResolved = false
   private var hasResolvedInitialUsageProvider = false
   private var hasObservedActiveProvider = false
@@ -173,6 +177,50 @@ final class RouterStore: ObservableObject {
 
   var maintenanceRunning: Bool {
     providerOperation == "maintenance"
+  }
+
+  // SMAppService needs a real bundle identity; a bare `swift run` binary has
+  // none, so the login-item surface disappears in that mode instead of
+  // registering a broken item.
+  var launchAtLoginAvailable: Bool {
+    Bundle.main.bundleIdentifier != nil
+  }
+
+  func bootstrapLaunchAtLogin() {
+    guard launchAtLoginAvailable else { return }
+    let service = SMAppService.mainApp
+    launchAtLogin = service.status == .enabled
+    // Register once on first launch so the tray survives reboots without a
+    // manual relaunch. The stored flag makes this a one-time default: if the
+    // user later disables the item here or in System Settings, we never
+    // re-add it behind their back.
+    guard !defaults.bool(forKey: loginItemAutoRegisteredKey) else { return }
+    defaults.set(true, forKey: loginItemAutoRegisteredKey)
+    guard service.status == .notRegistered || service.status == .notFound else { return }
+    do {
+      try service.register()
+      launchAtLogin = service.status == .enabled
+    } catch {
+      // Best-effort at launch; the Settings toggle surfaces errors on demand.
+    }
+  }
+
+  func setLaunchAtLogin(_ enabled: Bool) {
+    guard launchAtLoginAvailable else { return }
+    let service = SMAppService.mainApp
+    do {
+      if enabled {
+        try service.register()
+      } else {
+        try service.unregister()
+      }
+    } catch {
+      message = "Login item: \(error.localizedDescription)"
+    }
+    launchAtLogin = service.status == .enabled
+    if service.status == .requiresApproval {
+      message = "Approve Model Router under System Settings › General › Login Items"
+    }
   }
 
   private static let providerShortNames: [String: String] = [
@@ -1600,6 +1648,18 @@ private struct TrayView: View {
       .frame(width: 168)
     }
     .padding(.vertical, 2)
+    if store.launchAtLoginAvailable {
+      settingRow(
+        title: "Start at login",
+        detail: store.launchAtLogin
+          ? "Opens automatically after you sign in"
+          : "Relaunch the tray manually after login",
+        isOn: Binding(
+          get: { store.launchAtLogin },
+          set: { store.setLaunchAtLogin($0) }
+        )
+      )
+    }
     settingRow(
       title: "Use without OpenAI login",
       detail: store.loginFree

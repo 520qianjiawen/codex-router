@@ -12,6 +12,22 @@ The tray currently focuses on Codex. Cursor does not appear in this interface,
 and the app does not disable, uninstall, or change its existing router
 configuration.
 
+## Start at login
+
+The first time the tray runs from its app bundle, it registers itself as a
+macOS login item so it reopens automatically after a reboot — no more manual
+`./bin/model-router-tray` after every sign-in. macOS shows its standard
+"added a login item" notice, and the Settings tab gains a **Start at login**
+toggle backed by `SMAppService`, so the item is also visible and removable
+under System Settings › General › Login Items. The automatic registration
+happens only once: if you turn the item off in either place, the tray never
+re-adds it. The login item points at the built bundle (`dist/Model
+Router.app` by default), so rerun `./bin/model-router-tray` after an update
+to rebuild the binary the login item launches. Running the bare executable
+via `swift run` provides no bundle identity, so the toggle is hidden there.
+The router's background service is a separate launchd agent and keeps running
+regardless of this setting.
+
 ## Provider usage
 
 The tray's **All usage** grid shows only connected accounts: ChatGPT when native
