@@ -1190,7 +1190,7 @@ struct RouterProviderUsage: Decodable, Identifiable, Equatable {
   let models: [RouterModelUsage]?
 }
 
-struct RouterModelUsage: Decodable, Identifiable {
+struct RouterModelUsage: Decodable, Identifiable, Equatable {
   let slug: String
   let displayName: String
   let requests: Int
