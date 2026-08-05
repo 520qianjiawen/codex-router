@@ -362,6 +362,33 @@ function normalizeRoutedInput(input) {
           ? `${SUMMARY_PREFIX}\n\n${summary}`
           : "[Earlier conversation history was compacted in an unreadable format.]",
       );
+    })
+    .map((item) => {
+      // LiteLLM rejects messages whose text content is empty; Codex emits
+      // such filler assistant messages around tool calls. Strip empty text
+      // parts, and drop messages that carry nothing at all.
+      if (item?.type !== "message" || !Array.isArray(item.content)) return item;
+      const content = item.content.filter((part) => {
+        if (!part || typeof part !== "object") return true;
+        if (
+          (part.type === "input_text" ||
+            part.type === "output_text" ||
+            part.type === "text") &&
+          typeof part.text === "string" &&
+          part.text.trim() === ""
+        ) {
+          return false;
+        }
+        return true;
+      });
+      return { ...item, content };
+    })
+    .filter((item) => {
+      if (item?.type !== "message") return true;
+      if (Array.isArray(item.tool_calls) && item.tool_calls.length > 0) return true;
+      if (typeof item.content === "string") return item.content.trim() !== "";
+      if (Array.isArray(item.content)) return item.content.length > 0;
+      return true;
     });
 }
 
