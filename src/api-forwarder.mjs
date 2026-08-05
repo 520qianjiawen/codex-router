@@ -106,6 +106,74 @@ function coalesceAssistantMessages(messages) {
   return coalesced;
 }
 
+// Strict chat-completions providers (Console Go / MiniMax / similar) reject any
+// assistant tool_calls message whose matching tool results are incomplete or
+// separated by non-tool traffic. LiteLLM's Responses->chat translation and
+// Codex remote compact can emit orphan tool_calls after interrupted tool runs
+// or partial history. Insert synthetic tool results for missing call ids so
+// the request stays well-formed. Prefer a short machine-readable stub over
+// dropping history, which would erase useful prior context.
+const SYNTHETIC_TOOL_RESULT =
+  "[tool result unavailable: prior tool execution was interrupted or omitted from history]";
+
+function toolCallIds(message) {
+  if (!Array.isArray(message?.tool_calls)) return [];
+  return message.tool_calls
+    .map((call) => (typeof call?.id === "string" ? call.id : ""))
+    .filter(Boolean);
+}
+
+function ensureToolResultsForCalls(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+  const repaired = [];
+  let index = 0;
+  while (index < messages.length) {
+    const message = messages[index];
+    // Tool rows are only valid immediately after their assistant tool_calls.
+    // Anything else (orphans after compaction, duplicates after intervening
+    // turns) is dropped so strict providers do not reject the whole request.
+    if (message?.role === "tool") {
+      index += 1;
+      continue;
+    }
+
+    repaired.push(message);
+    const callIds = toolCallIds(message);
+    if (message?.role !== "assistant" || callIds.length === 0) {
+      index += 1;
+      continue;
+    }
+
+    index += 1;
+    const toolsById = new Map();
+    while (index < messages.length && messages[index]?.role === "tool") {
+      const toolMessage = messages[index];
+      const toolCallId =
+        typeof toolMessage?.tool_call_id === "string" ? toolMessage.tool_call_id : "";
+      if (toolCallId && callIds.includes(toolCallId) && !toolsById.has(toolCallId)) {
+        toolsById.set(toolCallId, toolMessage);
+      }
+      index += 1;
+    }
+
+    for (const callId of callIds) {
+      repaired.push(
+        toolsById.get(callId) || {
+          role: "tool",
+          tool_call_id: callId,
+          content: SYNTHETIC_TOOL_RESULT,
+        },
+      );
+    }
+  }
+  return repaired;
+}
+
+function sanitizeChatToolHistory(messages) {
+  if (!Array.isArray(messages)) return messages;
+  return ensureToolResultsForCalls(coalesceAssistantMessages(messages));
+}
+
 function normalizeBody(buffer, contentType, route) {
   if (!buffer.length || !String(contentType || "").includes("application/json")) {
     const error = new Error("API-provider requests require a JSON body.");
@@ -144,7 +212,7 @@ function normalizeBody(buffer, contentType, route) {
 
   payload.model = model.upstreamModel;
   if (Array.isArray(payload.messages)) {
-    payload.messages = coalesceAssistantMessages(payload.messages);
+    payload.messages = sanitizeChatToolHistory(payload.messages);
   }
   if (model.requestProfile === "kimi-k3") {
     payload.reasoning_effort = "max";

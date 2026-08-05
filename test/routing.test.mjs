@@ -1248,6 +1248,138 @@ test("API forwarder coalesces consecutive assistant messages so tool results fol
   }
 });
 
+test("API forwarder synthesizes missing tool results for incomplete tool_calls history", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { choices: [] });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    DEEPSEEK_API_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    DEEPSEEK_API_KEY: "TEST_DEEPSEEK_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    // Compact / Responses->chat translation can leave assistant tool_calls without
+    // matching tool rows. Console Go rejects that with "insufficient tool
+    // messages following tool_calls message".
+    const toolCalls = [
+      {
+        id: "call_A",
+        type: "function",
+        function: { name: "exec_command", arguments: '{"cmd":"ls"}' },
+      },
+      {
+        id: "call_B",
+        type: "function",
+        function: { name: "view_image", arguments: '{"path":"x.png"}' },
+      },
+    ];
+    const response = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "deepseek-v4-flash",
+          messages: [
+            { role: "user", content: "continue after compact" },
+            { role: "assistant", tool_calls: toolCalls },
+            // Only one of the two call ids has a real tool result.
+            { role: "tool", tool_call_id: "call_A", content: "done" },
+            { role: "user", content: "what next?" },
+            // Orphan tool row after a user turn should not break the contract.
+            { role: "tool", tool_call_id: "call_orphan", content: "stale" },
+          ],
+        }),
+      },
+    );
+    assert.equal(response.status, 200);
+    const messages = upstreamRequests[0].body.messages;
+    assert.equal(messages[0].role, "user");
+    assert.equal(messages[1].role, "assistant");
+    assert.deepEqual(messages[1].tool_calls, toolCalls);
+    assert.equal(messages[2].role, "tool");
+    assert.equal(messages[2].tool_call_id, "call_A");
+    assert.equal(messages[2].content, "done");
+    assert.equal(messages[3].role, "tool");
+    assert.equal(messages[3].tool_call_id, "call_B");
+    assert.match(messages[3].content, /tool result unavailable/);
+    assert.equal(messages[4].role, "user");
+    assert.equal(messages[4].content, "what next?");
+    assert.equal(messages.length, 5);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
+test("API forwarder coalesces split assistant tool turns before synthesizing missing results", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { choices: [] });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    DEEPSEEK_API_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    DEEPSEEK_API_KEY: "TEST_DEEPSEEK_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const toolCall = {
+      id: "call_A",
+      type: "function",
+      function: { name: "exec_command", arguments: "{}" },
+    };
+    const response = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "deepseek-v4-pro",
+          messages: [
+            { role: "user", content: "run it" },
+            { role: "assistant", tool_calls: [toolCall] },
+            { role: "assistant", content: "Running the command now." },
+            // Missing tool result after the split assistant turn.
+          ],
+        }),
+      },
+    );
+    assert.equal(response.status, 200);
+    const messages = upstreamRequests[0].body.messages;
+    assert.equal(messages.length, 3);
+    assert.equal(messages[1].role, "assistant");
+    assert.equal(messages[1].content, "Running the command now.");
+    assert.deepEqual(messages[1].tool_calls, [toolCall]);
+    assert.equal(messages[2].role, "tool");
+    assert.equal(messages[2].tool_call_id, "call_A");
+    assert.match(messages[2].content, /tool result unavailable/);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
 test("API forwarder routes Ollama Cloud models without unsupported parameters", async () => {
   const upstreamRequests = [];
   const upstream = await mockServer(async (request, response) => {
