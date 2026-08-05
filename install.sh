@@ -19,11 +19,11 @@ usage() {
   cat <<'EOF'
 Usage: install.sh [options]
 
-Install external model routes for Codex or Cursor.
+Install external model routes for Codex, Cursor, or opencode.
 
 Options:
   --install-dir PATH  Stable checkout used by the background service
-  --target APP        Install for "codex" (default) or "cursor"
+  --target APP        Install for "codex" (default), "cursor", or "opencode"
   --prepare-only      Install dependencies without changing either app
   --api-key           Alias for --kimi-api-key
   --kimi-api-key      Prompt securely for a Kimi Platform API key
@@ -126,8 +126,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$target" in
-  codex|cursor) ;;
-  *) die "--target must be codex or cursor" ;;
+  codex|cursor|opencode) ;;
+  *) die "--target must be codex, cursor, or opencode" ;;
 esac
 if [ "$target" != codex ] && [ "$migrate_known" = true ]; then
   die "--migrate-known applies only to the Codex target"
@@ -222,6 +222,13 @@ if [ "$target" = cursor ]; then
 
 Cursor Router is installed. Run `./bin/model-router cursor setup` for the Base
 URL, key, and model IDs to paste into Cursor's model settings.
+EOF
+elif [ "$target" = opencode ]; then
+  cat <<'EOF'
+
+opencode Router is installed. The codex-router provider and one subagent per
+selected model were written into your opencode config. Fully quit and reopen
+opencode, then invoke the generated subagents with @agent-name or the Task tool.
 EOF
 else
   cat <<'EOF'

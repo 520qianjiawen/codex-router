@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The opencode target now generates one subagent per selected model in
+  opencode's config, and refreshes those entries when providers are enabled,
+  disabled, or given new keys. `setup`, `doctor`, `status`, `enable`, `disable`,
+  and `uninstall` all support `MODEL_ROUTER_TARGET=opencode` through
+  `bin/model-router opencode ...`, and the opencode installer works from both
+  `install.sh --target opencode` and `install.ps1 -Target opencode`.
+
 - Fixed native OpenAI models disappearing from the Codex picker on Windows when
   the Codex CLI is installed through npm (#46). `where.exe codex` lists the
   extensionless POSIX shim before `codex.cmd`, and Node cannot spawn the former

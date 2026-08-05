@@ -9,8 +9,10 @@ if [ "$target" = codex ]; then
   config_manager=src/config-manager.mjs
 elif [ "$target" = cursor ]; then
   config_manager=src/cursor-config-manager.mjs
+elif [ "$target" = opencode ]; then
+  config_manager=src/opencode-config-manager.mjs
 else
-  echo "MODEL_ROUTER_TARGET must be codex or cursor." >&2
+  echo "MODEL_ROUTER_TARGET must be codex, cursor, or opencode." >&2
   exit 2
 fi
 node src/provider-selection.mjs ensure-configured >/dev/null

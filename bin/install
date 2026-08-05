@@ -140,8 +140,9 @@ if [ "$target" = cursor ]; then
 elif [ "$target" = opencode ]; then
   echo "Installed the local OpenAI-compatible gateway for opencode."
   echo "The 'codex-router' provider was written into your opencode config; every"
-  echo "other key in that file was left untouched. Restart opencode and pick a"
-  echo "model with /models."
+  echo "other key in that file was left untouched. One subagent was added for"
+  echo "every selected model. Restart opencode and invoke them with @agent-name"
+  echo "or the Task tool."
   echo "Kimi API key: $repo_dir/bin/model-router opencode provider-key kimi-api set"
   echo "DeepSeek API key: $repo_dir/bin/model-router opencode provider-key deepseek set"
   echo "xAI API key: $repo_dir/bin/model-router opencode provider-key grok-api set"

@@ -13,7 +13,7 @@ import {
 } from "./file-security.mjs";
 import { CODEX_AGENTS_DIR } from "./paths.mjs";
 
-function safeIdentifier(value, separator) {
+export function safeIdentifier(value, separator) {
   return String(value)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, separator)

@@ -4,7 +4,7 @@ Some apps need no dedicated router target because they either **wrap an official
 CLI** the router already integrates, or they **natively accept any
 OpenAI-compatible provider**. This guide covers T3 Code and opencode. Nothing
 here changes those apps' own subscriptions, history, or settings beyond the
-additive model configuration you choose.
+additive model configuration the router owns.
 
 ## T3 Code
 
@@ -26,45 +26,50 @@ applies the same way.
 ## opencode
 
 [opencode](https://opencode.ai/docs/providers/) natively supports any
-OpenAI-compatible provider, so you point it at the router's OpenAI-compatible
-gateway. The **cursor** target's gateway is a general OpenAI Chat Completions
-endpoint and serves this purpose directly.
+OpenAI-compatible provider, and this repository ships opencode as a first-class
+router target. The installer writes the `codex-router` provider block into
+opencode's config and generates one **subagent** for every selected model, so
+you can pin DeepSeek, Kimi, Grok, or any other routed model as an opencode
+Task/@-mention subagent without hand-writing opencode's `agent` section.
 
-1. Install the cursor target to run the local gateway:
+1. Install the opencode target:
    ```sh
-   ./install.sh --target cursor --guided
+   ./install.sh --target opencode --guided
    ```
-2. Get the connection values:
+   Noninteractive installs can pass `--auto --providers deepseek,kimi-oauth`.
+2. Add credentials when prompted, or before installing:
    ```sh
-   ./bin/model-router cursor setup
+   ./bin/model-router opencode provider-key deepseek set
    ```
-   which prints the Base URL (`http://127.0.0.1:4104/v1`), the caller key, and the
-   gateway model ids.
-3. Add a custom provider in opencode's config, for example:
+3. The installer adds the `codex-router` provider and an `agent` entry per
+   selected model, for example:
    ```json
    {
-     "provider": {
-       "codex-router": {
-         "npm": "@ai-sdk/openai-compatible",
-         "options": { "baseURL": "http://127.0.0.1:4104/v1" },
-         "models": { "kimi-api-k3": {}, "deepseek-v4-pro": {} }
+     "agent": {
+       "deepseek-deepseek-v4-pro": {
+         "mode": "subagent",
+         "model": "codex-router/deepseek-v4-pro"
+       },
+       "kimi-oauth-kimi-for-coding": {
+         "mode": "subagent",
+         "model": "codex-router/kimi-oauth-kimi-for-coding"
        }
      }
    }
    ```
-   The model keys must match the gateway model ids from step 2, and the base URL
-   must end in `/v1` (not `/v1/chat/completions`).
-4. Store the caller key as opencode's credential for this provider (opencode keeps
-   credentials separate from config — use its documented credential command).
-5. Fully quit and reopen opencode, then verify the provider and models appear.
+   The subagent name is derived from the model slug, and the model id is the
+   gateway model exposed by the `codex-router` provider.
+4. Fully quit and reopen opencode. Invoke the generated subagents with
+   `@agent-name` or through the Task tool.
 
-Your existing opencode providers and models are unaffected; this only adds one
-more provider entry.
+Changing the selected providers later (`providers enable/disable` or
+`provider-key ... set`) refreshes the generated provider block and subagents
+without touching unrelated opencode settings.
 
-## Why no dedicated target
+## Why T3 Code needs no target
 
-Both apps already provide an additive extension point — T3 Code through the CLIs
-it wraps, opencode through its custom-provider config. Adding bespoke router
-targets would duplicate what they ship. The router's job here is only to expose
-the shared provider registry through an endpoint each app already knows how to
-consume.
+T3 Code is a GUI that drives official coding CLIs through adapters rather than
+talking to models directly. Because of that, you integrate the underlying CLI,
+and T3 Code inherits the added models — there is no T3 Code target to install.
+The router's job for T3 Code is only to expose the shared provider registry
+through the endpoint the driven CLI already knows how to consume.

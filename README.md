@@ -7,11 +7,12 @@ AI desktop apps through one local, credential-isolating router.
 | --- | --- | --- |
 | Codex App and CLI | Responses API plus native model-catalog merge | Stable |
 | Cursor | Manual OpenAI-compatible base URL | Experimental |
+| opencode | Provider config plus generated subagents | Experimental |
 
 The targets share a provider registry and translation layer, but keep separate
 ports, state, caller keys, provider selection, services, and app configuration.
 Installing the Cursor target does not edit Codex, and installing Codex does not
-edit Cursor.
+edit Cursor or opencode.
 
 Codex Router is an independent community project. It is not affiliated with or
 endorsed by OpenAI, Anthropic, Moonshot AI, DeepSeek, OpenRouter, or the
@@ -59,7 +60,7 @@ request unless `--smoke-test` is explicitly selected.
 
 Requirements:
 
-- The target app: Codex App/CLI or Cursor.
+- The target app: Codex App/CLI, Cursor, or opencode.
 - Node.js 22.19 or newer; Node.js 24 LTS is recommended.
 - `uv`, or Python 3.10+ with `venv`.
 - Git for the managed one-command checkout and rollback.

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-import { NATIVE_CATALOG_PATH, SOURCE_ROOT, TARGET } from "./paths.mjs";
+import { NATIVE_CATALOG_PATH, OPENCODE_CONFIG_STATE_PATH, SOURCE_ROOT, TARGET } from "./paths.mjs";
 
 function run(script, args = []) {
   execFileSync(process.execPath, [path.join(SOURCE_ROOT, "src", script), ...args], {
@@ -29,8 +29,15 @@ export function targetPickerName() {
 }
 
 export function refreshTargetPickerIfInstalled() {
-  // Only Codex has a native model picker fed by our catalog; the others read
-  // their model list straight from their own config.
+  if (TARGET === "opencode") {
+    // opencode reads its model list from opencode.json, so an enabled install
+    // must be rewritten when the selected providers change.
+    if (!existsSync(OPENCODE_CONFIG_STATE_PATH)) return false;
+    run("opencode-config-manager.mjs", ["enable"]);
+    return true;
+  }
+  // Only Codex has a native model picker fed by our catalog; Cursor reads its
+  // model list straight from its own config.
   if (TARGET !== "codex") return false;
   if (!existsSync(NATIVE_CATALOG_PATH)) return false;
   run("catalog.mjs");

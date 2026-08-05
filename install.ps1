@@ -2,7 +2,7 @@
 param(
   [switch]$CheckoutInstall,
   [switch]$PrepareOnly,
-  [ValidateSet("codex", "cursor")]
+  [ValidateSet("codex", "cursor", "opencode")]
   [string]$Target = "codex",
   [switch]$Guided,
   [switch]$Auto,
@@ -94,6 +94,7 @@ if (-not $CheckoutInstall) {
 
   $SetupScript = switch ($Target) {
     "cursor" { "src\cursor-setup.mjs" }
+    "opencode" { "src\opencode-setup.mjs" }
     default { "src\setup.mjs" }
   }
   $SetupArguments = @((Join-Path $Repository $SetupScript))
@@ -187,7 +188,11 @@ try {
     exit 0
   }
 
-  $ConfigManager = if ($Target -eq "cursor") { "src\cursor-config-manager.mjs" } else { "src\config-manager.mjs" }
+  $ConfigManager = switch ($Target) {
+    "cursor" { "src\cursor-config-manager.mjs" }
+    "opencode" { "src\opencode-config-manager.mjs" }
+    default { "src\config-manager.mjs" }
+  }
   $ConfigEnabled = $false
   $ServiceInstalled = $false
   try {
@@ -208,6 +213,8 @@ try {
   }
   if ($Target -eq "cursor") {
     Write-Host "Installed the local OpenAI-compatible gateway for Cursor. Run model-router cursor setup for the connection details."
+  } elseif ($Target -eq "opencode") {
+    Write-Host "Installed the local OpenAI-compatible gateway for opencode. Subagents were generated for every selected model; fully quit and reopen opencode."
   } else {
     Write-Host "Installed the selected external model routes. Fully quit and reopen Codex."
   }
