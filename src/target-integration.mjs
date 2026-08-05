@@ -13,17 +13,25 @@ function run(script, args = []) {
 }
 
 export function targetCli(command) {
-  return TARGET === "cursor"
-    ? `./bin/model-router cursor ${command}`
-    : `./bin/${command}`;
+  return TARGET === "codex"
+    ? `./bin/${command}`
+    : `./bin/model-router ${TARGET} ${command}`;
 }
 
+const PICKER_NAMES = {
+  codex: "Codex",
+  cursor: "Cursor",
+  opencode: "opencode",
+};
+
 export function targetPickerName() {
-  return TARGET === "cursor" ? "Cursor" : "Codex";
+  return PICKER_NAMES[TARGET] || TARGET;
 }
 
 export function refreshTargetPickerIfInstalled() {
-  if (TARGET === "cursor") return false;
+  // Only Codex has a native model picker fed by our catalog; the others read
+  // their model list straight from their own config.
+  if (TARGET !== "codex") return false;
   if (!existsSync(NATIVE_CATALOG_PATH)) return false;
   run("catalog.mjs");
   return true;

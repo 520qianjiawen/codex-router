@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const supportedTargets = new Set(["codex", "cursor"]);
+const supportedTargets = new Set(["codex", "cursor", "opencode"]);
 
 export const TARGET = process.env.MODEL_ROUTER_TARGET || "codex";
 if (!supportedTargets.has(TARGET)) {
@@ -14,6 +14,7 @@ if (!supportedTargets.has(TARGET)) {
 const TARGET_DISPLAY_NAMES = {
   codex: "Codex Router",
   cursor: "Cursor Router",
+  opencode: "opencode Router",
 };
 export const TARGET_DISPLAY_NAME = TARGET_DISPLAY_NAMES[TARGET];
 export const SOURCE_ROOT = path.resolve(
@@ -40,6 +41,9 @@ function defaultManagedStateDir(targetName) {
 function managedStateDir() {
   if (TARGET === "cursor") {
     return process.env.CURSOR_ROUTER_STATE_DIR || defaultManagedStateDir("cursor");
+  }
+  if (TARGET === "opencode") {
+    return process.env.OPENCODE_ROUTER_STATE_DIR || defaultManagedStateDir("opencode");
   }
   return (
     process.env.CODEX_ROUTER_STATE_DIR ||
@@ -68,6 +72,7 @@ export const BACKUP_PATH = path.join(CODEX_HOME, "config.toml.pre-codex-router")
 const SERVICE_LABELS = {
   codex: "io.github.codex-router",
   cursor: "io.github.codex-router.cursor",
+  opencode: "io.github.codex-router.opencode",
 };
 export const SERVICE_LABEL = SERVICE_LABELS[TARGET];
 export const LEGACY_SERVICE_LABEL = "io.github.kimi-codex-router";
@@ -84,6 +89,22 @@ export const LAUNCH_AGENTS_DIR =
 export const LAUNCH_AGENT_PATH = path.join(LAUNCH_AGENTS_DIR, `${SERVICE_LABEL}.plist`);
 
 export const CURSOR_CONFIG_STATE_PATH = path.join(STATE_DIR, "cursor-config-state.json");
+export const OPENCODE_CONFIG_STATE_PATH = path.join(
+  STATE_DIR,
+  "opencode-config-state.json",
+);
+// opencode merges config from several layers; the global file is the one a
+// user-wide install owns. OPENCODE_CONFIG wins for anyone pointing elsewhere.
+export const OPENCODE_CONFIG_PATH =
+  process.env.OPENCODE_CONFIG ||
+  path.join(
+    process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
+    "opencode",
+    "opencode.json",
+  );
+// The single key we own inside opencode.json. Everything else in that file is
+// the user's and must survive our writes untouched.
+export const OPENCODE_PROVIDER_ID = "codex-router";
 
 function port(name, fallback) {
   const value = Number(process.env[name] || fallback);
@@ -98,6 +119,9 @@ function port(name, fallback) {
 const TARGET_PORT_DEFAULTS = {
   codex: { gateway: 4100, oauth: 4101, router: 4102, api: 4103, grokOauth: 4108 },
   cursor: { gateway: 4105, oauth: 4106, router: 4104, api: 4107, grokOauth: 4116 },
+  // 4109-4113 are deliberately skipped: an out-of-tree launch agent already
+  // binds that block, so opencode starts its own block above it.
+  opencode: { gateway: 4121, oauth: 4122, router: 4120, api: 4123, grokOauth: 4126 },
 };
 const targetPortDefaults = TARGET_PORT_DEFAULTS[TARGET];
 

@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { protectPrivateFile } from "./file-security.mjs";
 import { PROVIDER_SELECTION_PATH, STATE_DIR, TARGET } from "./paths.mjs";
 import { LISTED_MODELS, PROVIDERS } from "./model-registry.mjs";
+import { targetCli } from "./target-integration.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { credentialStatus } from "./provider-credentials.mjs";
@@ -145,9 +146,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       if (providers.length === 0) {
         throw new Error(
           `No provider credential is configured. Run ${
-            TARGET === "cursor"
-              ? "./bin/model-router cursor setup --guided"
-              : "./bin/setup --guided"
+            targetCli("setup --guided")
           } before installing.`,
         );
       }
@@ -156,9 +155,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       if (missing.length) {
         throw new Error(
           `Selected providers need persistent authentication: ${missing.join(", ")}. Run ${
-            TARGET === "cursor"
-              ? "./bin/model-router cursor setup --guided"
-              : "./bin/setup --guided"
+            targetCli("setup --guided")
           }.`,
         );
       }

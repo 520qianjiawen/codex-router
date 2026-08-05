@@ -404,5 +404,5 @@ test("aggregate overview covers every target", () => {
     encoding: "utf8",
   });
   const overview = JSON.parse(output);
-  assert.deepEqual(Object.keys(overview.targets).sort(), ["codex", "cursor"]);
+  assert.deepEqual(Object.keys(overview.targets).sort(), ["codex", "cursor", "opencode"]);
 });

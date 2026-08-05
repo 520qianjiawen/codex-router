@@ -41,8 +41,18 @@ test("Cursor path defaults are its own dedicated ports", () => {
   });
 });
 
+test("opencode path defaults are its own dedicated ports", () => {
+  assert.deepEqual(portsForTarget("opencode"), {
+    gateway: 4121,
+    oauth: 4122,
+    router: 4120,
+    api: 4123,
+    grokOauth: 4126,
+  });
+});
+
 test("every target's ports are pairwise disjoint across all targets", () => {
-  const targets = ["codex", "cursor"];
+  const targets = ["codex", "cursor", "opencode"];
   const seen = new Map();
   for (const target of targets) {
     for (const value of Object.values(portsForTarget(target))) {

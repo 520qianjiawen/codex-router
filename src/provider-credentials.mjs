@@ -13,6 +13,7 @@ import path from "node:path";
 
 import { protectPrivateFile } from "./file-security.mjs";
 import { LEGACY_STATE_DIRS, STATE_DIR, TARGET } from "./paths.mjs";
+import { targetCli } from "./target-integration.mjs";
 import { PROVIDERS } from "./model-registry.mjs";
 
 export function apiProvider(providerId) {
@@ -81,9 +82,7 @@ export function credentialStatus(providerOrId, options = {}) {
     ? { configured: true, source: credential.source, persistent: credential.persistent }
     : {
         configured: false,
-        setup: TARGET === "cursor"
-          ? `Run ./bin/model-router cursor provider-key ${provider.id} set`
-          : `Run ./bin/provider-key ${provider.id} set`,
+        setup: `Run ${targetCli(`provider-key ${provider.id} set`)}`,
       };
 }
 

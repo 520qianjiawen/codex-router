@@ -13,8 +13,8 @@ MODEL_ROUTER_ALLOW_FOREIGN_STATE=1
 export MODEL_ROUTER_ALLOW_FOREIGN_STATE
 
 case "$target" in
-  codex|cursor) ;;
-  *) echo "MODEL_ROUTER_TARGET must be codex or cursor." >&2; exit 2 ;;
+  codex|cursor|opencode) ;;
+  *) echo "MODEL_ROUTER_TARGET must be codex, cursor, or opencode." >&2; exit 2 ;;
 esac
 
 for argument in "$@"; do
@@ -104,6 +104,8 @@ config_enabled=false
 service_installed=false
 if [ "$target" = cursor ]; then
   config_manager=src/cursor-config-manager.mjs
+elif [ "$target" = opencode ]; then
+  config_manager=src/opencode-config-manager.mjs
 else
   config_manager=src/config-manager.mjs
 fi
@@ -135,6 +137,15 @@ if [ "$target" = cursor ]; then
   echo "DeepSeek API key: $repo_dir/bin/model-router cursor provider-key deepseek set"
   echo "xAI API key: $repo_dir/bin/model-router cursor provider-key grok-api set"
   echo "Anthropic API key: $repo_dir/bin/model-router cursor provider-key anthropic-api set"
+elif [ "$target" = opencode ]; then
+  echo "Installed the local OpenAI-compatible gateway for opencode."
+  echo "The 'codex-router' provider was written into your opencode config; every"
+  echo "other key in that file was left untouched. Restart opencode and pick a"
+  echo "model with /models."
+  echo "Kimi API key: $repo_dir/bin/model-router opencode provider-key kimi-api set"
+  echo "DeepSeek API key: $repo_dir/bin/model-router opencode provider-key deepseek set"
+  echo "xAI API key: $repo_dir/bin/model-router opencode provider-key grok-api set"
+  echo "Anthropic API key: $repo_dir/bin/model-router opencode provider-key anthropic-api set"
 else
   echo "Installed the selected external model routes for Codex."
   echo "Fully quit and reopen Codex, then start a new task."
