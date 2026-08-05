@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Removed the Cursor and opencode app targets.** The router now focuses on
+  Codex only: `--target codex` is the sole installer target, the Cursor Chat
+  Completions gateway and the opencode config manager/subagent generator are
+  gone, and their port blocks (4104-4107, 4116, 4120-4126) are released. The
+  opencode Go model subscription is unaffected — it remains a regular provider
+  inside Codex. Anyone with a previously installed Cursor or opencode
+  integration can remove the old service with that checkout's
+  `model-router <target> uninstall` before updating.
+
 - A **Show tray** mode in the macOS tray's Settings tab can tie the menu bar
   icon, Dynamic Island, and desktop panel to the Codex/ChatGPT desktop apps:
   the surfaces appear when either app launches and hide when the last one

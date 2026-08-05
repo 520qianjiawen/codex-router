@@ -30,7 +30,7 @@ function isolatedEnvironment(testRoot) {
     ...process.env,
     HOME: testRoot,
     PATH: isolatedPath(),
-    MODEL_ROUTER_TARGET: "cursor",
+    MODEL_ROUTER_TARGET: "codex",
     MODEL_ROUTER_STATE_DIR: path.join(testRoot, "state"),
     KIMI_CODE_HOME: path.join(testRoot, "kimi"),
     GROK_HOME: path.join(testRoot, "grok-home"),

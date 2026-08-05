@@ -140,11 +140,7 @@ function stopChildren() {
   }, 3_000).unref();
 }
 
-const FRONTENDS = {
-  codex: { script: "router.mjs", service: "codex-router", label: "Codex router" },
-  cursor: { script: "cursor-router.mjs", service: "cursor-router", label: "Cursor router" },
-  opencode: { script: "cursor-router.mjs", service: "opencode-router", label: "opencode router" },
-};
+const FRONTEND = { script: "router.mjs", service: "codex-router", label: "Codex router" };
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, stopChildren);
 
 async function main() {
@@ -182,7 +178,7 @@ async function main() {
     gateway,
   );
 
-  const frontend = FRONTENDS[TARGET];
+  const frontend = FRONTEND;
   const frontendService = frontend.service;
   const router = run(process.execPath, [path.join(SOURCE_ROOT, "src", frontend.script)]);
   await waitForHealth(

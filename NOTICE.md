@@ -3,8 +3,7 @@
 This project uses the merged-model-catalog and built-in-provider routing
 pattern demonstrated by [opencodex](https://github.com/lidge-jun/opencodex).
 The implementation in this repository provides a registry-driven local router
-with Codex and experimental Cursor targets plus built-in Kimi and DeepSeek
-integrations.
+for Codex plus built-in Kimi and DeepSeek integrations.
 
 `opencodex` is distributed under the MIT License. Copyright (c) 2026
 opencodex contributors.

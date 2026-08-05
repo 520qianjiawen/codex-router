@@ -69,9 +69,9 @@ function probe(target, providers, usageEvents = [], options = {}) {
   }
 }
 
-test("cursor probe reports enabled models", () => {
-  const slice = probe("cursor", ["deepseek"]);
-  assert.equal(slice.target, "cursor");
+test("codex probe reports enabled models", () => {
+  const slice = probe("codex", ["deepseek"]);
+  assert.equal(slice.target, "codex");
   const deepseek = slice.models.filter((m) => m.provider === "deepseek");
   assert.ok(deepseek.length > 0 && deepseek.every((m) => m.enabled));
 });
@@ -162,15 +162,15 @@ function probeSet(target, providers, provider, desired) {
 }
 
 test("toggle on adds a provider; toggle off removes it", () => {
-  const added = probeSet("cursor", ["deepseek"], "grok-oauth", "on");
+  const added = probeSet("codex", ["deepseek"], "grok-oauth", "on");
   assert.deepEqual(added.enabledProviders, ["deepseek", "grok-oauth"]);
 
-  const removed = probeSet("cursor", ["grok-oauth", "deepseek"], "deepseek", "off");
+  const removed = probeSet("codex", ["grok-oauth", "deepseek"], "deepseek", "off");
   assert.deepEqual(removed.enabledProviders, ["grok-oauth"]);
 });
 
 test("toggle rejects an unknown provider", () => {
-  assert.throws(() => probeSet("cursor", ["deepseek"], "not-a-provider", "on"));
+  assert.throws(() => probeSet("codex", ["deepseek"], "not-a-provider", "on"));
 });
 
 test("login-free control selects a ready external model and restores Codex defaults", () => {
@@ -404,5 +404,5 @@ test("aggregate overview covers every target", () => {
     encoding: "utf8",
   });
   const overview = JSON.parse(output);
-  assert.deepEqual(Object.keys(overview.targets).sort(), ["codex", "cursor", "opencode"]);
+  assert.deepEqual(Object.keys(overview.targets).sort(), ["codex"]);
 });

@@ -4,12 +4,10 @@ These instructions apply when a user asks an agent to install this repository.
 
 ## Choose the target
 
-- Use `codex` when the user says Codex or does not name an app.
-- Use `cursor` only when the user explicitly asks for Cursor. Read and follow
-  [docs/CURSOR.md](docs/CURSOR.md) before changing anything.
-- If the user explicitly requests both, install them sequentially. They share
-  source code but use separate state, ports, services, keys, provider
-  selections, and application configuration.
+- `codex` is the only supported target. If the user asks for Cursor or
+  opencode integration, explain that those targets were removed and the
+  router now focuses on Codex; the opencode Go model subscription remains
+  available as a provider inside Codex.
 
 ## Codex outcome
 

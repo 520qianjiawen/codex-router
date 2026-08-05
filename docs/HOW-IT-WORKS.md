@@ -1,8 +1,7 @@
 # How Codex Router works
 
-The provider core has two isolated app frontends. Codex uses the Responses API
-and a merged native catalog; the experimental Cursor target uses an
-OpenAI-compatible Chat Completions gateway configured manually in Cursor.
+The provider core has one app frontend: Codex uses the Responses API and a
+merged native catalog.
 
 ## Why a router is needed
 

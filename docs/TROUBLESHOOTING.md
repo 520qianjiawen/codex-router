@@ -4,7 +4,6 @@ Start with:
 
 ```sh
 ./bin/model-router codex doctor
-./bin/model-router cursor doctor
 ```
 
 Every `FAIL` includes a targeted fix. To rebuild only repository-managed files,
@@ -23,10 +22,6 @@ If a recognized older Kimi router is reported:
 Neither command prints credential values. Repair refuses unknown router owners.
 
 ## External models are missing from the picker
-
-The steps below are for Codex. For Cursor, use
-`./bin/model-router cursor doctor` and verify the manually configured connection
-values described in the Cursor guide.
 
 ```sh
 ./bin/providers

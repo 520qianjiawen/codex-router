@@ -2,7 +2,7 @@
 param(
   [switch]$CheckoutInstall,
   [switch]$PrepareOnly,
-  [ValidateSet("codex", "cursor", "opencode")]
+  [ValidateSet("codex")]
   [string]$Target = "codex",
   [switch]$Guided,
   [switch]$Auto,
@@ -92,11 +92,7 @@ if (-not $CheckoutInstall) {
     exit $LASTEXITCODE
   }
 
-  $SetupScript = switch ($Target) {
-    "cursor" { "src\cursor-setup.mjs" }
-    "opencode" { "src\opencode-setup.mjs" }
-    default { "src\setup.mjs" }
-  }
+  $SetupScript = "src\setup.mjs"
   $SetupArguments = @((Join-Path $Repository $SetupScript))
   $UseGuided = $Guided -or (-not $Auto -and [Environment]::UserInteractive)
   if ($UseGuided) { $SetupArguments += "--guided" }
@@ -188,11 +184,7 @@ try {
     exit 0
   }
 
-  $ConfigManager = switch ($Target) {
-    "cursor" { "src\cursor-config-manager.mjs" }
-    "opencode" { "src\opencode-config-manager.mjs" }
-    default { "src\config-manager.mjs" }
-  }
+  $ConfigManager = "src\config-manager.mjs"
   $ConfigEnabled = $false
   $ServiceInstalled = $false
   try {
@@ -211,13 +203,7 @@ try {
     if ($ConfigEnabled) { & node $ConfigManager disable 2>$null | Out-Null }
     throw
   }
-  if ($Target -eq "cursor") {
-    Write-Host "Installed the local OpenAI-compatible gateway for Cursor. Run model-router cursor setup for the connection details."
-  } elseif ($Target -eq "opencode") {
-    Write-Host "Installed the local OpenAI-compatible gateway for opencode. Subagents were generated for every selected model; fully quit and reopen opencode."
-  } else {
-    Write-Host "Installed the selected external model routes. Fully quit and reopen Codex."
-  }
+  Write-Host "Installed the selected external model routes. Fully quit and reopen Codex."
 } finally {
   Pop-Location
 }

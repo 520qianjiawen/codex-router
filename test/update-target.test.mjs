@@ -6,17 +6,14 @@ import {
   installationNeedsRefresh,
 } from "../src/update.mjs";
 
-test("checkout updates preserve the selected app target on every platform", () => {
+test("checkout updates preserve the codex target on every platform", () => {
   const windowsCodex = currentCheckoutInstaller("win32", "codex");
+  assert.equal(windowsCodex.command, "powershell.exe");
   assert.deepEqual(windowsCodex.args.slice(-2), ["-Target", "codex"]);
 
-  const windowsCursor = currentCheckoutInstaller("win32", "cursor");
-  assert.equal(windowsCursor.command, "powershell.exe");
-  assert.deepEqual(windowsCursor.args.slice(-2), ["-Target", "cursor"]);
-
-  const posixCursor = currentCheckoutInstaller("darwin", "cursor");
-  assert.match(posixCursor.command, /bin[\\/]install$/);
-  assert.deepEqual(posixCursor.args, []);
+  const posixCodex = currentCheckoutInstaller("darwin", "codex");
+  assert.match(posixCodex.command, /bin[\\/]install$/);
+  assert.deepEqual(posixCodex.args, []);
 });
 
 test("an update reinstalls a revision pulled outside the updater", () => {

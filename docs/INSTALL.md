@@ -1,20 +1,18 @@
 # Installation, migration, and upgrades
 
-This page covers the stable Codex target. Use the target-qualified command when
-the Cursor integration may also be present:
+This page covers the Codex target:
 
 ```sh
 ./bin/model-router codex doctor
-./bin/model-router cursor doctor
 ```
 
 ## Supported hosts
 
-| Host | Stable Codex surface | Experimental Cursor surface |
-| --- | --- | --- |
-| macOS | Codex App or CLI | Cursor local gateway |
-| Windows | Codex App or CLI | Cursor local gateway |
-| Linux | Codex CLI | Cursor local gateway |
+| Host | Codex surface |
+| --- | --- |
+| macOS | Codex App or CLI |
+| Windows | Codex App or CLI |
+| Linux | Codex CLI |
 
 Required software:
 

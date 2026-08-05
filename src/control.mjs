@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 // only rewrites each target's provider selection; making it live is a separate
 // explicit `apply`, so a toggle never silently restarts a running target.
 
-const TARGETS = ["codex", "cursor", "opencode"];
+const TARGETS = ["codex"];
 const SELF = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(SELF), "..");
 const args = process.argv.slice(2);

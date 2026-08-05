@@ -1,19 +1,10 @@
 # Codex Router
 
 Use Anthropic, Kimi, DeepSeek, xAI, opencode Go, and future external models
-inside supported AI desktop apps through one local, credential-isolating
-router.
-
-| Target | Integration | Status |
-| --- | --- | --- |
-| Codex App and CLI | Responses API plus native model-catalog merge | Stable |
-| Cursor | Manual OpenAI-compatible base URL | Experimental |
-| opencode | Provider config plus generated subagents | Experimental |
-
-The targets share a provider registry and translation layer, but keep separate
-ports, state, caller keys, provider selection, services, and app configuration.
-Installing the Cursor target does not edit Codex, and installing Codex does not
-edit Cursor or opencode.
+inside the Codex App and CLI through one local, credential-isolating router.
+The integration speaks the Responses API and merges external entries into
+Codex's native model catalog, so routed models appear in the normal picker
+next to the native GPT models.
 
 Codex Router is an independent community project. It is not affiliated with or
 endorsed by OpenAI, Anthropic, Moonshot AI, DeepSeek, OpenRouter, opencode, or
@@ -21,10 +12,10 @@ the referenced opencodex project.
 
 ## Give the link to your agent
 
-For Codex, paste this into a Codex task:
+Paste this into a Codex task:
 
 ```text
-Install the Codex target from this public repository:
+Install the router from this public repository:
 https://github.com/duolahypercho/codex-router
 
 Follow AGENTS.md. Preserve my existing Codex models, profiles, settings, and
@@ -39,7 +30,7 @@ terminal prompt.
 
 ## Guided install
 
-Codex on macOS or Linux:
+macOS or Linux:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/duolahypercho/codex-router/main/install.sh \
@@ -61,12 +52,12 @@ request unless `--smoke-test` is explicitly selected.
 
 Requirements:
 
-- The target app: Codex App/CLI, Cursor, or opencode.
+- The Codex App or CLI.
 - Node.js 22.19 or newer; Node.js 24 LTS is recommended.
 - `uv`, or Python 3.10+ with `venv`.
 - Git for the managed one-command checkout and rollback.
 
-Linux installations support the Codex CLI and the Cursor target's local gateway.
+Linux installations support the Codex CLI.
 
 ## Models and authentication
 
@@ -247,15 +238,12 @@ Gemini is routed through Google's OpenAI-compatible surface rather than the
 native Gemini protocol, so it shares the existing forwarder and needs no
 separate adapter.
 
-Only enabled providers appear in an app's picker. Each target has its own
-selection and API-key files:
+Only enabled providers appear in the Codex picker:
 
 ```sh
 ./bin/model-router codex providers
-./bin/model-router cursor providers
-./bin/model-router cursor providers enable deepseek
-./bin/model-router cursor provider-key deepseek set
-./bin/model-router opencode providers enable kimi-oauth
+./bin/model-router codex providers enable deepseek
+./bin/model-router codex provider-key deepseek set
 ./bin/model-router codex provider-key anthropic-api set
 ```
 
@@ -439,16 +427,12 @@ packaging, and the platform behavior matrix.
 
 ```sh
 ./bin/model-router codex setup --guided
-./bin/model-router cursor setup --guided
-./bin/model-router opencode setup --guided
-./bin/model-router cursor doctor
-./bin/model-router cursor status
-./bin/model-router cursor disable
-./bin/model-router cursor enable
-./bin/model-router cursor uninstall
+./bin/model-router codex doctor
+./bin/model-router codex status
+./bin/model-router codex disable
+./bin/model-router codex enable
+./bin/model-router codex uninstall
 ```
-
-Every command takes `codex`, `cursor`, or `opencode` as its target.
 
 The optional live check makes one small request per selected provider and may
 consume paid quota:
@@ -457,7 +441,7 @@ consume paid quota:
 ./bin/model-router codex smoke-test --yes
 ```
 
-`disable` removes only the selected app integration and its current service.
+`disable` removes only the Codex integration and its current service.
 `uninstall` intentionally retains the checkout, logs, backups, internal keys,
 and provider credentials so routine removal cannot destroy authentication or
 recovery data.
@@ -468,17 +452,15 @@ For a managed Git checkout:
 
 ```sh
 ./bin/model-router codex update
-./bin/model-router cursor update
-./bin/model-router cursor rollback
+./bin/model-router codex rollback
 ```
 
 Updates require a clean `main` checkout and a recognized repository origin.
 The previous revision is retained as a local rollback ref, and a failed install
 restores the previous source revision. If you already ran `git pull` manually,
 run the update command anyway; it applies the pulled revision when the install
-manifest is older. If multiple targets are installed, run each
-target's `doctor --fix` after an update or rollback so every generated config
-and service matches the shared source revision.
+manifest is older. Run `doctor --fix` after an update or rollback so the
+generated config and service match the source revision.
 
 Tagged releases contain `.tar.gz` and `.zip` source archives, SHA-256 checksums,
 and GitHub build-provenance attestations.
@@ -488,25 +470,14 @@ and GitHub build-provenance attestations.
 ```mermaid
 flowchart LR
   C["Codex Responses :4102"] --> L1["LiteLLM :4100"]
-  U["Cursor Chat Completions :4104"] --> L2["LiteLLM :4105"]
-  O["opencode Chat Completions :4120"] --> L3["LiteLLM :4121"]
   L1 --> K1["Kimi OAuth :4101"]
   L1 --> A1["API keys :4103"]
-  L2 --> K2["Kimi OAuth :4106"]
-  L2 --> A2["API keys :4107"]
-  L3 --> K3["Kimi OAuth :4122"]
-  L3 --> A3["API keys :4123"]
   K1 --> P["External providers"]
   A1 --> P
-  K2 --> P
-  A2 --> P
-  K3 --> P
-  A3 --> P
 ```
 
-Codex sends the Responses API; Cursor and opencode send OpenAI-compatible
-Chat Completions.
-LiteLLM translates either contract to each provider's native protocol,
+Codex sends the Responses API.
+LiteLLM translates that contract to each provider's native protocol,
 including OpenAI-compatible Chat Completions and Anthropic Messages, with
 streaming and tool-call shapes preserved. Every listener binds to `127.0.0.1`.
 
@@ -537,14 +508,13 @@ Discovery does not publish every upstream model blindly:
 ```
 
 New models should remain unlisted until official capabilities and live text,
-streaming, image-input, tool-call, and context behavior are verified for each
-target. See [Development](docs/DEVELOPMENT.md) for the registry contract.
+streaming, image-input, tool-call, and context behavior are verified. See
+[Development](docs/DEVELOPMENT.md) for the registry contract.
 
 ## Documentation
 
 - [Installation, migration, and upgrades](docs/INSTALL.md)
-- [Cursor target](docs/CURSOR.md)
-- [opencode target and compatible apps](docs/COMPATIBLE-APPS.md)
+- [Compatible apps](docs/COMPATIBLE-APPS.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Architecture and request flow](docs/HOW-IT-WORKS.md)
 - [Security and credential handling](SECURITY.md)

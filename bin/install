@@ -13,8 +13,8 @@ MODEL_ROUTER_ALLOW_FOREIGN_STATE=1
 export MODEL_ROUTER_ALLOW_FOREIGN_STATE
 
 case "$target" in
-  codex|cursor|opencode) ;;
-  *) echo "MODEL_ROUTER_TARGET must be codex, cursor, or opencode." >&2; exit 2 ;;
+  codex) ;;
+  *) echo "MODEL_ROUTER_TARGET must be codex." >&2; exit 2 ;;
 esac
 
 for argument in "$@"; do
@@ -29,11 +29,6 @@ if [ "$prepare_only" = true ] && [ "$migrate_known" = true ]; then
   echo "--prepare-only cannot migrate an active older router." >&2
   exit 2
 fi
-if [ "$target" != codex ] && [ "$migrate_known" = true ]; then
-  echo "--migrate-known applies only to the Codex target." >&2
-  exit 2
-fi
-
 platform=$(uname -s)
 case "$platform" in
   Darwin|Linux) ;;
@@ -54,14 +49,12 @@ done
 node -e 'const [a,b]=process.versions.node.split(".").map(Number); if (!(a>22 || (a===22 && b>=19))) { console.error("Node.js 22.19 or newer is required."); process.exit(1) }'
 
 cd "$repo_dir"
-if [ "$target" = codex ]; then
-  codex_home=${CODEX_HOME:-$HOME/.codex}
-  mkdir -p "$codex_home"
-  if [ "$migrate_known" = true ]; then
-    node src/legacy-migration.mjs apply --yes >/dev/null
-  else
-    node src/legacy-migration.mjs assert-clear >/dev/null
-  fi
+codex_home=${CODEX_HOME:-$HOME/.codex}
+mkdir -p "$codex_home"
+if [ "$migrate_known" = true ]; then
+  node src/legacy-migration.mjs apply --yes >/dev/null
+else
+  node src/legacy-migration.mjs assert-clear >/dev/null
 fi
 if [ "$prepare_only" != true ]; then
   node src/provider-selection.mjs ensure-configured >/dev/null
@@ -85,30 +78,22 @@ else
 fi
 
 node src/secret.mjs ensure
-if [ "$target" = codex ]; then
-  state_dir=${MODEL_ROUTER_STATE_DIR:-${CODEX_ROUTER_STATE_DIR:-${KIMI_CODEX_STATE_DIR:-${CODEX_HOME:-$HOME/.codex}/codex-router}}}
-  if [ -s "$state_dir/native-models.json" ]; then
-    node src/catalog.mjs
-  else
-    node src/catalog.mjs --refresh-native
-  fi
+state_dir=${MODEL_ROUTER_STATE_DIR:-${CODEX_ROUTER_STATE_DIR:-${KIMI_CODEX_STATE_DIR:-${CODEX_HOME:-$HOME/.codex}/codex-router}}}
+if [ -s "$state_dir/native-models.json" ]; then
+  node src/catalog.mjs
+else
+  node src/catalog.mjs --refresh-native
 fi
 node src/litellm-config.mjs
 
 if [ "$prepare_only" = true ]; then
-  echo "Dependencies and local $target router files are prepared. Application configuration was not changed."
+  echo "Dependencies and local Codex router files are prepared. Application configuration was not changed."
   exit 0
 fi
 
 config_enabled=false
 service_installed=false
-if [ "$target" = cursor ]; then
-  config_manager=src/cursor-config-manager.mjs
-elif [ "$target" = opencode ]; then
-  config_manager=src/opencode-config-manager.mjs
-else
-  config_manager=src/config-manager.mjs
-fi
+config_manager=src/config-manager.mjs
 rollback() {
   if [ "$service_installed" = true ]; then
     node src/service.mjs uninstall >/dev/null 2>&1 || true
@@ -129,29 +114,9 @@ config_enabled=false
 service_installed=false
 trap - EXIT HUP INT TERM
 
-if [ "$target" = cursor ]; then
-  echo "Installed the local OpenAI-compatible gateway for Cursor."
-  echo "Run '$repo_dir/bin/model-router cursor setup' for the Base URL, key, and model"
-  echo "ids to paste into Cursor -> Settings -> Models. Cursor's own settings are untouched."
-  echo "Kimi API key: $repo_dir/bin/model-router cursor provider-key kimi-api set"
-  echo "DeepSeek API key: $repo_dir/bin/model-router cursor provider-key deepseek set"
-  echo "xAI API key: $repo_dir/bin/model-router cursor provider-key grok-api set"
-  echo "Anthropic API key: $repo_dir/bin/model-router cursor provider-key anthropic-api set"
-elif [ "$target" = opencode ]; then
-  echo "Installed the local OpenAI-compatible gateway for opencode."
-  echo "The 'codex-router' provider was written into your opencode config; every"
-  echo "other key in that file was left untouched. One subagent was added for"
-  echo "every selected model. Restart opencode and invoke them with @agent-name"
-  echo "or the Task tool."
-  echo "Kimi API key: $repo_dir/bin/model-router opencode provider-key kimi-api set"
-  echo "DeepSeek API key: $repo_dir/bin/model-router opencode provider-key deepseek set"
-  echo "xAI API key: $repo_dir/bin/model-router opencode provider-key grok-api set"
-  echo "Anthropic API key: $repo_dir/bin/model-router opencode provider-key anthropic-api set"
-else
-  echo "Installed the selected external model routes for Codex."
-  echo "Fully quit and reopen Codex, then start a new task."
-  echo "Kimi API key: $repo_dir/bin/provider-key kimi-api set"
-  echo "DeepSeek API key: $repo_dir/bin/provider-key deepseek set"
-  echo "xAI API key: $repo_dir/bin/provider-key grok-api set"
-  echo "Anthropic API key: $repo_dir/bin/provider-key anthropic-api set"
-fi
+echo "Installed the selected external model routes for Codex."
+echo "Fully quit and reopen Codex, then start a new task."
+echo "Kimi API key: $repo_dir/bin/provider-key kimi-api set"
+echo "DeepSeek API key: $repo_dir/bin/provider-key deepseek set"
+echo "xAI API key: $repo_dir/bin/provider-key grok-api set"
+echo "Anthropic API key: $repo_dir/bin/provider-key anthropic-api set"

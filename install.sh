@@ -19,11 +19,11 @@ usage() {
   cat <<'EOF'
 Usage: install.sh [options]
 
-Install external model routes for Codex, Cursor, or opencode.
+Install external model routes for Codex.
 
 Options:
   --install-dir PATH  Stable checkout used by the background service
-  --target APP        Install for "codex" (default), "cursor", or "opencode"
+  --target APP        Install for "codex" (the default and only target)
   --prepare-only      Install dependencies without changing either app
   --api-key           Alias for --kimi-api-key
   --kimi-api-key      Prompt securely for a Kimi Platform API key
@@ -52,7 +52,7 @@ die() {
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --target)
-      [ "$#" -ge 2 ] || die "--target requires codex or cursor"
+      [ "$#" -ge 2 ] || die "--target requires codex"
       target=$2
       shift 2
       ;;
@@ -126,8 +126,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$target" in
-  codex|cursor|opencode) ;;
-  *) die "--target must be codex, cursor, or opencode" ;;
+  codex) ;;
+  *) die "--target must be codex" ;;
 esac
 if [ "$target" != codex ] && [ "$migrate_known" = true ]; then
   die "--migrate-known applies only to the Codex target"
@@ -217,24 +217,9 @@ if ! "$repo_dir/bin/setup" "$@"; then
   die "setup failed"
 fi
 
-if [ "$target" = cursor ]; then
-  cat <<'EOF'
-
-Cursor Router is installed. Run `./bin/model-router cursor setup` for the Base
-URL, key, and model IDs to paste into Cursor's model settings.
-EOF
-elif [ "$target" = opencode ]; then
-  cat <<'EOF'
-
-opencode Router is installed. The codex-router provider and one subagent per
-selected model were written into your opencode config. Fully quit and reopen
-opencode, then invoke the generated subagents with @agent-name or the Task tool.
-EOF
-else
-  cat <<'EOF'
+cat <<'EOF'
 
 Codex Router is installed. Fully quit Codex, reopen it, and start a new task.
 The model picker will show only the providers you enabled while preserving
 native GPT models.
 EOF
-fi
