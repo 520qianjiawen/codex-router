@@ -1897,6 +1897,106 @@ test("API forwarder routes opencode Go chat, Messages, and Responses surfaces", 
   }
 });
 
+test("API forwarder routes Command Code chat and Messages surfaces", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({
+      url: request.url,
+      headers: request.headers,
+      body: await bodyJson(request),
+    });
+    if (request.url.endsWith("/messages")) {
+      json(response, 200, {
+        id: "msg_commandcode",
+        type: "message",
+        role: "assistant",
+        model: "claude-opus-4-8",
+        content: [{ type: "text", text: "MESSAGES_OK" }],
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 2, output_tokens: 2 },
+      });
+      return;
+    }
+    json(response, 200, {
+      id: "chatcmpl_commandcode",
+      object: "chat.completion",
+      model: "deepseek/deepseek-v4-flash",
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: "CHAT_OK" },
+          finish_reason: "stop",
+        },
+      ],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    COMMANDCODE_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    COMMAND_CODE_API_KEY: "TEST_COMMANDCODE_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+
+    const chat = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "commandcode-deepseek-v4-flash",
+          messages: [{ role: "user", content: "test" }],
+        }),
+      },
+    );
+    assert.equal(chat.status, 200);
+    assert.equal(upstreamRequests[0].url, "/v1/chat/completions");
+    assert.equal(upstreamRequests[0].body.model, "deepseek/deepseek-v4-flash");
+    assert.equal(
+      upstreamRequests[0].headers.authorization,
+      "Bearer TEST_COMMANDCODE_API_KEY",
+    );
+
+    const messages = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/messages`,
+      {
+        method: "POST",
+        headers: {
+          "x-api-key": INTERNAL_KEY,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "commandcode-messages-claude-opus-4-8",
+          max_tokens: 64,
+          messages: [{ role: "user", content: "test" }],
+        }),
+      },
+    );
+    assert.equal(messages.status, 200);
+    assert.equal(upstreamRequests[1].url, "/v1/messages");
+    assert.equal(upstreamRequests[1].body.model, "claude-opus-4-8");
+    assert.equal(
+      upstreamRequests[1].headers["x-api-key"],
+      "TEST_COMMANDCODE_API_KEY",
+    );
+    assert.equal(upstreamRequests[1].headers.authorization, undefined);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
 test("router strips empty text parts and drops the messages left with nothing", async () => {
   const gatewayRequests = [];
   const gateway = await mockServer(async (request, response) => {
