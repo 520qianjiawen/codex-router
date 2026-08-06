@@ -20,6 +20,11 @@ import { codexAuthStatus, codexVersion, runCodex } from "./codex-binary.mjs";
 import { readUserModels } from "./user-models.mjs";
 import { syncRoutedCodexAgents } from "./codex-agent-catalog.mjs";
 import { MODEL_BY_SLUG } from "./model-registry.mjs";
+import {
+  applyMultiAgentSettings,
+  readMultiAgentSettings,
+} from "./multi-agent-state.mjs";
+import { readHiddenModels } from "./model-picker-state.mjs";
 import { buildNativeAliasAssignments } from "./native-alias.mjs";
 import { selectedConfiguredListedModels } from "./provider-selection.mjs";
 import { assertStateOwnership } from "./state-owner.mjs";
@@ -275,6 +280,11 @@ export function routedModel(template, model) {
     supports_search_tool: false,
     supports_image_detail_original: false,
     use_responses_lite: false,
+    // Codex only knows one ApplyPatchToolType variant. The native template
+    // carries "freeform", but upstreams that reject OpenAI custom tools (Meta
+    // Responses, for example) must opt out explicitly; null is the only value
+    // that suppresses the tool without making the catalog unparseable.
+    apply_patch_tool_type: model.supportsApplyPatchTool === false ? null : "freeform",
     // Codex v2 collaboration only exposes spawn_agent model overrides whose
     // catalog entry advertises the same backend version as the parent. Models
     // opt in after their tool and encrypted-payload relay paths are verified.
@@ -287,6 +297,11 @@ export function routedModel(template, model) {
     next.model_messages = rewriteModelMessages(next.model_messages, model);
   }
   return next;
+}
+
+export function applyAllMultiAgent(models, enabled) {
+  if (!enabled) return models;
+  return models.map((model) => ({ ...model, multiAgentVersion: "v2" }));
 }
 
 export const AUTO_ANNOUNCE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -427,11 +442,17 @@ function main() {
   // advertising models the running gateway has no route for.
   assertStateOwnership("write the Codex model catalog");
   const userSlugs = new Set(readUserModels().map((model) => String(model.slug)));
+  const hiddenModels = readHiddenModels();
+  const allMultiAgentModels = applyMultiAgentSettings(
+    selectedConfiguredListedModels(),
+    readMultiAgentSettings(),
+    hiddenModels,
+  );
   // Clamp before announcements and agent sync so every surface Codex reads —
   // picker levels, defaults, and announcement copy — stays inside the effort
   // vocabulary the installed build can actually deserialize.
   const { models: routedModels, announcedAt } = annotateNewModelAnnouncements(
-    clampModelEfforts(selectedConfiguredListedModels(), codexEffortVocabulary(codexVersion())),
+    clampModelEfforts(allMultiAgentModels, codexEffortVocabulary(codexVersion())),
     readAnnouncedAt(),
     userSlugs,
     Date.now(),
@@ -459,7 +480,13 @@ function main() {
         }),
         aliases: {},
       };
-  atomicJson(MERGED_CATALOG_PATH, { models: merged });
+  atomicJson(MERGED_CATALOG_PATH, {
+    models: merged.map((model) =>
+      hiddenModels.has(String(model.slug))
+        ? { ...model, visibility: "hide" }
+        : model,
+    ),
+  });
   atomicJson(NATIVE_ALIAS_PATH, { version: 1, aliases });
   writeAnnouncedAt(announcedAt);
   const routedAgents = syncRoutedCodexAgents(routedModels);

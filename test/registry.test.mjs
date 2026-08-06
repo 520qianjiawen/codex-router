@@ -56,6 +56,27 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "opencode-go-messages/qwen3.6-plus",
       "opencode-go/hy3",
       "opencode-go-responses/gpt-5.6-luna",
+      "commandcode/deepseek-v4-flash",
+      "commandcode/deepseek-v4-pro",
+      "commandcode/glm-5.2",
+      "commandcode/kimi-k3",
+      "commandcode/kimi-k2.7-code",
+      "commandcode/qwen3.8-max",
+      "commandcode/qwen3.7-max",
+      "commandcode/qwen3.7-plus",
+      "commandcode/minimax-m3",
+      "commandcode/minimax-m2.7",
+      "commandcode/mimo-v2.5-pro",
+      "commandcode/grok-4.5",
+      "commandcode/gpt-5.6-luna",
+      "commandcode/gpt-5.5",
+      "commandcode/gemini-3.5-flash",
+      "commandcode/hy3-paid",
+      "commandcode/step-3.7-flash",
+      "commandcode-messages/claude-sonnet-5",
+      "commandcode-messages/claude-opus-4.8",
+      "commandcode-messages/claude-fable-5",
+      "commandcode-messages/claude-haiku-4.5",
       "meta/muse-spark-1.2",
       "meta/muse-spark-1.2-contributor",
       "meta/muse-spark-1.1",
@@ -78,15 +99,28 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(PROVIDERS.get("opencode-go-responses").baseUrl, "https://opencode.ai/zen/go/v1");
   assert.equal(PROVIDERS.get("opencode-go-messages").protocol, "anthropic");
   assert.equal(PROVIDERS.get("opencode-go-responses").protocol, "openai-responses");
+  assert.equal(PROVIDERS.get("commandcode").baseUrl, "https://api.commandcode.ai/provider/v1");
+  assert.equal(PROVIDERS.get("commandcode-messages").baseUrl, "https://api.commandcode.ai/provider/v1");
+  assert.equal(PROVIDERS.get("commandcode-messages").protocol, "anthropic");
   // The protocol variants are one selectable family: they declare the parent
   // whose credential and picker selection they follow.
   assert.equal(PROVIDERS.get("opencode-go").variantOf, undefined);
   assert.equal(PROVIDERS.get("opencode-go-messages").variantOf, "opencode-go");
   assert.equal(PROVIDERS.get("opencode-go-responses").variantOf, "opencode-go");
+  assert.equal(PROVIDERS.get("commandcode").variantOf, undefined);
+  assert.equal(PROVIDERS.get("commandcode-messages").variantOf, "commandcode");
   assert.equal(
     PROVIDERS.get("opencode-go-messages").credential.file,
     PROVIDERS.get("opencode-go").credential.file,
   );
+  assert.equal(
+    PROVIDERS.get("commandcode-messages").credential.file,
+    PROVIDERS.get("commandcode").credential.file,
+  );
+  assert.deepEqual(PROVIDERS.get("commandcode").credential.environment, [
+    "COMMAND_CODE_API_KEY",
+    "COMMANDCODE_API_KEY",
+  ]);
   assert.equal(PROVIDERS.get("grok-api").baseUrl, "https://api.x.ai/v1");
   assert.equal(PROVIDERS.get("grok-oauth").proxyBaseEnv, "GROK_OAUTH_FORWARD_BASE_URL");
   // Qwen OAuth was discontinued upstream on 2026-04-15, so the plan key is the
@@ -125,6 +159,14 @@ test("provider registry exposes configured API and OAuth model families", () => 
     MODEL_BY_SLUG.get("opencode-go-responses/gpt-5.6-luna").contextWindow,
     272_000,
   );
+  assert.equal(
+    MODEL_BY_SLUG.get("commandcode/deepseek-v4-flash").contextWindow,
+    1_000_000,
+  );
+  assert.equal(
+    MODEL_BY_SLUG.get("commandcode-messages/claude-opus-4.8").contextWindow,
+    1_000_000,
+  );
   // Documented output_config.effort ladder for Opus 4.8 (default high).
   assert.deepEqual(
     MODEL_BY_SLUG.get("anthropic-api/claude-opus-4.8").reasoningLevels.map((level) => level.effort),
@@ -144,6 +186,17 @@ test("provider registry exposes configured API and OAuth model families", () => 
     assert.match(model.description, /DeepSeek V4/);
     assert.deepEqual(model.inputModalities, ["text"]);
   }
+});
+
+test("Meta models opt out of the apply_patch custom tool", () => {
+  for (const slug of [
+    "meta/muse-spark-1.2",
+    "meta/muse-spark-1.2-contributor",
+    "meta/muse-spark-1.1",
+  ]) {
+    assert.equal(MODEL_BY_SLUG.get(slug).supportsApplyPatchTool, false);
+  }
+  assert.equal(MODEL_BY_SLUG.get("grok-oauth/grok-4.5").supportsApplyPatchTool, undefined);
 });
 
 test("deprecated DeepSeek aliases remain routable but stay out of the picker", () => {

@@ -104,3 +104,34 @@ test("opencode Go protocol variants follow their parent as one family", () => {
     rmSync(testRoot, { recursive: true, force: true });
   }
 });
+
+test("Command Code protocol variants follow their parent as one family", () => {
+  try {
+    writeProviderCredential("commandcode", "TEST_COMMANDCODE_SELECTION_KEY");
+
+    writeProviderSelection(["commandcode-messages"]);
+    assert.deepEqual(
+      JSON.parse(readFileSync(PROVIDER_SELECTION_PATH, "utf8")).providers,
+      ["commandcode"],
+    );
+    assert.deepEqual(readProviderSelection(), [
+      "commandcode",
+      "commandcode-messages",
+    ]);
+
+    const slugs = selectedConfiguredListedModels().map((model) => model.slug);
+    assert.ok(slugs.includes("commandcode/deepseek-v4-flash"));
+    assert.ok(slugs.includes("commandcode-messages/claude-opus-4.8"));
+
+    assert.deepEqual(disableProvider("commandcode-messages"), []);
+    assert.deepEqual(selectedListedModels(), []);
+    assert.deepEqual(enableProvider("commandcode"), ["commandcode"]);
+    assert.ok(
+      selectedConfiguredListedModels()
+        .map((model) => model.slug)
+        .includes("commandcode-messages/claude-sonnet-5"),
+    );
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});

@@ -28,12 +28,14 @@ function startPanel() {
     account: null,
     providerUsage: null,
     providerSetup: null,
+    modelSettings: null,
     health: null,
     platform: null,
     settings: null,
     selectedSource: null,
     sourceWasChosen: false,
     busyProvider: null,
+    modelSettingsBusy: false,
     loginFreeBusy: false,
     keyProvider: null,
     removeProvider: null,
@@ -44,6 +46,7 @@ function startPanel() {
     tabs: [...document.querySelectorAll(".tab")],
     usageView: document.getElementById("usage-view"),
     connectionsView: document.getElementById("connections-view"),
+    modelsView: document.getElementById("models-view"),
     close: document.getElementById("close-panel"),
     routerStatus: document.getElementById("router-status"),
     liveState: document.getElementById("live-state"),
@@ -58,6 +61,12 @@ function startPanel() {
     chartTooltip: document.getElementById("chart-tooltip"),
     quotaCards: document.getElementById("quota-cards"),
     providers: document.getElementById("provider-list"),
+    subagentSummary: document.getElementById("subagent-summary"),
+    pickerSummary: document.getElementById("picker-summary"),
+    subagentAllSwitch: document.getElementById("subagent-all-switch"),
+    subagentAllSwitchLabel: document.getElementById("subagent-all-switch-label"),
+    subagentModelList: document.getElementById("subagent-model-list"),
+    pickerModelList: document.getElementById("picker-model-list"),
     loginFreeSwitch: document.getElementById("login-free-switch"),
     loginFreeSwitchLabel: document.getElementById("login-free-switch-label"),
     loginFreeNote: document.getElementById("login-free-note"),
@@ -92,6 +101,14 @@ function startPanel() {
   });
   elements.providers.addEventListener("click", handleProviderClick);
   elements.providers.addEventListener("change", handleProviderToggle);
+  document.querySelectorAll(".accordion-header").forEach((button) => {
+    button.addEventListener("click", () => toggleAccordion(button));
+  });
+  elements.subagentAllSwitch.addEventListener("change", handleSubagentAllToggle);
+  elements.subagentModelList.addEventListener("change", handleModelSettingsToggle);
+  elements.subagentModelList.addEventListener("click", handleModelSettingsClick);
+  elements.pickerModelList.addEventListener("change", handleModelSettingsToggle);
+  elements.pickerModelList.addEventListener("click", handleModelSettingsClick);
   elements.loginFreeSwitch.addEventListener("change", handleLoginFreeToggle);
   elements.islandSwitch.addEventListener("change", handleIslandToggle);
   elements.keyForm.addEventListener("submit", saveKey);
@@ -125,8 +142,10 @@ function startPanel() {
 
   function selectTab(tab) {
     const usage = tab === "usage";
+    const models = tab === "models";
     elements.usageView.hidden = !usage;
-    elements.connectionsView.hidden = usage;
+    elements.connectionsView.hidden = usage || models;
+    elements.modelsView.hidden = !models;
     elements.tabs.forEach((button) => button.classList.toggle("is-active", button.dataset.tab === tab));
   }
 
@@ -178,6 +197,7 @@ function startPanel() {
     renderProviders();
     renderLoginFreeSetting();
     renderIslandSetting();
+    renderModelSettings();
   }
 
   function renderStatus() {
@@ -309,6 +329,193 @@ function startPanel() {
     elements.islandNote.textContent = supported
       ? "Top-center live activity · hover for daily graph"
       : state.platform?.islandReason || "Unavailable on this desktop session";
+  }
+
+  function toggleAccordion(button) {
+    const name = button.dataset.accordion;
+    const body = document.querySelector(`[data-accordion-body="${name}"]`);
+    if (!body) return;
+    const open = body.hidden;
+    body.hidden = !open;
+    button.setAttribute("aria-expanded", String(open));
+    body.classList.toggle("is-open", open);
+  }
+
+  function renderModelSettings() {
+    const snapshot = state.snapshot?.targets?.codex;
+    const settings = snapshot?.modelSettings;
+    const models = snapshot?.models || [];
+    const enabledProviders = new Set(snapshot?.enabledProviders || []);
+    const enabledModels = models.filter(
+      (model) => model.enabled && enabledProviders.has(model.provider),
+    );
+    const pickerModels = models.filter((model) => model.enabled);
+    const subagent = settings?.subagents || { mode: "proven", enabled: [], disabled: [] };
+    const enabledSubagents = new Set(subagent.enabled || []);
+    const disabledSubagents = new Set(subagent.disabled || []);
+    const hiddenModels = new Set(settings?.picker?.hidden || []);
+    const providerNames = new Map(
+      (snapshot?.providers || []).map((provider) => [provider.id, provider.displayName]),
+    );
+    providerNames.set("openai", "OpenAI");
+
+    function providerLabel(provider) {
+      return providerNames.get(provider) || provider;
+    }
+
+    function groupModels(list) {
+      const groups = new Map();
+      for (const model of list) {
+        if (!groups.has(model.provider)) groups.set(model.provider, []);
+        groups.get(model.provider).push(model);
+      }
+      return [...groups.entries()]
+        .sort(([left], [right]) => String(left).localeCompare(String(right)))
+        .map(([provider, items]) => ({
+          provider,
+          items: items.sort((left, right) => String(left.slug).localeCompare(String(right.slug))),
+        }));
+    }
+
+    function providerGroupsMarkup(groups, rowMarkup) {
+      return groups
+        .map(
+          (group) => `<details class="model-provider-group" open>
+            <summary><span>${escapeHtml(providerLabel(group.provider))}</span><span class="model-provider-count">${group.items.length}</span></summary>
+            <div class="model-settings-list">${group.items.map(rowMarkup).join("")}</div>
+          </details>`,
+        )
+        .join("");
+    }
+
+    elements.subagentAllSwitch.disabled = state.modelSettingsBusy;
+    elements.subagentAllSwitch.checked = subagent.mode === "all";
+    elements.subagentAllSwitchLabel.title = subagent.mode === "all"
+      ? "Every enabled model is exposed as a Codex subagent."
+      : subagent.mode === "selected"
+        ? "Only selected models are exposed as Codex subagents."
+        : "Only registry-proven v2 models are exposed as Codex subagents.";
+
+    const subagentModels = enabledModels
+      .filter((model) => !model.native && model.visible !== false)
+    const subagentGroups = groupModels(subagentModels);
+    const subagentRow = (model) => {
+        const checked = subagent.mode === "all"
+          ? !disabledSubagents.has(model.slug)
+          : (model.multiAgentVersion === "v2" || enabledSubagents.has(model.slug)) &&
+            !disabledSubagents.has(model.slug);
+        const badge = model.multiAgentVersion === "v2" ? " · proven v2" : "";
+        return `<label class="model-setting-row">
+          <span><strong>${escapeHtml(model.displayName)}</strong><small>${escapeHtml(badge)}</small></span>
+          <span class="provider-check"><input type="checkbox" data-subagent="${escapeHtml(model.slug)}" aria-label="Use ${escapeHtml(model.displayName)} as a subagent"${checked ? " checked" : ""}${state.modelSettingsBusy ? " disabled" : ""}></span>
+        </label>`;
+      };
+
+    elements.subagentModelList.innerHTML = subagentGroups.length
+      ? providerGroupsMarkup(subagentGroups, subagentRow)
+      : '<div class="empty-state">Enable a provider to choose subagent models here.</div>';
+    const subagentCount = subagent.mode === "all"
+      ? enabledModels.filter(
+          (model) => !model.native && model.visible !== false && !disabledSubagents.has(model.slug),
+        ).length
+      : enabledModels.filter(
+          (model) =>
+            !model.native &&
+            model.visible !== false &&
+            (model.multiAgentVersion === "v2" || enabledSubagents.has(model.slug)) &&
+            !disabledSubagents.has(model.slug),
+        ).length;
+    elements.subagentSummary.textContent = `${subagentCount} subagent model${subagentCount === 1 ? "" : "s"} · ${subagent.mode}`;
+
+    const pickerGroups = groupModels(pickerModels);
+    const pickerRow = (model) => {
+        const visible = !hiddenModels.has(model.slug);
+        return `<label class="model-setting-row">
+          <span><strong>${escapeHtml(model.displayName)}</strong><small>${escapeHtml(model.slug)}</small></span>
+          <span class="provider-check"><input type="checkbox" data-picker="${escapeHtml(model.slug)}" aria-label="Show ${escapeHtml(model.displayName)} in the picker"${visible ? " checked" : ""}${state.modelSettingsBusy ? " disabled" : ""}></span>
+        </label>`;
+      };
+
+    elements.pickerModelList.innerHTML = pickerGroups.length
+      ? providerGroupsMarkup(pickerGroups, pickerRow)
+      : '<div class="empty-state">No enabled models to show.</div>';
+    const pickerCount = pickerModels.filter((model) => !hiddenModels.has(model.slug)).length;
+    elements.pickerSummary.textContent = `${pickerCount} visible · ${hiddenModels.size} hidden`;
+  }
+
+  async function handleSubagentAllToggle() {
+    const enabled = elements.subagentAllSwitch.checked;
+    const settings = state.snapshot?.targets?.codex?.modelSettings?.subagents;
+    const enabledSet = new Set(settings?.enabled || []);
+    const mode = enabled ? "all" : enabledSet.size ? "selected" : "proven";
+    state.modelSettingsBusy = true;
+    renderModelSettings();
+    try {
+      state.snapshot = await call("set_subagent_mode", { mode });
+      showToast(enabled ? "All enabled models can now run as subagents." : "Subagent mode updated.");
+      await refreshPanel({ quiet: true });
+    } catch (error) {
+      elements.subagentAllSwitch.checked = !enabled;
+      showToast(errorMessage(error), true);
+    } finally {
+      state.modelSettingsBusy = false;
+      renderModelSettings();
+    }
+  }
+
+  async function handleModelSettingsClick(event) {
+    const button = event.target.closest("button[data-model-action]");
+    if (!button) return;
+    const group = button.dataset.modelAction;
+    const action = button.dataset.action;
+    state.modelSettingsBusy = true;
+    renderModelSettings();
+    try {
+      if (group === "subagents") {
+        const selectAll = action === "select-all";
+        state.snapshot = await call("set_subagent_selection", { selectAll });
+        showToast(selectAll ? "Every picker-visible model can now run as a subagent." : "Subagent selection cleared.");
+      } else {
+        const showAll = action === "show-all";
+        state.snapshot = await call("set_picker_models", { showAll });
+        showToast(showAll ? "Every model is visible in the picker." : "All models hidden from the picker.");
+      }
+      await refreshPanel({ quiet: true });
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      state.modelSettingsBusy = false;
+      renderModelSettings();
+    }
+  }
+
+  async function handleModelSettingsToggle(event) {
+    const subagent = event.target.closest('input[data-subagent]');
+    const picker = event.target.closest('input[data-picker]');
+    if (!subagent && !picker) return;
+    state.modelSettingsBusy = true;
+    renderModelSettings();
+    try {
+      if (subagent) {
+        state.snapshot = await call("set_subagent_model", {
+          slug: subagent.dataset.subagent,
+          enabled: subagent.checked,
+        });
+      } else {
+        state.snapshot = await call("set_picker_model", {
+          slug: picker.dataset.picker,
+          visible: picker.checked,
+        });
+      }
+      await refreshPanel({ quiet: true });
+    } catch (error) {
+      if (subagent) subagent.checked = !subagent.checked;
+      else picker.checked = !picker.checked;
+      showToast(errorMessage(error), true);
+    } finally {
+      state.modelSettingsBusy = false;
+      renderModelSettings();
+    }
   }
 
   async function handleProviderClick(event) {

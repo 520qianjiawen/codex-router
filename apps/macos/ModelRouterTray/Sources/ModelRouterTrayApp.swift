@@ -10,6 +10,7 @@ let routerYellow = Color(red: 0.94, green: 0.68, blue: 0.25)
 let routerRed = Color(red: 0.91, green: 0.35, blue: 0.32)
 let routerInk = Color(red: 0.035, green: 0.043, blue: 0.055)
 let routerMuted = Color.secondary.opacity(0.72)
+let routerMutedStrong = Color.secondary.opacity(0.96)
 let removalArmWindow: TimeInterval = 4
 
 enum RouterActivityState: String, Decodable {
@@ -201,7 +202,7 @@ final class RouterStore: ObservableObject {
   }
 
   var maintenanceRunning: Bool {
-    providerOperation == "maintenance"
+    providerOperation == "maintenance" || providerOperation == "doctor"
   }
 
   // SMAppService needs a real bundle identity; a bare `swift run` binary has
@@ -310,6 +311,7 @@ final class RouterStore: ObservableObject {
     "zai-coding": "GLM",
     "qwen-plan": "Qwen",
     "ollama-cloud": "Ollama",
+    "commandcode": "Command Code",
   ]
 
   static func shortName(forRegistryProvider provider: RouterProviderInfo) -> String {
@@ -903,6 +905,26 @@ final class RouterStore: ObservableObject {
     }
   }
 
+  func fixAndVerify() async {
+    guard providerOperation == nil else { return }
+    providerOperation = "doctor"
+    maintenanceMessage = "Running doctor --fix…"
+    maintenanceSucceeded = false
+    defer { providerOperation = nil }
+    do {
+      _ = try await runControl(arguments: ["doctor", "--fix"])
+      await refresh()
+      await refreshAccountUsage()
+      await refreshProviderUsage()
+      await refreshProviderSetup()
+      maintenanceSucceeded = true
+      maintenanceMessage = "Fixed. Restart Codex if models changed."
+    } catch {
+      maintenanceMessage = error.localizedDescription
+      await refresh()
+    }
+  }
+
   func setLoginFree(_ enabled: Bool) async {
     guard providerOperation == nil else { return }
     providerOperation = "auth-mode"
@@ -924,6 +946,52 @@ final class RouterStore: ObservableObject {
         : "Codex restarted with OpenAI login restored."
     } catch {
       message = "Mode changed, but Codex could not restart: \(error.localizedDescription)"
+    }
+  }
+
+  func setSubagentMode(_ mode: String) async {
+    await applyModelSettings(arguments: ["subagents", "mode", mode])
+  }
+
+  func setSubagentModel(_ slug: String, enabled: Bool) async {
+    await applyModelSettings(
+      arguments: ["subagents", "set", slug, enabled ? "on" : "off"]
+    )
+  }
+
+  func setPickerModel(_ slug: String, visible: Bool) async {
+    await applyModelSettings(
+      arguments: ["picker", "set", slug, visible ? "show" : "hide"]
+    )
+  }
+
+  func selectAllSubagents() async {
+    await applyModelSettings(arguments: ["subagents", "select-all"])
+  }
+
+  func unselectAllSubagents() async {
+    await applyModelSettings(arguments: ["subagents", "unselect-all"])
+  }
+
+  func showAllPickerModels() async {
+    await applyModelSettings(arguments: ["picker", "all", "show"])
+  }
+
+  func hideAllPickerModels() async {
+    await applyModelSettings(arguments: ["picker", "all", "hide"])
+  }
+
+  private func applyModelSettings(arguments: [String]) async {
+    guard providerOperation == nil else { return }
+    providerOperation = "models"
+    defer { providerOperation = nil }
+    do {
+      _ = try await runControl(arguments: arguments)
+      await refresh()
+      message = "Model settings applied. Restart Codex to refresh its picker."
+    } catch {
+      message = error.localizedDescription
+      await refresh()
     }
   }
 
@@ -1381,6 +1449,7 @@ struct RouterTarget: Decodable {
   let loginFree: Bool?
   let loginFreeManaged: Bool?
   let nativeAliases: [String: String]?
+  let modelSettings: ModelSettingsSnapshot?
 }
 
 struct RouterProviderInfo: Decodable {
@@ -1403,7 +1472,25 @@ struct RouterModel: Decodable, Identifiable {
   let displayName: String
   let provider: String
   let enabled: Bool
+  let multiAgentVersion: String?
+  let visible: Bool?
   var id: String { slug }
+}
+
+struct ModelSettingsSnapshot: Decodable {
+  let subagents: SubagentSettingsSnapshot
+  let picker: PickerSettingsSnapshot
+}
+
+struct SubagentSettingsSnapshot: Decodable {
+  let mode: String
+  let enabled: [String]
+  let disabled: [String]
+  let all: Bool
+}
+
+struct PickerSettingsSnapshot: Decodable {
+  let hidden: [String]
 }
 
 struct UsageProviderChoice: Identifiable {
@@ -1528,6 +1615,7 @@ enum TrayTab: String, CaseIterable, Identifiable {
 private struct TrayView: View {
   @ObservedObject var store: RouterStore
   @AppStorage("trayTab") private var tab: TrayTab = .usage
+  @State private var providersExpanded = true
 
   private var target: RouterTarget? { store.snapshot.targets["codex"] }
   private var providers: [(id: String, enabled: Bool)] {
@@ -1557,6 +1645,7 @@ private struct TrayView: View {
       }
       .padding(14)
     }
+    .preferredColorScheme(.dark)
     .foregroundStyle(.primary)
     .task { await store.refresh() }
   }
@@ -1795,32 +1884,325 @@ private struct TrayView: View {
       ),
       isDisabled: store.providerOperation != nil
     )
-    sectionLabel(
-      "Maintenance",
-      detail: store.maintenanceRunning ? "Updating & checking…" : "Update + doctor"
-    )
     maintenanceRow
-    sectionLabel("Providers", detail: store.providerOperation == nil ? "Auto-saved" : "Applying…")
-    VStack(spacing: 0) {
-      ForEach(providers, id: \.id) { provider in
-        ProviderSetupRow(
-          provider: provider,
-          setup: store.providerSetup[provider.id],
-          account: store.providerUsage(for: provider.id)?.account,
-          isBusy: store.providerOperation == provider.id,
-          controlsDisabled: store.providerOperation != nil,
-          onToggle: { enabled in
-            Task { await store.setProvider(provider.id, enabled: enabled) }
-          },
-          onInstall: { Task { await store.installProviderCLI(provider.id) } },
-          onLogin: { Task { await store.loginProvider(provider.id) } },
-          onSaveKey: { key in Task { await store.saveProviderKey(provider.id, key: key) } },
-          onRemoveKey: { Task { await store.removeProviderKey(provider.id) } }
-        )
-        if provider.id != providers.last?.id {
-          Divider()
+    AccordionPanel(
+      title: "Providers",
+      summary: store.providerOperation == nil ? "Auto-saved" : "Applying…",
+      expanded: $providersExpanded
+    ) {
+      VStack(spacing: 0) {
+        ForEach(providers, id: \.id) { provider in
+          ProviderSetupRow(
+            provider: provider,
+            setup: store.providerSetup[provider.id],
+            account: store.providerUsage(for: provider.id)?.account,
+            isBusy: store.providerOperation == provider.id,
+            controlsDisabled: store.providerOperation != nil,
+            onToggle: { enabled in
+              Task { await store.setProvider(provider.id, enabled: enabled) }
+            },
+            onInstall: { Task { await store.installProviderCLI(provider.id) } },
+            onLogin: { Task { await store.loginProvider(provider.id) } },
+            onSaveKey: { key in Task { await store.saveProviderKey(provider.id, key: key) } },
+            onRemoveKey: { Task { await store.removeProviderKey(provider.id) } }
+          )
+          if provider.id != providers.last?.id {
+            Divider()
+          }
         }
       }
+    }
+    ModelSettingsAccordion(store: store, target: target)
+  }
+
+  private struct ModelSettingsAccordion: View {
+    @ObservedObject var store: RouterStore
+    let target: RouterTarget
+    @State private var subagentsExpanded = true
+    @State private var pickerExpanded = true
+    @State private var collapsedProviders = Set<String>()
+
+    private struct ProviderModels: Identifiable {
+      let provider: String
+      let models: [RouterModel]
+      var id: String { provider }
+    }
+
+    private var settings: ModelSettingsSnapshot? { target.modelSettings }
+    private var busy: Bool { store.providerOperation == "models" }
+
+    private var enabledExternalModels: [RouterModel] {
+      target.models
+        .filter { $0.enabled && $0.provider != "openai" && $0.visible != false }
+        .sorted {
+          if $0.provider != $1.provider { return $0.provider < $1.provider }
+          return $0.slug < $1.slug
+        }
+    }
+
+    private var enabledModels: [RouterModel] {
+      target.models
+        .filter(\.enabled)
+        .sorted {
+          if $0.provider != $1.provider { return $0.provider < $1.provider }
+          return $0.slug < $1.slug
+        }
+    }
+
+    private func providerGroups(_ models: [RouterModel]) -> [ProviderModels] {
+      Dictionary(grouping: models, by: \.provider)
+        .map { ProviderModels(provider: $0.key, models: $0.value.sorted { $0.slug < $1.slug }) }
+        .sorted { $0.provider < $1.provider }
+    }
+
+    private func providerName(_ id: String) -> String {
+      if id == "openai" { return "OpenAI" }
+      return target.providers?.first(where: { $0.id == id })?.displayName ?? id
+    }
+
+    private func providerBinding(_ provider: String) -> Binding<Bool> {
+      Binding(
+        get: { !collapsedProviders.contains(provider) },
+        set: { expanded in
+          if expanded {
+            collapsedProviders.remove(provider)
+          } else {
+            collapsedProviders.insert(provider)
+          }
+        }
+      )
+    }
+
+    var body: some View {
+      VStack(alignment: .leading, spacing: 10) {
+        AccordionPanel(
+          title: "Subagent models",
+          summary: subagentSummary,
+          expanded: $subagentsExpanded
+        ) {
+          VStack(alignment: .leading, spacing: 8) {
+            toggleRow(
+              title: "All selected models",
+              detail: settings?.subagents.mode == "all"
+                ? "Every enabled model can run as a subagent"
+                : "Only selected models can run as subagents",
+              isOn: Binding(
+                get: { settings?.subagents.mode == "all" },
+                set: { enabled in
+                  let current = settings?.subagents
+                  let mode = enabled
+                    ? "all"
+                    : current?.enabled.isEmpty == false ? "selected" : "proven"
+                  Task { await store.setSubagentMode(mode) }
+                }
+              ),
+              disabled: busy
+            )
+            toolbar(
+              buttons: [
+                ("Select all", { Task { await store.selectAllSubagents() } }),
+                ("Unselect all", { Task { await store.unselectAllSubagents() } }),
+              ]
+            )
+            ForEach(providerGroups(enabledExternalModels)) { group in
+              AccordionPanel(
+                title: providerName(group.provider),
+                summary: "\(group.models.count) models",
+                expanded: providerBinding(group.provider)
+              ) {
+                VStack(alignment: .leading, spacing: 6) {
+                  ForEach(group.models) { model in
+                    toggleRow(
+                      title: model.displayName,
+                      detail: subagentDetail(for: model),
+                      isOn: Binding(
+                        get: { isSubagent(model) },
+                        set: { enabled in
+                          Task { await store.setSubagentModel(model.slug, enabled: enabled) }
+                        }
+                      ),
+                      disabled: busy
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        AccordionPanel(
+          title: "Model picker",
+          summary: pickerSummary,
+          expanded: $pickerExpanded
+        ) {
+          VStack(alignment: .leading, spacing: 8) {
+            Text("Hidden models stay connected but are not offered by Codex.")
+              .font(.system(size: 9))
+              .foregroundStyle(routerMuted)
+            toolbar(
+              buttons: [
+                ("Show all", { Task { await store.showAllPickerModels() } }),
+                ("Hide all", { Task { await store.hideAllPickerModels() } }),
+              ]
+            )
+            ForEach(providerGroups(enabledModels)) { group in
+              AccordionPanel(
+                title: providerName(group.provider),
+                summary: "\(group.models.count) models",
+                expanded: providerBinding(group.provider)
+              ) {
+                VStack(alignment: .leading, spacing: 6) {
+                  ForEach(group.models) { model in
+                    toggleRow(
+                      title: model.displayName,
+                      detail: model.slug,
+                      isOn: Binding(
+                        get: { !hiddenModels.contains(model.slug) },
+                        set: { visible in
+                          Task { await store.setPickerModel(model.slug, visible: visible) }
+                        }
+                      ),
+                      disabled: busy
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    private var hiddenModels: Set<String> {
+      Set(settings?.picker.hidden ?? [])
+    }
+
+    private var enabledSubagentSet: Set<String> {
+      Set(settings?.subagents.enabled ?? [])
+    }
+
+    private var disabledSubagentSet: Set<String> {
+      Set(settings?.subagents.disabled ?? [])
+    }
+
+    private func isSubagent(_ model: RouterModel) -> Bool {
+      if disabledSubagentSet.contains(model.slug) { return false }
+      switch settings?.subagents.mode ?? "proven" {
+      case "all":
+        return true
+      case "selected":
+        return model.multiAgentVersion == "v2" || enabledSubagentSet.contains(model.slug)
+      default:
+        return model.multiAgentVersion == "v2"
+      }
+    }
+
+    private func subagentDetail(for model: RouterModel) -> String {
+      if isSubagent(model) {
+        return model.multiAgentVersion == "v2" ? "Proven v2" : "Subagent"
+      }
+      return "Not selected"
+    }
+
+    private var subagentSummary: String {
+      let count = enabledExternalModels.filter { isSubagent($0) }.count
+      return "\(count) enabled · \(settings?.subagents.mode ?? "proven")"
+    }
+
+    private var pickerSummary: String {
+      let visible = enabledModels.filter { !hiddenModels.contains($0.slug) }.count
+      return "\(visible) visible · \(hiddenModels.count) hidden"
+    }
+
+    private func toggleRow(
+      title: String,
+      detail: String,
+      isOn: Binding<Bool>,
+      disabled: Bool
+    ) -> some View {
+      HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(.system(size: 11, weight: .medium))
+            .lineLimit(1)
+          Text(detail)
+            .font(.system(size: 9))
+            .foregroundStyle(routerMutedStrong)
+            .lineLimit(1)
+        }
+        Spacer()
+        Toggle("", isOn: isOn)
+          .labelsHidden()
+          .toggleStyle(.switch)
+          .controlSize(.mini)
+          .tint(routerMint)
+          .disabled(disabled)
+      }
+      .padding(.horizontal, 2)
+    }
+
+    private func toolbar(
+      buttons: [(String, () -> Void)]
+    ) -> some View {
+      HStack {
+        Spacer()
+        ForEach(Array(buttons.enumerated()), id: \.offset) { _, entry in
+          Button(entry.0, action: entry.1)
+            .buttonStyle(.borderless)
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(routerMint)
+            .disabled(busy)
+        }
+      }
+    }
+  }
+
+  private struct AccordionPanel<Content: View>: View {
+    let title: String
+    let summary: String
+    @Binding var expanded: Bool
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+      VStack(spacing: 0) {
+        Button(action: {
+          withAnimation(.easeInOut(duration: 0.16)) {
+            expanded.toggle()
+          }
+        }) {
+          HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+              Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+              if !summary.isEmpty {
+                Text(summary)
+                  .font(.system(size: 9))
+                  .foregroundStyle(routerMutedStrong)
+                  .lineLimit(1)
+              }
+            }
+            Spacer()
+            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+              .font(.system(size: 10, weight: .semibold))
+              .foregroundStyle(routerMuted)
+              .frame(width: 14)
+          }
+          .padding(10)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+
+        if expanded {
+          content()
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
+        }
+      }
+      .background(
+        Color.primary.opacity(0.045),
+        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+      )
     }
   }
 
@@ -1864,15 +2246,13 @@ private struct TrayView: View {
   }
 
   private var maintenanceRow: some View {
-    HStack(spacing: 12) {
-      VStack(alignment: .leading, spacing: 3) {
-        Text("Router installation")
-          .font(.system(size: 12, weight: .medium))
-        Text(store.maintenanceMessage ?? "Apply pulled changes and verify routed model agents")
-          .font(.system(size: 9))
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 12) {
+        Text(maintenanceStatus)
+          .font(.system(size: 10, weight: .medium))
           .foregroundStyle(
             store.maintenanceMessage == nil
-              ? routerMuted
+              ? routerMutedStrong
               : store.maintenanceSucceeded
                 ? routerMint
                 : store.maintenanceRunning
@@ -1880,25 +2260,41 @@ private struct TrayView: View {
                   : routerRed
           )
           .lineLimit(2)
-      }
-      Spacer(minLength: 8)
-      if store.maintenanceRunning {
-        ProgressView()
-          .controlSize(.small)
-          .tint(routerAccent)
-          .frame(width: 94)
-          .accessibilityLabel("Updating and verifying Codex Router")
-      } else {
-        Button {
-          Task { await store.updateAndVerify() }
-        } label: {
-          Label("Update & Verify", systemImage: "arrow.triangle.2.circlepath")
+        Spacer(minLength: 8)
+        if store.maintenanceRunning {
+          ProgressView()
+            .controlSize(.small)
+            .tint(routerAccent)
+            .frame(width: 94)
+            .accessibilityLabel("Running Codex Router maintenance")
+        } else {
+          Button {
+            Task { await store.updateAndVerify() }
+          } label: {
+            Label("Update", systemImage: "arrow.triangle.2.circlepath")
+          }
+          .buttonStyle(AccentButtonStyle())
+          .disabled(store.providerOperation != nil)
+          .opacity(store.providerOperation == nil ? 1 : 0.5)
+          .help("Apply the checked-out router revision, then run the Codex doctor")
+          .accessibilityLabel("Update and verify Codex Router")
+          Button {
+            Task { await store.fixAndVerify() }
+          } label: {
+            Label("Fix", systemImage: "wrench.and.screwdriver")
+          }
+          .buttonStyle(AccentButtonStyle())
+          .disabled(store.providerOperation != nil)
+          .opacity(store.providerOperation == nil ? 1 : 0.5)
+          .help("Run the Codex doctor and repair managed router files")
+          .accessibilityLabel("Fix Codex Router installation")
         }
-        .buttonStyle(AccentButtonStyle())
-        .disabled(store.providerOperation != nil)
-        .opacity(store.providerOperation == nil ? 1 : 0.5)
-        .help("Apply the checked-out router revision, then run the Codex doctor")
-        .accessibilityLabel("Update and verify Codex Router")
+      }
+      if maintenanceFailed {
+        Text(maintenanceHint)
+          .font(.system(size: 9))
+          .foregroundStyle(routerRed.opacity(0.9))
+          .lineLimit(3)
       }
     }
     .padding(10)
@@ -1906,6 +2302,30 @@ private struct TrayView: View {
       Color.primary.opacity(0.045),
       in: RoundedRectangle(cornerRadius: 10, style: .continuous)
     )
+  }
+
+  private var maintenanceStatus: String {
+    if store.maintenanceRunning {
+      return "Working…"
+    }
+    if store.maintenanceSucceeded {
+      return store.maintenanceMessage ?? "All good"
+    }
+    if maintenanceFailed {
+      return "Update or fix failed"
+    }
+    return store.maintenanceMessage ?? "Router ready"
+  }
+
+  private var maintenanceFailed: Bool {
+    store.maintenanceMessage != nil &&
+      !store.maintenanceSucceeded &&
+      !store.maintenanceRunning
+  }
+
+  private var maintenanceHint: String {
+    guard let message = store.maintenanceMessage else { return "" }
+    return "\(message)\nIf this keeps failing, run ./bin/support-bundle and share the path."
   }
 
   private var emptyState: some View {

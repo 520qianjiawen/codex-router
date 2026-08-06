@@ -321,6 +321,7 @@ const ZAI_PLAN_DASHBOARD_URL = "https://z.ai/manage-apikey/coding-plan/personal/
 const QWEN_PLAN_DASHBOARD_URL =
   "https://modelstudio.console.alibabacloud.com/ap-southeast-1/?tab=plan#/efm/subscription/token-plan";
 const OLLAMA_DASHBOARD_URL = "https://ollama.com/settings";
+const COMMANDCODE_DASHBOARD_URL = "https://commandcode.ai/studio";
 
 function zaiWindowLabel(unit, number) {
   if (unit === 6) return number === 1 ? "Weekly limit" : `${number}-week limit`;
@@ -450,6 +451,17 @@ async function accountUsageFor(providerId, fetchImpl) {
               localOnly("Ollama shows account usage only on ollama.com; showing router traffic"),
             ),
             dashboardUrl: OLLAMA_DASHBOARD_URL,
+          }
+        : { status: "not-configured", source: "official-api", metrics: [] };
+    }
+    if (providerId === "commandcode") {
+      return resolveProviderCredential("commandcode")
+        ? {
+            ...withHeaderQuota(
+              providerId,
+              localOnly("Command Code shows credits and usage only in Studio; showing router traffic"),
+            ),
+            dashboardUrl: COMMANDCODE_DASHBOARD_URL,
           }
         : { status: "not-configured", source: "official-api", metrics: [] };
     }

@@ -9,6 +9,8 @@ test("protocol variants never appear as separate usage providers", () => {
   assert.ok(ids.includes("opencode-go"));
   assert.ok(!ids.includes("opencode-go-messages"));
   assert.ok(!ids.includes("opencode-go-responses"));
+  assert.ok(ids.includes("commandcode"));
+  assert.ok(!ids.includes("commandcode-messages"));
 });
 
 test("aggregates tokens and calls independently for each provider", () => {

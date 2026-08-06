@@ -33,6 +33,10 @@ and disables its activity-pill switch; router monitoring continues normally.
 - **Connections** includes a **Use without OpenAI login** switch for new Codex
   sessions. It requires a connected, enabled external provider and restores the
   prior model-provider setting when switched off.
+- **Models** has two accordions: **Subagent models** exposes every enabled
+  model, or only selected models, as Codex v2 subagent overrides, and
+  **Model picker** hides or shows individual models without changing their
+  provider connection.
 
 The status mark uses Thinking Orbs **Shaping** while idle, **Thinking** while a
 model is generating, and **Solving** for errors. Starting retains its colored

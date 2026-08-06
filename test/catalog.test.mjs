@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   AUTO_ANNOUNCE_WINDOW_MS,
   annotateNewModelAnnouncements,
+  applyAllMultiAgent,
   buildMergedCatalog,
   buildLoginFreeCatalog,
   clampModelEfforts,
@@ -27,6 +28,7 @@ const template = {
       personality_default: "",
     },
   },
+  apply_patch_tool_type: "freeform",
 };
 
 const grok = {
@@ -74,6 +76,16 @@ test("routed models advertise reasoning summaries only when the registry opts in
   });
   assert.equal(summarized.supports_reasoning_summaries, true);
   assert.equal(summarized.default_reasoning_summary, "auto");
+});
+
+test("routed models inherit apply_patch unless the registry opts out", () => {
+  const plain = routedModel(template, grok);
+  assert.equal(plain.apply_patch_tool_type, "freeform");
+  const noPatch = routedModel(template, {
+    ...grok,
+    supportsApplyPatchTool: false,
+  });
+  assert.equal(noPatch.apply_patch_tool_type, null);
 });
 
 test("routed models announce availability only when curated with NUX copy", () => {
@@ -155,6 +167,19 @@ test("unverified routed models retain conservative v1 collaboration", () => {
     multiAgentVersion: undefined,
   });
   assert.equal(model.multi_agent_version, "v1");
+});
+
+test("all-models multi-agent mode promotes every selected model to v2", () => {
+  const models = [
+    { slug: "opencode-go/deepseek-v4-flash" },
+    { slug: "qwen-plan/qwen3.8-max", multiAgentVersion: "v1" },
+  ];
+  const promoted = applyAllMultiAgent(models, true);
+  assert.deepEqual(
+    promoted.map((model) => model.multiAgentVersion),
+    ["v2", "v2"],
+  );
+  assert.equal(applyAllMultiAgent(models, false), models);
 });
 
 test("merged catalog preserves native GPT identity while rewriting routed models", () => {

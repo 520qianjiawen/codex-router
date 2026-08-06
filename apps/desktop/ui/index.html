@@ -23,6 +23,7 @@
       <nav class="tabs" aria-label="Model Router sections">
         <button class="tab is-active" type="button" data-tab="usage">Usage</button>
         <button class="tab" type="button" data-tab="connections">Connections</button>
+        <button class="tab" type="button" data-tab="models">Models</button>
       </nav>
 
       <section id="usage-view" class="view">
@@ -98,6 +99,54 @@
           </label>
         </div>
         <div id="provider-list" class="provider-list"></div>
+      </section>
+
+      <section id="models-view" class="view" hidden>
+        <div class="accordion">
+          <button class="accordion-header" type="button" data-accordion="subagents" aria-expanded="true">
+            <span>
+              <strong>Subagent models</strong>
+              <small id="subagent-summary">Loading…</small>
+            </span>
+            <span class="accordion-chevron" aria-hidden="true"></span>
+          </button>
+          <div class="accordion-body is-open" data-accordion-body="subagents">
+            <div class="mode-setting">
+              <div>
+                <strong>All selected models</strong>
+                <small>Expose every enabled model as a Codex subagent</small>
+              </div>
+              <label class="switch" id="subagent-all-switch-label">
+                <input id="subagent-all-switch" type="checkbox" />
+                <span aria-hidden="true"></span>
+                <span class="sr-only">Use all selected models as subagents</span>
+              </label>
+            </div>
+            <div class="accordion-toolbar">
+              <button class="text-button" type="button" data-model-action="subagents" data-action="select-all">Select all</button>
+              <button class="text-button" type="button" data-model-action="subagents" data-action="unselect-all">Unselect all</button>
+            </div>
+            <div id="subagent-model-list" class="model-settings-list"></div>
+          </div>
+        </div>
+
+        <div class="accordion">
+          <button class="accordion-header" type="button" data-accordion="picker" aria-expanded="true">
+            <span>
+              <strong>Model picker</strong>
+              <small id="picker-summary">Loading…</small>
+            </span>
+            <span class="accordion-chevron" aria-hidden="true"></span>
+          </button>
+          <div class="accordion-body is-open" data-accordion-body="picker">
+            <p class="accordion-note">Models hidden here stay connected but are not offered by Codex.</p>
+            <div class="accordion-toolbar">
+              <button class="text-button" type="button" data-model-action="picker" data-action="show-all">Show all</button>
+              <button class="text-button" type="button" data-model-action="picker" data-action="hide-all">Unselect all</button>
+            </div>
+            <div id="picker-model-list" class="model-settings-list"></div>
+          </div>
+        </div>
       </section>
 
       <footer class="panel-footer">
