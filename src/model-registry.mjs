@@ -153,6 +153,12 @@ function modelProblem(model, providers, slugs, gatewayModels) {
     return `model ${model.slug} has an invalid supportsReasoningSummaries`;
   }
   if (
+    model.supportsApplyPatchTool !== undefined &&
+    typeof model.supportsApplyPatchTool !== "boolean"
+  ) {
+    return `model ${model.slug} has an invalid supportsApplyPatchTool`;
+  }
+  if (
     model.defaultReasoningSummary !== undefined &&
     !["auto", "concise", "detailed"].includes(model.defaultReasoningSummary)
   ) {

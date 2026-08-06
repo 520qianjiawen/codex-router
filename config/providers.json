@@ -2314,6 +2314,7 @@
         "text",
         "image"
       ],
+      "supportsApplyPatchTool": false,
       "compHash": "meta-muse-spark-1-2-v1"
     },
     {
@@ -2356,6 +2357,7 @@
         "text",
         "image"
       ],
+      "supportsApplyPatchTool": false,
       "compHash": "meta-muse-spark-1-2-contributor-v1"
     },
     {
@@ -2396,6 +2398,7 @@
         "text",
         "image"
       ],
+      "supportsApplyPatchTool": false,
       "compHash": "meta-muse-spark-1-1-v1"
     }
   ]

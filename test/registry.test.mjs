@@ -188,6 +188,17 @@ test("provider registry exposes configured API and OAuth model families", () => 
   }
 });
 
+test("Meta models opt out of the apply_patch custom tool", () => {
+  for (const slug of [
+    "meta/muse-spark-1.2",
+    "meta/muse-spark-1.2-contributor",
+    "meta/muse-spark-1.1",
+  ]) {
+    assert.equal(MODEL_BY_SLUG.get(slug).supportsApplyPatchTool, false);
+  }
+  assert.equal(MODEL_BY_SLUG.get("grok-oauth/grok-4.5").supportsApplyPatchTool, undefined);
+});
+
 test("deprecated DeepSeek aliases remain routable but stay out of the picker", () => {
   for (const slug of [
     "deepseek/deepseek-chat",

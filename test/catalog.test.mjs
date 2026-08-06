@@ -28,6 +28,7 @@ const template = {
       personality_default: "",
     },
   },
+  apply_patch_tool_type: "freeform",
 };
 
 const grok = {
@@ -75,6 +76,16 @@ test("routed models advertise reasoning summaries only when the registry opts in
   });
   assert.equal(summarized.supports_reasoning_summaries, true);
   assert.equal(summarized.default_reasoning_summary, "auto");
+});
+
+test("routed models inherit apply_patch unless the registry opts out", () => {
+  const plain = routedModel(template, grok);
+  assert.equal(plain.apply_patch_tool_type, "freeform");
+  const noPatch = routedModel(template, {
+    ...grok,
+    supportsApplyPatchTool: false,
+  });
+  assert.equal(noPatch.apply_patch_tool_type, null);
 });
 
 test("routed models announce availability only when curated with NUX copy", () => {

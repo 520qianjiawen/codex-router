@@ -280,6 +280,11 @@ export function routedModel(template, model) {
     supports_search_tool: false,
     supports_image_detail_original: false,
     use_responses_lite: false,
+    // Codex only knows one ApplyPatchToolType variant. The native template
+    // carries "freeform", but upstreams that reject OpenAI custom tools (Meta
+    // Responses, for example) must opt out explicitly; null is the only value
+    // that suppresses the tool without making the catalog unparseable.
+    apply_patch_tool_type: model.supportsApplyPatchTool === false ? null : "freeform",
     // Codex v2 collaboration only exposes spawn_agent model overrides whose
     // catalog entry advertises the same backend version as the parent. Models
     // opt in after their tool and encrypted-payload relay paths are verified.
