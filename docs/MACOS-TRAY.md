@@ -144,8 +144,9 @@ repository.
 
 `bin/model-router-tray` replaces an already-running tray with the rebuilt
 bundle before opening it, and `codex update` rebuilds and relaunches an
-installed tray from the updated checkout, so the companion stays current
-without a manual rerun.
+installed tray from the updated checkout whether it lives in the checkout's
+`dist` directory, `~/Applications`, or the registered login-item bundle, so
+the companion stays current without a manual rerun.
 
 Provider changes apply automatically. Enabling, disabling, signing in, or
 adding an API key updates Codex immediately; the provider row shows progress
