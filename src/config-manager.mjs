@@ -157,13 +157,11 @@ function hasModernMultiAgentConfig(input) {
     .some((line) => /^\s*multi_agent_v2\s*=/.test(line));
 }
 
-// Some Codex builds parse `[agents]` as a pure role map and reject the
-// concurrency scalar outright, which blocks the whole config from loading
-// (observed on 0.141-0.145; earlier and later builds accept it). A version
-// table would need constant maintenance, so ask the installed binary instead:
-// have it load a config containing only the scalar and see whether it parses.
-// The probe config is minimal on purpose — the answer must not depend on
-// anything else in the user's config.
+// Some Codex builds reject a managed concurrency scalar and block the whole
+// config from loading. Ask the installed binary instead of maintaining a
+// version table: have it load a config containing only the root-level scalar
+// and see whether it parses. The probe config is minimal on purpose, so the
+// answer must not depend on anything else in the user's config.
 let codexAcceptsAgentConcurrencyScalar;
 function installedCodexAcceptsAgentConcurrencyScalar() {
   if (codexAcceptsAgentConcurrencyScalar !== undefined) {
@@ -181,7 +179,7 @@ function probeAgentConcurrencyScalar() {
   try {
     writeFileSync(
       path.join(probeHome, "config.toml"),
-      `[agents]\nmax_concurrent_threads_per_session = ${managedAgentMaxConcurrency}\n`,
+      `max_concurrent_threads_per_session = ${managedAgentMaxConcurrency}\n`,
       { encoding: "utf8", mode: 0o600 },
     );
     const { command: probeCommand, options } = codexSpawnTarget(binary);
@@ -210,9 +208,7 @@ function withManagedAgentConcurrency(input) {
   const { rootLines } = splitRoot(cleaned);
   if (
     rootLines.some((line) =>
-      /^\s*agents(?:\.(?:max_concurrent_threads_per_session|max_threads))?\s*=/.test(
-        line,
-      ),
+      /^\s*(?:max_concurrent_threads_per_session|max_threads)\s*=/.test(line),
     )
   ) {
     return cleaned;
@@ -238,12 +234,9 @@ function withManagedAgentConcurrency(input) {
     `max_concurrent_threads_per_session = ${managedAgentMaxConcurrency}`,
     agentConcurrencyEndMarker,
   ];
-  if (agentsHeader !== -1) {
-    lines.splice(agentsHeader + 1, 0, ...managedLines);
-  } else {
-    while (lines.length && !lines.at(-1).trim()) lines.pop();
-    lines.push("", createdAgentsTableMarker, "[agents]", ...managedLines);
-  }
+  const firstTable = lines.findIndex((line) => /^\s*\[/.test(line));
+  const insertionIndex = firstTable === -1 ? lines.length : firstTable;
+  lines.splice(insertionIndex, 0, ...managedLines, "");
   return `${lines.join("\n").trimEnd()}\n`;
 }
 

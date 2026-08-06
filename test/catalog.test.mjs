@@ -166,6 +166,15 @@ test("merged catalog preserves native GPT identity while rewriting routed models
   assert.doesNotMatch(bySlug.get("grok-oauth/grok-4.5").base_instructions, /GPT-5/);
 });
 
+test("merged catalog preserves an explicit native reasoning summary capability", () => {
+  const native = {
+    ...template,
+    supports_reasoning_summaries: true,
+  };
+  const merged = buildMergedCatalog({ models: [native] }, []);
+  assert.equal(merged[0].supports_reasoning_summaries, true);
+});
+
 test("login-free catalogs contain only authenticated external models", () => {
   const merged = buildMergedCatalog({ models: [template] }, [grok], {
     includeNative: false,

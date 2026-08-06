@@ -20,10 +20,10 @@ const manager = path.join(root, "src", "config-manager.mjs");
 const CALLER_KEY = "test-config-caller-capability-with-sufficient-length";
 
 // The config manager probes the installed Codex binary to learn whether its
-// schema accepts the managed [agents] concurrency scalar. Point it at stubs so
-// the tests do not depend on whichever Codex build this machine has. Windows
-// cannot execute shebang scripts, so the stubs are batch files there — the
-// same .cmd shape codexSpawnTarget already handles for npm-installed Codex.
+// schema accepts the managed root-level concurrency scalar. Point it at stubs
+// so the tests do not depend on whichever Codex build this machine has.
+// Windows cannot execute shebang scripts, so the stubs are batch files there —
+// the same .cmd shape codexSpawnTarget already handles for npm-installed Codex.
 const codexStubDir = mkdtempSync(path.join(os.tmpdir(), "codex-router-codex-stub-"));
 function writeCodexStub(name, message) {
   const isWindows = process.platform === "win32";
@@ -97,8 +97,8 @@ approval_policy = "never"
     assert.match(configured, /# BEGIN codex-router-managed/);
     assert.match(configured, /# BEGIN codex-router-provider-managed/);
     assert.match(configured, /# BEGIN codex-router-agent-concurrency-managed/);
-    assert.match(configured, /\[agents\]/);
     assert.match(configured, /max_concurrent_threads_per_session = 6/);
+    assert.doesNotMatch(configured, /\[agents\]/);
     assert.match(configured, /\[model_providers\.codex-router\]/);
     assert.match(configured, /wire_api = "responses"/);
     assert.ok(
@@ -156,8 +156,9 @@ approval_policy = "never"
 test("config manager preserves a user-owned agent concurrency limit", () => {
   const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-agent-limit-"));
   const configPath = path.join(codexHome, "config.toml");
-  const original = `[agents]
-max_concurrent_threads_per_session = 3
+  const original = `max_concurrent_threads_per_session = 3
+
+[agents]
 default_subagent_model = "gpt-5.6-terra"
 `;
   writeFileSync(configPath, original, { mode: 0o600 });
@@ -182,7 +183,7 @@ default_subagent_model = "gpt-5.6-terra"
   }
 });
 
-test("config manager adds concurrency inside an existing agents table and removes only its value", () => {
+test("config manager adds concurrency at root before an existing agents table", () => {
   const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-agent-default-"));
   const configPath = path.join(codexHome, "config.toml");
   writeFileSync(
@@ -202,6 +203,10 @@ model_reasoning_effort = "high"
     assert.equal((enabled.match(/^\[agents\]$/gm) || []).length, 1);
     assert.match(enabled, /^max_concurrent_threads_per_session = 6$/m);
     assert.match(enabled, /^default_subagent_model = "gpt-5\.6-terra"$/m);
+    assert.ok(
+      enabled.indexOf("max_concurrent_threads_per_session = 6") <
+        enabled.indexOf("[agents]"),
+    );
 
     run("disable", codexHome);
     const restored = readFileSync(configPath, "utf8");

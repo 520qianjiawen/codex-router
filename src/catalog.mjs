@@ -225,9 +225,13 @@ function rewriteModelMessages(messages, model) {
 }
 
 function normalizeNativeModel(model) {
-  return Object.hasOwn(model, "supports_reasoning_summaries")
-    ? model
-    : { ...model, supports_reasoning_summaries: false };
+  return {
+    ...model,
+    supports_reasoning_summaries:
+      typeof model.supports_reasoning_summaries === "boolean"
+        ? model.supports_reasoning_summaries
+        : false,
+  };
 }
 
 export function routedModel(template, model) {
