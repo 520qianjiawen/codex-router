@@ -3,6 +3,8 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { pickerCommandArgs } from "./control-args.mjs";
+
 // Cross-target control plane for a tray/UI (e.g. the planned pane fork). It
 // reads which registry models are enabled per target and toggles them. Toggling
 // only rewrites each target's provider selection; making it live is a separate
@@ -642,7 +644,7 @@ if (args.includes("--probe")) {
 } else if (args[0] === "subagents") {
   await handleSubagents(args[1], args[2], args[3]);
 } else if (args[0] === "picker") {
-  await handlePicker(args[1], args[2], args[3]);
+  await handlePicker(...pickerCommandArgs(args));
 } else if (args[0] === "service") {
   handleService(args[1]);
 } else if (args[0] === "tray") {

@@ -6,6 +6,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { pickerCommandArgs } from "../src/control-args.mjs";
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function probe(target, providers, usageEvents = [], options = {}) {
@@ -194,6 +196,28 @@ test("control exposes subagent and picker settings without credentials", () => {
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
   }
+});
+
+test("picker all accepts the documented show/hide flag position", () => {
+  assert.deepEqual(pickerCommandArgs(["picker", "all", "show"]), [
+    "all",
+    undefined,
+    "show",
+  ]);
+  assert.deepEqual(pickerCommandArgs(["picker", "all", "hide"]), [
+    "all",
+    undefined,
+    "hide",
+  ]);
+  assert.deepEqual(
+    pickerCommandArgs([
+      "picker",
+      "set",
+      "deepseek/deepseek-v4-flash",
+      "hide",
+    ]),
+    ["set", "deepseek/deepseek-v4-flash", "hide"],
+  );
 });
 
 function probeSet(target, providers, provider, desired) {
