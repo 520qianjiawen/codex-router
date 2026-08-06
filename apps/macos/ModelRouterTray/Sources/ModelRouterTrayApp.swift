@@ -2171,8 +2171,18 @@ private struct TrayView: View {
             .padding(.bottom, 10)
         }
       }
-      .background(Color.black.opacity(0.14))
+      .background(
+        LinearGradient(
+          colors: [Color.white.opacity(0.075), Color.white.opacity(0.04)],
+          startPoint: .top,
+          endPoint: .bottom
+        )
+      )
       .clipShape(RoundedRectangle(cornerRadius: 10))
+      .overlay(
+        RoundedRectangle(cornerRadius: 10)
+          .stroke(Color.white.opacity(0.09), lineWidth: 1)
+      )
     }
   }
 

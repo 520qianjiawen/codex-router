@@ -625,9 +625,11 @@ h2 {
 .accordion {
   margin-bottom: 10px;
   overflow: hidden;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 11px;
-  background: rgba(255, 255, 255, 0.023);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.065), rgba(255, 255, 255, 0.032)),
+    rgba(13, 17, 24, 0.35);
 }
 
 .accordion-header {
@@ -639,14 +641,14 @@ h2 {
   min-height: 52px;
   padding: 10px 11px;
   border: 0;
-  background: transparent;
+  background: rgba(255, 255, 255, 0.02);
   color: var(--ink);
   text-align: left;
   cursor: pointer;
 }
 
 .accordion-header:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.055);
 }
 
 .accordion-header strong,
