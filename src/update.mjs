@@ -90,16 +90,17 @@ export function trayRefreshRequired({
   platform = process.platform,
   home = os.homedir(),
   sourceRoot = SOURCE_ROOT,
-  registeredPath = registeredTrayBundlePath(),
+  registeredPath,
 } = {}) {
   if (platform !== "darwin") return false;
+  const registered = registeredPath ?? registeredTrayBundlePath();
   const candidates = [
     path.join(sourceRoot, "dist", "Model Router.app"),
     path.join(home, "Applications", "Model Router.app"),
   ];
   return (
     candidates.some((candidate) => existsSync(candidate)) ||
-    Boolean(registeredPath && existsSync(registeredPath))
+    Boolean(registered && existsSync(registered))
   );
 }
 
@@ -108,15 +109,6 @@ export function trayRefreshRequired({
 // update itself succeeded, and a failed tray refresh must not roll it back.
 function refreshTrayCompanion() {
   if (!trayRefreshRequired()) return;
-  const trayBinary = path.join(
-    SOURCE_ROOT,
-    "dist",
-    "Model Router.app",
-    "Contents",
-    "MacOS",
-    "ModelRouterTray",
-  );
-  if (!existsSync(trayBinary)) return;
   const launcher = path.join(SOURCE_ROOT, "bin", "model-router-tray");
   const result = spawnSync(launcher, [], { cwd: SOURCE_ROOT, stdio: "inherit" });
   if (result.error) {
