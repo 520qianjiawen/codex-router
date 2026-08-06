@@ -17,6 +17,53 @@
   the re-capture fails, the router keeps serving the previous capture and says
   so instead of failing the rebuild.
 
+- **Reasoning effort ladders now match each vendor's documentation.** Every
+  listed model's picker levels were verified against the provider's official
+  API docs: Kimi K3 (API) gains its documented low/high/max ladder instead of
+  a forced max; DeepSeek V4 Flash gains its real low tier; Claude Opus 4.8
+  gains the full low/medium/high/xhigh/max `output_config.effort` ladder and
+  the forwarder now passes the picked effort through instead of hardcoding
+  high; GLM-5.2 sends its two documented tiers explicitly (upstream defaults
+  to max when the parameter is omitted) and defaults to max as Z.ai
+  recommends; GLM-5-Turbo no longer advertises effort control it does not
+  support; and the cross-vendor DeepSeek/GLM models resold through the
+  Alibaba plan gain the high/max ladder DashScope documents for them.
+  The opencode Go models take their ladders from opencode's own model
+  registry (Grok low/medium/high; GLM-5.2 and DeepSeek V4 Pro high/max;
+  DeepSeek V4 Flash low/high/max; HY3 low/high; Kimi K3 max-only; GPT 5.6
+  Luna low through max), passed through verbatim since the gateway validates
+  these values itself. Providers whose thinking control is binary or
+  undocumented (Qwen via DashScope, Ollama Cloud, MiniMax, MiMo, Kimi K2.x)
+  intentionally keep a single level.
+
+- **Curated models now carry user-provided metadata, including reasoning
+  efforts.** `bin/curate-models` asks for each new model's context window,
+  image support, and reasoning efforts (so curated models get the effort
+  switcher in the Codex picker), with `--efforts` available for the
+  non-interactive `--models` form. Every value defaults conservatively and
+  stays editable in `user-models.json`. No online metadata catalog is
+  consulted — the provider's own `/v1/models` endpoint decides which models
+  exist, and the metadata is yours.
+
+- **New Meta Model API provider.** The `meta` provider (shown as "Meta API")
+  routes the Responses protocol to `https://api.meta.ai/v1` with a stored
+  `META_API_KEY`. Three Muse Spark models ship in the registry: 1.2, its
+  cheaper 1.2 Contributor tier (whose inputs and outputs Meta may use for
+  training), and the previous-generation 1.1 — the 1.2 tiers with reasoning
+  summaries enabled. More Meta models can be curated per machine with
+  `bin/curate-models meta`.
+
+- **opencode Go is one provider family everywhere.** The
+  `opencode-go-messages` and `opencode-go-responses` protocol variants now
+  declare `variantOf: "opencode-go"` in the registry, and provider selection
+  treats the three as a single unit: enabling or disabling any of them toggles
+  the whole family, the selection file stores only `opencode-go`, and every
+  read expands it back to all variants. This retroactively fixes installs
+  whose selection predates the variants — MiniMax, Qwen, and GPT 5.6 Luna
+  models no longer vanish from the Codex picker while the other opencode Go
+  models show. Setup, the tray, and `providers list` now show one
+  **opencode Go** entry instead of three.
+
 - **Removed the Cursor and opencode app targets.** The router now focuses on
   Codex only: `--target codex` is the sole installer target, the Cursor Chat
   Completions gateway and the opencode config manager/subagent generator are

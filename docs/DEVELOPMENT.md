@@ -68,6 +68,13 @@ model a registry update later ships — skips the entry and surfaces it in
 never take the router down. The listed-model live-test requirement applies to
 registry submissions; curated entries are explicitly local-only.
 
+Curated entries get their metadata from the user, not from any online
+catalog: interactive curation asks for each new model's context window,
+image support, and reasoning efforts (`--efforts` sets the effort ladder in
+the deterministic `--models` form), and everything defaults conservatively
+when unanswered. The stored entries in `user-models.json` are plain local
+state — edit any value in place and re-run `./bin/install` to apply.
+
 ## Tests
 
 ```sh

@@ -56,6 +56,9 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "opencode-go-messages/qwen3.6-plus",
       "opencode-go/hy3",
       "opencode-go-responses/gpt-5.6-luna",
+      "meta/muse-spark-1.2",
+      "meta/muse-spark-1.2-contributor",
+      "meta/muse-spark-1.1",
     ],
   );
   assert.equal(PROVIDERS.get("deepseek").baseUrl, "https://api.deepseek.com");
@@ -75,6 +78,15 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(PROVIDERS.get("opencode-go-responses").baseUrl, "https://opencode.ai/zen/go/v1");
   assert.equal(PROVIDERS.get("opencode-go-messages").protocol, "anthropic");
   assert.equal(PROVIDERS.get("opencode-go-responses").protocol, "openai-responses");
+  // The protocol variants are one selectable family: they declare the parent
+  // whose credential and picker selection they follow.
+  assert.equal(PROVIDERS.get("opencode-go").variantOf, undefined);
+  assert.equal(PROVIDERS.get("opencode-go-messages").variantOf, "opencode-go");
+  assert.equal(PROVIDERS.get("opencode-go-responses").variantOf, "opencode-go");
+  assert.equal(
+    PROVIDERS.get("opencode-go-messages").credential.file,
+    PROVIDERS.get("opencode-go").credential.file,
+  );
   assert.equal(PROVIDERS.get("grok-api").baseUrl, "https://api.x.ai/v1");
   assert.equal(PROVIDERS.get("grok-oauth").proxyBaseEnv, "GROK_OAUTH_FORWARD_BASE_URL");
   // Qwen OAuth was discontinued upstream on 2026-04-15, so the plan key is the
@@ -113,10 +125,12 @@ test("provider registry exposes configured API and OAuth model families", () => 
     MODEL_BY_SLUG.get("opencode-go-responses/gpt-5.6-luna").contextWindow,
     272_000,
   );
+  // Documented output_config.effort ladder for Opus 4.8 (default high).
   assert.deepEqual(
-    MODEL_BY_SLUG.get("anthropic-api/claude-opus-4.8").reasoningLevels,
-    [{ effort: "high", description: "Adaptive deep reasoning for agentic work" }],
+    MODEL_BY_SLUG.get("anthropic-api/claude-opus-4.8").reasoningLevels.map((level) => level.effort),
+    ["low", "medium", "high", "xhigh", "max"],
   );
+  assert.equal(MODEL_BY_SLUG.get("anthropic-api/claude-opus-4.8").defaultEffort, "high");
   const grok = MODEL_BY_SLUG.get("grok-api/grok-4.5");
   assert.equal(grok.contextWindow, 500_000);
   assert.deepEqual(grok.reasoningLevels.map((level) => level.effort), ["low", "medium", "high"]);

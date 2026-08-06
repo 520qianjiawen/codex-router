@@ -17,7 +17,7 @@ import {
 } from "./model-registry.mjs";
 import { parseRateLimitHeaders } from "./rate-limit-headers.mjs";
 import { recordRateLimitSnapshot } from "./rate-limit-state.mjs";
-import { readProviderSelection } from "./provider-selection.mjs";
+import { canonicalProviderId, readProviderSelection } from "./provider-selection.mjs";
 import {
   credentialStatus,
   resolveProviderCredential,
@@ -53,8 +53,20 @@ function providerBaseUrl(provider) {
   return String(process.env[provider.baseUrlEnv] || provider.baseUrl).replace(/\/+$/, "");
 }
 
+// DeepSeek documents low/high/max (docs also accept xhigh as a compat alias).
 function deepSeekEffort(value) {
+  if (["low", "minimal"].includes(value)) return "low";
   return ["xhigh", "max", "ultra"].includes(value) ? "max" : "high";
+}
+
+// Kimi K3 documents low/high/max; the platform maps common aliases the same
+// way (medium collapses to high, xhigh to max). Unknown values are a 400
+// upstream, so anything unrecognized falls back to the documented default.
+function kimiK3Effort(value) {
+  if (["low", "minimal"].includes(value)) return "low";
+  if (["medium", "high"].includes(value)) return "high";
+  if (["xhigh", "max", "ultra"].includes(value)) return "max";
+  return undefined;
 }
 
 // Strict chat-completions providers (e.g. MiniMax) reject a turn whose tool
@@ -215,7 +227,10 @@ function normalizeBody(buffer, contentType, route) {
     payload.messages = sanitizeChatToolHistory(payload.messages);
   }
   if (model.requestProfile === "kimi-k3") {
-    payload.reasoning_effort = "max";
+    const effort = kimiK3Effort(payload.reasoning_effort);
+    // Absent means the platform default (max); K3 rejects the thinking param.
+    if (effort) payload.reasoning_effort = effort;
+    else delete payload.reasoning_effort;
     delete payload.thinking;
   } else if (model.requestProfile === "deepseek-thinking") {
     payload.thinking = { type: "enabled" };
@@ -232,10 +247,17 @@ function normalizeBody(buffer, contentType, route) {
     // hosted models reason by default, so drop the parameter.
     delete payload.reasoning_effort;
   } else if (model.requestProfile === "qwen-plan") {
-    // DashScope's OpenAI-compatible mode does not document reasoning_effort;
-    // Qwen3.7 models reason adaptively by default, so drop the parameter
-    // rather than risk an invalid-parameter rejection.
-    delete payload.reasoning_effort;
+    // DashScope documents reasoning_effort only for the cross-vendor
+    // DeepSeek/GLM models it resells (high/max; low/medium collapse to high,
+    // xhigh to max). Qwen models have no documented effort control, so the
+    // parameter is dropped for them.
+    if ((model.reasoningLevels || []).length > 1) {
+      payload.reasoning_effort = ["xhigh", "max", "ultra"].includes(payload.reasoning_effort)
+        ? "max"
+        : "high";
+    } else {
+      delete payload.reasoning_effort;
+    }
     // Qwen rejects forced tool choices in thinking mode
     // ("tool_choice ... does not support being set to required or object");
     // downgrade to auto so tool calls stay available.
@@ -244,11 +266,15 @@ function normalizeBody(buffer, contentType, route) {
     }
   } else if (model.requestProfile === "glm-thinking") {
     payload.thinking = { type: "enabled" };
-    if (["xhigh", "max", "ultra"].includes(payload.reasoning_effort)) {
-      payload.reasoning_effort = "max";
+    // Z.ai documents reasoning_effort only for GLM-5.2, with two effective
+    // tiers (high/max) and max as the upstream default when omitted. Models
+    // whose registry entry offers a single level (GLM-5-Turbo, GLM-5.1) do
+    // not support the parameter at all.
+    if ((model.reasoningLevels || []).length > 1) {
+      payload.reasoning_effort = ["xhigh", "max", "ultra"].includes(payload.reasoning_effort)
+        ? "max"
+        : "high";
     } else {
-      // Z.ai documents only the maximum tier; leave other levels to the
-      // upstream default rather than sending an unsupported value.
       delete payload.reasoning_effort;
     }
     // Z.ai requires temperature 1.0 with thinking enabled; drop sampling
@@ -263,9 +289,15 @@ function normalizeBody(buffer, contentType, route) {
     delete payload.frequency_penalty;
     delete payload.stop;
   } else if (model.requestProfile === "anthropic-reasoning") {
+    // Anthropic steers adaptive thinking via output_config.effort
+    // (low/medium/high/xhigh/max, default high).
+    const effort = { minimal: "low", ultra: "max" }[payload.reasoning_effort] ||
+      (["low", "medium", "high", "xhigh", "max"].includes(payload.reasoning_effort)
+        ? payload.reasoning_effort
+        : "high");
     delete payload.reasoning_effort;
     payload.thinking = { type: "adaptive" };
-    payload.output_config = { effort: "high" };
+    payload.output_config = { effort };
   } else if (model.requestProfile === "minimax-m3") {
     // MiniMax uses its own thinking control on the OpenAI-compatible
     // Chat Completions endpoint instead of reasoning_effort.
@@ -387,7 +419,9 @@ async function handleRequest(request, response) {
   // Recorded after the body streams because persisting is synchronous I/O and
   // must never sit in time-to-first-byte.
   const rateLimit = parseRateLimitHeaders(upstream.headers);
-  if (rateLimit) recordRateLimitSnapshot(normalized.provider.id, rateLimit);
+  // Variant-routed responses meter the same upstream subscription, so quota
+  // headers land under the family's canonical provider id.
+  if (rateLimit) recordRateLimitSnapshot(canonicalProviderId(normalized.provider.id), rateLimit);
   if (!QUIET) {
     console.error(
       `[api-forwarder] provider=${normalized.provider.id} model=${normalized.model.upstreamModel} status=${upstream.status} duration_ms=${Date.now() - startedAt}`,
