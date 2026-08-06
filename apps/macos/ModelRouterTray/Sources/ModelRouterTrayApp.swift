@@ -2173,7 +2173,7 @@ private struct TrayView: View {
       }
       .background(
         LinearGradient(
-          colors: [Color.white.opacity(0.075), Color.white.opacity(0.04)],
+          colors: [Color.white.opacity(0.055), Color.white.opacity(0.028)],
           startPoint: .top,
           endPoint: .bottom
         )
@@ -2181,7 +2181,7 @@ private struct TrayView: View {
       .clipShape(RoundedRectangle(cornerRadius: 10))
       .overlay(
         RoundedRectangle(cornerRadius: 10)
-          .stroke(Color.white.opacity(0.09), lineWidth: 1)
+          .stroke(Color.white.opacity(0.08), lineWidth: 1)
       )
     }
   }
@@ -2266,7 +2266,7 @@ private struct TrayView: View {
     .padding(10)
     .background(
       LinearGradient(
-        colors: [Color.white.opacity(0.075), Color.white.opacity(0.04)],
+        colors: [Color.white.opacity(0.055), Color.white.opacity(0.028)],
         startPoint: .top,
         endPoint: .bottom
       )
@@ -2274,7 +2274,7 @@ private struct TrayView: View {
     .clipShape(RoundedRectangle(cornerRadius: 10))
     .overlay(
       RoundedRectangle(cornerRadius: 10)
-        .stroke(Color.white.opacity(0.09), lineWidth: 1)
+        .stroke(Color.white.opacity(0.08), lineWidth: 1)
     )
   }
 
