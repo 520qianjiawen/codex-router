@@ -9,6 +9,11 @@
   bundle and the registered login-item bundle, then rebuilds and relaunches
   the tray from the updated checkout.
 
+- **`doctor --fix` no longer breaks a running install from a second checkout.**
+  When the recorded state owner still exists, repair now runs from that
+  checkout and keeps ownership there. Deliberate ownership transfer still
+  requires an explicit override or a fresh install.
+
 - **The macOS tray stays linked to the apps that launch it.** If the tray
   bundle moves (for example from a checkout on a removable volume to the
   stable install), the next launch re-registers the login item against the
