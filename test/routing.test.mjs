@@ -2069,3 +2069,88 @@ test("router strips empty text parts and drops the messages left with nothing", 
     await closeServer(native.server);
   }
 });
+
+test("router redirects native background turns to the configured routed model", async () => {
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayRequests.push(await bodyJson(request));
+    json(response, 200, { route: "external" });
+  });
+  const routerPort = await openPort();
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-native-redirect-"));
+  const stateDir = path.join(testRoot, "state");
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(
+    path.join(stateDir, "native-redirect.json"),
+    `${JSON.stringify({ version: 1, model: "kimi-oauth/k3" })}\n`,
+  );
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_STATE_DIR: stateDir,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+      },
+      // The shape Codex Desktop uses for background agent sessions: a native
+      // GPT slug the picker never chose.
+      body: JSON.stringify({ model: "gpt-5.6-luna", input: "background turn" }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(gatewayRequests.at(-1).model, "kimi-oauth-k3");
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("native redirect falls back to native when the target cannot route", async () => {
+  const nativeRequests = [];
+  const native = await mockServer(async (request, response) => {
+    nativeRequests.push(await bodyJson(request));
+    json(response, 200, { route: "native" });
+  });
+  const routerPort = await openPort();
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-native-redirect-off-"));
+  const stateDir = path.join(testRoot, "state");
+  mkdirSync(stateDir, { recursive: true });
+  // A redirect target that is not in the registry must leave native traffic
+  // untouched instead of failing the request.
+  writeFileSync(
+    path.join(stateDir, "native-redirect.json"),
+    `${JSON.stringify({ version: 1, model: "not-a-registered/model" })}\n`,
+  );
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_GATEWAY_BASE_URL: "http://127.0.0.1:9/v1",
+    CODEX_ROUTER_STATE_DIR: stateDir,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: "gpt-5.6-luna", input: "background turn" }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(nativeRequests.at(-1).model, "gpt-5.6-luna");
+  } finally {
+    await stopChild(router);
+    await closeServer(native.server);
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});

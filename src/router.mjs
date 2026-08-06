@@ -27,6 +27,7 @@ import {
 } from "./paths.mjs";
 import { MODEL_BY_SLUG, PROVIDERS, providerForModel } from "./model-registry.mjs";
 import { readNativeAliases } from "./native-alias.mjs";
+import { readNativeRedirect } from "./native-redirect.mjs";
 import { canonicalProviderId, readProviderSelection } from "./provider-selection.mjs";
 import { ResponseUsageTransform } from "./response-usage.mjs";
 import { activityMetadataFromHeaders } from "./codex-session-names.mjs";
@@ -871,9 +872,21 @@ async function handleResponses(request, response, requestUrl) {
     const body = decodeBody(encoded, request.headers["content-encoding"]);
     const payload = parseBody(body);
     const requestedModel = typeof payload.model === "string" ? payload.model : "";
-    const registeredRoute =
+    let registeredRoute =
       MODEL_BY_SLUG.get(requestedModel) ??
       MODEL_BY_SLUG.get(readNativeAliases()[requestedModel]);
+    // An unregistered model on this endpoint is native GPT traffic -- Codex's
+    // background agent sessions arrive here hardwired to a native slug no
+    // matter which model the user picked. With the redirect opted in, send
+    // them to the configured routed model; a target that is unknown or whose
+    // provider is hidden leaves the turn native rather than trading a quota
+    // failure for a routing error.
+    if (!registeredRoute && requestedModel) {
+      const redirect = MODEL_BY_SLUG.get(readNativeRedirect());
+      if (redirect && readProviderSelection().includes(redirect.provider)) {
+        registeredRoute = redirect;
+      }
+    }
     const route = registeredRoute && readProviderSelection().includes(registeredRoute.provider)
       ? registeredRoute
       : undefined;

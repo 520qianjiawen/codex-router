@@ -593,6 +593,31 @@ function handleTray(action) {
   }
 }
 
+// Where Codex's native-model background turns go when OpenAI quota is not an
+// option. Set to a routed model slug to keep memories, review passes, and
+// other native utility sessions running on a paid provider; clear to restore
+// pure native forwarding.
+async function handleNativeRedirect(action, value) {
+  const { clearNativeRedirect, nativeRedirectSnapshot, setNativeRedirect } = await import(
+    "./native-redirect.mjs"
+  );
+  if (!action || action === "status") {
+    process.stdout.write(`${JSON.stringify(nativeRedirectSnapshot())}\n`);
+    return;
+  }
+  if (action === "clear") {
+    process.stdout.write(`${JSON.stringify(clearNativeRedirect())}\n`);
+    return;
+  }
+  if (action !== "set") {
+    throw new Error("Usage: control native-redirect status|set <routed-model-slug>|clear");
+  }
+  if (!(await knownModelSlug(value))) {
+    throw new Error(`Unknown routed model slug: ${value}`);
+  }
+  process.stdout.write(`${JSON.stringify(setNativeRedirect(value))}\n`);
+}
+
 async function handlePresence(action, value) {
   const { PRESENCE_MODES, presenceSnapshot, setPresenceMode } = await import(
     "./presence-state.mjs"
@@ -647,6 +672,8 @@ if (args.includes("--probe")) {
   await handlePicker(...pickerCommandArgs(args));
 } else if (args[0] === "service") {
   handleService(args[1]);
+} else if (args[0] === "native-redirect") {
+  await handleNativeRedirect(args[1], args[2]);
 } else if (args[0] === "tray") {
   handleTray(args[1]);
 } else if (args[0] === "presence") {
