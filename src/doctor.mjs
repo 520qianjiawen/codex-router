@@ -13,6 +13,7 @@ import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
 import { readMultiAgentSettings } from "./multi-agent-state.mjs";
 import { readHiddenModels } from "./model-picker-state.mjs";
+import { serviceFollowsHostApps } from "./presence-state.mjs";
 import { waitForRouterHealth } from "./router-health.mjs";
 import {
   CALLER_SECRET_PATH,
@@ -425,14 +426,24 @@ add(
     : "Disable the other router manually; Codex Router will not overwrite it.",
 );
 
+// When the tray follows the desktop apps it stops the service as soon as Codex
+// and ChatGPT are both closed. That is the resting state, not a fault, so it
+// must not read as a failure: a `fail` here sets the exit code and sends the
+// tray's Fix button down the full repair path for a router that is off on
+// purpose.
+const followsHostApps = serviceFollowsHostApps();
 let serviceLoaded = false;
+let serviceStoppedByDesign = false;
 try {
   const service = childJson("service.mjs", ["status"]);
   serviceLoaded = Boolean(service.loaded);
+  serviceStoppedByDesign = !serviceLoaded && followsHostApps;
   add(
-    service.loaded ? "ok" : "fail",
+    serviceLoaded ? "ok" : serviceStoppedByDesign ? "warn" : "fail",
     "Background service",
-    service.state || "stopped",
+    serviceStoppedByDesign
+      ? "stopped; following Codex (open Codex or ChatGPT to start it)"
+      : service.state || "stopped",
     "Run ./bin/enable or ./bin/doctor --fix.",
   );
 } catch (error) {
@@ -446,11 +457,13 @@ try {
 
 const health = await waitForRouterHealth({ timeoutMs: serviceLoaded ? 30_000 : 2_000 });
 add(
-  health.ok ? "ok" : "fail",
+  health.ok ? "ok" : serviceStoppedByDesign ? "warn" : "fail",
   "Router health",
   health.ok
     ? `version ${health.payload.version}`
-    : `not ready on 127.0.0.1:${PORTS.router} after ${serviceLoaded ? 30 : 2} seconds; ${health.error}`,
+    : serviceStoppedByDesign
+      ? "not serving; the background service is following Codex"
+      : `not ready on 127.0.0.1:${PORTS.router} after ${serviceLoaded ? 30 : 2} seconds; ${health.error}`,
   "Run ./bin/doctor --fix. If it still fails, create a support bundle.",
 );
 

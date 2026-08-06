@@ -546,6 +546,43 @@ async function handlePicker(action, value, flag) {
   process.stdout.write(`${JSON.stringify(modelPickerSnapshot())}\n`);
 }
 
+// The tray drives these two when it follows the Codex/ChatGPT desktop apps:
+// `presence` records the mode so doctor can tell a deliberate shutdown from a
+// crash, and `service` starts or stops the background service. Installing and
+// uninstalling stay out of reach; the tray must not be able to unregister the
+// LaunchAgent that owns the router.
+const SERVICE_COMMANDS = ["status", "start", "stop", "restart"];
+
+function handleService(action) {
+  const value = action || "status";
+  if (!SERVICE_COMMANDS.includes(value)) {
+    throw new Error(`Usage: control service ${SERVICE_COMMANDS.join("|")}`);
+  }
+  const result = spawnSync(
+    process.execPath,
+    [path.join(REPO_ROOT, "src", "service.mjs"), value],
+    { stdio: "inherit", env: process.env },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`Background service ${value} failed with exit code ${result.status}.`);
+  }
+}
+
+async function handlePresence(action, value) {
+  const { PRESENCE_MODES, presenceSnapshot, setPresenceMode } = await import(
+    "./presence-state.mjs"
+  );
+  if (!action || action === "status") {
+    process.stdout.write(`${JSON.stringify(presenceSnapshot())}\n`);
+    return;
+  }
+  if (action !== "set") {
+    throw new Error(`Usage: control presence status|set <${PRESENCE_MODES.join("|")}>`);
+  }
+  process.stdout.write(`${JSON.stringify(setPresenceMode(value))}\n`);
+}
+
 // --- dispatch ---------------------------------------------------------------
 
 if (args.includes("--probe")) {
@@ -584,6 +621,10 @@ if (args.includes("--probe")) {
   await handleSubagents(args[1], args[2], args[3]);
 } else if (args[0] === "picker") {
   await handlePicker(args[1], args[2], args[3]);
+} else if (args[0] === "service") {
+  handleService(args[1]);
+} else if (args[0] === "presence") {
+  await handlePresence(args[1], args[2]);
 } else if (args[0] === "maintenance") {
   await updateAndVerifyCodex();
 } else if (args[0] === "doctor") {
