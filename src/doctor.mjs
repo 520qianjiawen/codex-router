@@ -275,7 +275,7 @@ add(
   "Run ./bin/doctor --fix, then fully quit Codex, reopen it, and create a new task.",
 );
 add(
-  true,
+  "ok",
   "Dynamic subagent models",
   readAllMultiAgent()
     ? "all selected models exposed as v2 spawn agents"
