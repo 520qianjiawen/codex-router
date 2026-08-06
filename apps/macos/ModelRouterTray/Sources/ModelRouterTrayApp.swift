@@ -283,6 +283,11 @@ final class RouterStore: ObservableObject {
   // The process itself stays resident as the watcher — quitting on app exit
   // would leave nothing around to notice the next launch.
   func startHostAppObservation() {
+    // The mode lives in two places: UserDefaults for the tray and presence.json
+    // for doctor. Only a toggle used to write the second one, so a reinstall or
+    // a cleared state directory left doctor believing the router should always
+    // be up while the tray was quietly stopping it. Republish on every launch.
+    persistPresenceMode(presenceMode)
     let center = NSWorkspace.shared.notificationCenter
     for name in [
       NSWorkspace.didLaunchApplicationNotification,
