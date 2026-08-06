@@ -186,3 +186,10 @@ external model. Ordinary routed prompts do not use this relay.
 The relay requires an active ChatGPT sign-in because only the native Codex
 backend can open its own opaque payload. In login-free mode the router fails
 closed instead of forwarding unreadable ciphertext to an external provider.
+
+Only registry-proven models are advertised as native v2 spawn-agent overrides
+by default. `bin/multi-agent on` is a local opt-in that promotes every selected
+model to `multi_agent_version: "v2"` in the merged catalog, so any enabled
+model can be chosen as a subagent; `bin/multi-agent off` restores the
+conservative set. The checked-in provider registry is never changed by this
+switch.

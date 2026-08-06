@@ -20,6 +20,7 @@ import { codexAuthStatus, codexVersion, runCodex } from "./codex-binary.mjs";
 import { readUserModels } from "./user-models.mjs";
 import { syncRoutedCodexAgents } from "./codex-agent-catalog.mjs";
 import { MODEL_BY_SLUG } from "./model-registry.mjs";
+import { readAllMultiAgent } from "./multi-agent-state.mjs";
 import { buildNativeAliasAssignments } from "./native-alias.mjs";
 import { selectedConfiguredListedModels } from "./provider-selection.mjs";
 import { assertStateOwnership } from "./state-owner.mjs";
@@ -289,6 +290,11 @@ export function routedModel(template, model) {
   return next;
 }
 
+export function applyAllMultiAgent(models, enabled) {
+  if (!enabled) return models;
+  return models.map((model) => ({ ...model, multiAgentVersion: "v2" }));
+}
+
 export const AUTO_ANNOUNCE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 function formatTokenCount(tokens) {
@@ -427,11 +433,15 @@ function main() {
   // advertising models the running gateway has no route for.
   assertStateOwnership("write the Codex model catalog");
   const userSlugs = new Set(readUserModels().map((model) => String(model.slug)));
+  const allMultiAgentModels = applyAllMultiAgent(
+    selectedConfiguredListedModels(),
+    readAllMultiAgent(),
+  );
   // Clamp before announcements and agent sync so every surface Codex reads —
   // picker levels, defaults, and announcement copy — stays inside the effort
   // vocabulary the installed build can actually deserialize.
   const { models: routedModels, announcedAt } = annotateNewModelAnnouncements(
-    clampModelEfforts(selectedConfiguredListedModels(), codexEffortVocabulary(codexVersion())),
+    clampModelEfforts(allMultiAgentModels, codexEffortVocabulary(codexVersion())),
     readAnnouncedAt(),
     userSlugs,
     Date.now(),

@@ -173,6 +173,7 @@ enable the family:
 ```sh
 ./bin/model-router codex provider-key opencode-go set
 ./bin/model-router codex providers enable opencode-go
+./bin/model-router codex multi-agent on
 ```
 
 | Picker label | Model ID |

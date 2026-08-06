@@ -11,6 +11,7 @@ import { detectLegacyInstallations } from "./legacy-migration.mjs";
 import { PROVIDERS } from "./model-registry.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
+import { readAllMultiAgent } from "./multi-agent-state.mjs";
 import { waitForRouterHealth } from "./router-health.mjs";
 import {
   CALLER_SECRET_PATH,
@@ -272,6 +273,14 @@ add(
     ? `${agentStatus.current} current definitions in ${CODEX_AGENTS_DIR}`
     : `${agentStatus.current} of ${agentStatus.expected} current definitions in ${CODEX_AGENTS_DIR}`,
   "Run ./bin/doctor --fix, then fully quit Codex, reopen it, and create a new task.",
+);
+add(
+  true,
+  "Dynamic subagent models",
+  readAllMultiAgent()
+    ? "all selected models exposed as v2 spawn agents"
+    : "only registry-proven v2 models",
+  "Run ./bin/multi-agent on to expose every selected model as a subagent.",
 );
 add(
   existsSync(LITELLM_CONFIG_PATH) ? "ok" : "fail",
