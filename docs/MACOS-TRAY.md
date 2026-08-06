@@ -156,7 +156,9 @@ The **Update & Verify** maintenance button applies the checked-out `main`
 revision to the per-user Codex installation, then runs the Codex doctor. It
 shows progress while both commands run and reports whether routed model agents
 and the rest of the installation passed verification. Restart Codex afterward
-to load updated models and custom agents.
+to load updated models and custom agents. The command targets the checkout
+recorded as the installation owner, so a tray bundle left over from an older
+checkout cannot refresh the wrong router instead of the installed one.
 
 The **Use without OpenAI login** switch changes new Codex sessions to the
 managed custom router provider. At least one external provider must be connected

@@ -7,7 +7,9 @@
   stable install), the next launch re-registers the login item against the
   current bundle; the launcher replaces an already-running tray with the
   rebuilt bundle; and `codex update` rebuilds and relaunches an installed tray
-  so a router update never leaves a stale companion behind.
+  so a router update never leaves a stale companion behind. Update & Verify
+  now updates the checkout recorded as the installation owner instead of
+  whichever checkout the tray binary was built from.
 
 ## 0.4.0-beta.2
 
