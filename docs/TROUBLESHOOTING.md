@@ -21,6 +21,35 @@ If a recognized older Kimi router is reported:
 
 Neither command prints credential values. Repair refuses unknown router owners.
 
+## State directory belongs to another checkout
+
+If `doctor` reports a state ownership failure, you are running from a clone
+that did not perform the install. The safe fix is to repair through the
+checkout that owns the installed state:
+
+```sh
+./bin/model-router codex doctor --fix
+```
+
+When the recorded owner still exists, this command runs the repair there and
+keeps the installed checkout unchanged. It deliberately transfers ownership to
+the current checkout only when the recorded owner is gone or you set
+`MODEL_ROUTER_ALLOW_FOREIGN_STATE=1`.
+
+To inspect the recorded owner:
+
+```sh
+# Find the owning checkout from the state manifest.
+STATE_DIR="${MODEL_ROUTER_STATE_DIR:-${CODEX_ROUTER_STATE_DIR:-${KIMI_CODEX_STATE_DIR:-${HOME}/.codex/codex-router}}}"
+cat "$STATE_DIR/install-manifest.json" | sed -n '1,80p'
+```
+
+To deliberately switch ownership to the checkout you are running from:
+
+```sh
+MODEL_ROUTER_ALLOW_FOREIGN_STATE=1 ./bin/model-router codex doctor --fix
+```
+
 ## External models are missing from the picker
 
 ```sh

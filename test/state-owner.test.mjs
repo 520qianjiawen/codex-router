@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -155,4 +155,35 @@ test("the installer is allowed to take ownership", () => {
     });
     assert.doesNotMatch(result.stderr || "", /owned by another checkout/);
   });
+});
+
+test("doctor --fix from a foreign checkout delegates to the recorded owner", () => {
+  const owner = mkdtempSync(path.join(os.tmpdir(), "state-owner-checkout-"));
+  const marker = path.join(owner, "delegated-doctor-ran");
+  mkdirSync(path.join(owner, "bin"), { recursive: true });
+  mkdirSync(path.join(owner, "src"), { recursive: true });
+  writeFileSync(path.join(owner, "bin", "install"), "#!/bin/sh\n");
+  writeFileSync(
+    path.join(owner, "src", "doctor.mjs"),
+    `import { writeFileSync } from "node:fs";\n` +
+      `writeFileSync(${JSON.stringify(marker)}, "ok");\n`,
+  );
+  try {
+    withState({ owner }, (stateDir) => {
+      const result = spawnSync(
+        process.execPath,
+        [path.join(root, "src", "doctor.mjs"), "--fix"],
+        {
+          cwd: root,
+          encoding: "utf8",
+          env: { ...process.env, MODEL_ROUTER_STATE_DIR: stateDir },
+        },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(existsSync(marker), true);
+      assert.match(result.stderr, /repairing from the owning checkout/);
+    });
+  } finally {
+    rmSync(owner, { recursive: true, force: true });
+  }
 });
