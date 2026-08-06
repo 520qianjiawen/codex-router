@@ -48,6 +48,18 @@ const managedAgentMaxConcurrency = 6;
 const routerProviderId = "codex-router";
 const defaultChatgptBaseUrl = "https://chatgpt.com/backend-api";
 const defaultRealtimeWebsocketBaseUrl = "https://api.openai.com/v1";
+
+// Renders a string as a TOML value. Windows paths contain backslashes, which
+// a TOML basic string must escape as "\\" — that makes the raw text hard to
+// read and, worse, breaks raw-text consumers such as the legacy-migration
+// detector, which compares paths without a TOML parser. A literal string
+// (single quotes) keeps backslashes verbatim, so emit one whenever the value
+// contains a backslash.
+function tomlValue(value) {
+  return typeof value === "string" && value.includes("\\")
+    ? `'${value.replaceAll("'", "''")}'`
+    : JSON.stringify(value);
+}
 const realtimeCallBaseUrlKey = "experimental_realtime_webrtc_call_base_url";
 const realtimeWebsocketBaseUrlKey = "experimental_realtime_ws_base_url";
 const markerPairs = [
@@ -499,7 +511,7 @@ function enabledContents(contents) {
     "",
     startMarker,
     `openai_base_url = ${JSON.stringify(routerBaseUrl)}`,
-    `model_catalog_json = ${JSON.stringify(MERGED_CATALOG_PATH)}`,
+    `model_catalog_json = ${tomlValue(MERGED_CATALOG_PATH)}`,
     ...managedRealtimeOverrides,
     endMarker,
   );
