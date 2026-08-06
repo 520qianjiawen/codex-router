@@ -34,7 +34,10 @@ user.
    `opencode-go-responses`, and `opencode-zen` variants share its stored key
    and are enabled and disabled with it automatically; never select or toggle
    them separately. Zen ships no preselected models — curate them per user
-   with `bin/curate-models opencode-zen`). The
+   with `bin/curate-models opencode-zen`), and/or `commandcode`
+   (shown to users as "Command Code"; its `commandcode-messages` variant
+   shares its stored key and is enabled and disabled with it automatically;
+   never select or toggle it separately). The
    catalog-only providers `groq`, `openrouter`, `together`, `fireworks`,
    `cerebras`, `mistral`, `nvidia-nim`, `siliconflow`, `huggingface`, and
    `gemini-api` are also selectable, but they ship no preselected models: after

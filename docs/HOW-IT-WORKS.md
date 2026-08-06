@@ -186,3 +186,14 @@ external model. Ordinary routed prompts do not use this relay.
 The relay requires an active ChatGPT sign-in because only the native Codex
 backend can open its own opaque payload. In login-free mode the router fails
 closed instead of forwarding unreadable ciphertext to an external provider.
+
+Only registry-proven models are advertised as native v2 spawn-agent overrides
+by default. The Settings tab (desktop panel and macOS tray) exposes two local
+accordions: **Subagent models** controls whether all selected models, or only
+individually chosen models, are promoted to `multi_agent_version: "v2"` in the
+merged catalog. The all-models mode follows the picker dynamically: a model
+hidden from **Model picker** is not exposed as a subagent. Each accordion also
+has select-all and unselect-all bulk actions. `bin/multi-agent on` still
+promotes every picker-visible selected model, and `bin/multi-agent off`
+restores the conservative set. The checked-in provider registry is never
+changed by these switches.

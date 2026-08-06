@@ -939,6 +939,7 @@ private struct ProviderIcon: View {
     if providerID.hasPrefix("kimi") { return "kimi" }
     if providerID == "deepseek" { return "deepseek" }
     if providerID == "anthropic-api" { return "anthropic" }
+    if providerID.hasPrefix("commandcode") { return "commandcode" }
     return nil
   }
 
@@ -951,6 +952,7 @@ private struct ProviderIcon: View {
     if providerID == "zai-coding" { return "GLM" }
     if providerID == "qwen-plan" { return "Qwen" }
     if providerID == "ollama-cloud" { return "Ollama" }
+    if providerID.hasPrefix("commandcode") { return "Command Code" }
     return "Model provider"
   }
 }

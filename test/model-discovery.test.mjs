@@ -29,3 +29,28 @@ test("model discovery compares fixtures without needing or exposing a key", () =
     rmSync(testRoot, { recursive: true, force: true });
   }
 });
+
+test("Command Code discovery parses the Provider API model list", () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-commandcode-discovery-"));
+  const fixture = path.join(testRoot, "models.json");
+  writeFileSync(
+    fixture,
+    JSON.stringify({
+      object: "list",
+      data: [{ id: "deepseek/deepseek-v4-flash" }, { id: "claude-sonnet-4-6" }],
+    }),
+  );
+  try {
+    const output = execFileSync(
+      process.execPath,
+      ["src/model-discovery.mjs", "commandcode", "--fixture", fixture, "--json"],
+      { cwd: root, encoding: "utf8", env: { ...process.env, COMMAND_CODE_API_KEY: "" } },
+    );
+    const result = JSON.parse(output);
+    assert.deepEqual(result.unregistered, ["claude-sonnet-4-6"]);
+    assert.ok(result.unavailable.includes("deepseek/deepseek-v4-pro"));
+    assert.doesNotMatch(output, /Bearer|api[_-]?key/i);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});

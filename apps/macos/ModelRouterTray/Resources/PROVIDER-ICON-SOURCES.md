@@ -12,5 +12,6 @@ blue accent and DeepSeek's original blue mark are preserved.
 | Kimi | https://www.kimi.com/ | https://www.kimi.com/favicon-dark.ico |
 | DeepSeek | https://www.deepseek.com/ | https://www.deepseek.com/favicon.ico |
 | Anthropic | https://www.anthropic.com/ | https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/681d52619fec35886a7f1a70_favicon.png |
+| Command Code | https://commandcode.ai/ | https://commandcode.ai/apple-touch-icon.png |
 
 The marks remain trademarks of their respective owners.

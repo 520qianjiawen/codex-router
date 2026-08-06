@@ -81,6 +81,24 @@ test("does not poll account endpoints for disabled providers", async () => {
   assert.ok(Object.values(snapshot).every((account) => account.status === "disabled"));
 });
 
+test("Command Code usage degrades to the Studio link without an account API", async () => {
+  delete process.env.COMMAND_CODE_API_KEY;
+  delete process.env.COMMANDCODE_API_KEY;
+  process.env.COMMAND_CODE_API_KEY = "TEST_COMMANDCODE_USAGE_KEY";
+  try {
+    const snapshot = await providerAccountUsageSnapshot({
+      providerIds: ["commandcode"],
+      fetchImpl: async () => {
+        throw new Error("Command Code usage should not reach an undocumented endpoint");
+      },
+    });
+    assert.equal(snapshot.commandcode.status, "local-only");
+    assert.equal(snapshot.commandcode.dashboardUrl, "https://commandcode.ai/studio");
+  } finally {
+    delete process.env.COMMAND_CODE_API_KEY;
+  }
+});
+
 test("normalizes Grok weekly credits usage from billing proxy", () => {
   assert.deepEqual(grokCreditsMetrics({
     config: {
