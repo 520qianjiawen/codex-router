@@ -43,6 +43,8 @@ const providerStartMarker = "# BEGIN codex-router-provider-managed";
 const providerEndMarker = "# END codex-router-provider-managed";
 const agentConcurrencyStartMarker = "# BEGIN codex-router-agent-concurrency-managed";
 const agentConcurrencyEndMarker = "# END codex-router-agent-concurrency-managed";
+const multiAgentV2StartMarker = "# BEGIN codex-router-multi-agent-v2-managed";
+const multiAgentV2EndMarker = "# END codex-router-multi-agent-v2-managed";
 const createdAgentsTableMarker = "# codex-router-created-agents-table";
 const managedAgentMaxConcurrency = 6;
 const routerProviderId = "codex-router";
@@ -62,6 +64,7 @@ const markerPairs = [
   [startMarker, endMarker],
   [providerStartMarker, providerEndMarker],
   [agentConcurrencyStartMarker, agentConcurrencyEndMarker],
+  [multiAgentV2StartMarker, multiAgentV2EndMarker],
   ["# BEGIN kimi-codex-router-managed", "# END kimi-codex-router-managed"],
   ["# BEGIN kimi-codex-proxy-managed", "# END kimi-codex-proxy-managed"],
 ];
@@ -144,10 +147,42 @@ function removeCreatedAgentsTableIfEmpty(input) {
   return lines.join("\n");
 }
 
+function removeEmptyFeaturesTable(input) {
+  const lines = input.split("\n");
+  const headers = lines
+    .map((line, index) =>
+      /^\s*\[features\]\s*(?:#.*)?$/.test(line) ? index : -1,
+    )
+    .filter((index) => index !== -1);
+  if (!headers.length) return input;
+  const remove = new Set();
+  for (const header of headers) {
+    let tableEnd = header + 1;
+    while (tableEnd < lines.length && !/^\s*\[/.test(lines[tableEnd])) tableEnd += 1;
+    const hasValue = lines
+      .slice(header + 1, tableEnd)
+      .some((line) => line.trim() && !line.trim().startsWith("#"));
+    if (hasValue) continue;
+    remove.add(header);
+    for (let index = header + 1; index < tableEnd; index += 1) remove.add(index);
+  }
+  if (!remove.size) return input;
+  return lines
+    .map((line, index) => (remove.has(index) ? null : line))
+    .filter((line) => line !== null)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd();
+}
+
 function withoutManagedAgentConcurrency(input) {
   return removeCreatedAgentsTableIfEmpty(
     removeMarkerPair(input, agentConcurrencyStartMarker, agentConcurrencyEndMarker),
   );
+}
+
+function withoutManagedMultiAgentV2(input) {
+  return removeMarkerPair(input, multiAgentV2StartMarker, multiAgentV2EndMarker);
 }
 
 function hasModernMultiAgentConfig(input) {
@@ -163,6 +198,81 @@ function hasModernMultiAgentConfig(input) {
   return lines
     .slice(featuresHeader + 1, tableEnd)
     .some((line) => /^\s*multi_agent_v2\s*=/.test(line));
+}
+
+// Some Codex builds do not know the `multi_agent_v2` feature and would reject
+// the whole config if we wrote it. Probe the installed binary before adding
+// the managed block; older builds keep the legacy agents scalar instead.
+let codexSupportsMultiAgentV2;
+function installedCodexSupportsMultiAgentV2() {
+  if (codexSupportsMultiAgentV2 !== undefined) {
+    return codexSupportsMultiAgentV2;
+  }
+  codexSupportsMultiAgentV2 = probeMultiAgentV2Support();
+  return codexSupportsMultiAgentV2;
+}
+
+function probeMultiAgentV2Support() {
+  const binary = findCodexBinary();
+  if (!binary) return false;
+  const probeHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-v2-probe-"));
+  try {
+    writeFileSync(
+      path.join(probeHome, "config.toml"),
+      `[features]
+multi_agent_v2 = { enabled = true, max_concurrent_threads_per_session = ${managedAgentMaxConcurrency}, expose_spawn_agent_model_overrides = true }
+`,
+      { encoding: "utf8", mode: 0o600 },
+    );
+    const { command: probeCommand, options } = codexSpawnTarget(binary);
+    // `login status` exits non-zero when signed out, so the exit code says
+    // nothing about the config; only the load-error message does.
+    const result = spawnSync(probeCommand, ["login", "status"], {
+      ...options,
+      encoding: "utf8",
+      timeout: 10_000,
+      env: { ...process.env, CODEX_HOME: probeHome },
+    });
+    if (result.error) return false;
+    return !/Error loading configuration/i.test(
+      `${result.stdout || ""}\n${result.stderr || ""}`,
+    );
+  } catch {
+    return false;
+  } finally {
+    rmSync(probeHome, { recursive: true, force: true });
+  }
+}
+
+// The v2 feature is what makes Codex expose the spawn-agent toolset. Without
+// it, `multi_agent_version: "v2"` in the catalog is never surfaced to the
+// model. The block is idempotent and leaves an existing user-owned
+// multi_agent_v2 setting alone. The line must live inside the existing
+// `[features]` table: this Codex build rejects a reopened `[features]` table.
+function withManagedMultiAgentV2(input) {
+  const cleaned = withoutManagedMultiAgentV2(input);
+  if (hasModernMultiAgentConfig(cleaned)) return cleaned;
+  if (!installedCodexSupportsMultiAgentV2()) return cleaned;
+  const featureLine = `multi_agent_v2 = { enabled = true, max_concurrent_threads_per_session = ${managedAgentMaxConcurrency}, expose_spawn_agent_model_overrides = true }`;
+  const managedLines = [
+    multiAgentV2StartMarker,
+    featureLine,
+    multiAgentV2EndMarker,
+  ];
+  const lines = cleaned.split("\n");
+  const featuresHeader = lines.findIndex((line) =>
+    /^\s*\[features\]\s*(?:#.*)?$/.test(line),
+  );
+  if (featuresHeader === -1) {
+    const firstTable = lines.findIndex((line) => /^\s*\[/.test(line));
+    const insertionIndex = firstTable === -1 ? lines.length : firstTable;
+    lines.splice(insertionIndex, 0, "", "[features]", ...managedLines);
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+  let tableEnd = featuresHeader + 1;
+  while (tableEnd < lines.length && !/^\s*\[/.test(lines[tableEnd])) tableEnd += 1;
+  lines.splice(tableEnd, 0, ...managedLines, "");
+  return `${lines.join("\n").trimEnd()}\n`;
 }
 
 // Some Codex builds reject a managed concurrency scalar and block the whole
@@ -419,7 +529,9 @@ function clean(contents) {
   const knownManaged =
     markerPairs.some(([start]) => contents.includes(start)) ||
     knownCatalogPaths.some((catalogPath) => contents.includes(catalogPath));
-  const withoutBlock = removeCreatedAgentsTableIfEmpty(removeMarkedBlock(contents));
+  const withoutBlock = removeEmptyFeaturesTable(
+    removeCreatedAgentsTableIfEmpty(removeMarkedBlock(contents)),
+  );
   const { rootLines, tableLines } = splitRoot(withoutBlock);
   const filtered = rootLines.filter((line) => {
     if (/^\s*openai_base_url\s*=/.test(line)) {
@@ -510,6 +622,8 @@ function enabledContents(contents) {
     "",
     ...tableLines,
     ...(tableLines.length ? [""] : []),
+  ];
+  const providerBlock = [
     providerStartMarker,
     `[model_providers.${routerProviderId}]`,
     'name = "Codex Router (external models)"',
@@ -517,7 +631,9 @@ function enabledContents(contents) {
     'wire_api = "responses"',
     providerEndMarker,
   ];
-  return withManagedAgentConcurrency(`${next.join("\n").trimEnd()}\n`);
+  return withManagedAgentConcurrency(
+    `${withManagedMultiAgentV2(`${next.join("\n").trimEnd()}\n`).trimEnd()}\n\n${providerBlock.join("\n")}\n`,
+  );
 }
 
 function atomicWrite(contents) {

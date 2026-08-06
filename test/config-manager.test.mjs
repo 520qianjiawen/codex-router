@@ -39,6 +39,27 @@ const scalarRejectingCodex = writeCodexStub(
   "codex-rejects-scalar",
   "Error loading configuration: invalid type: integer, expected struct AgentRoleToml",
 );
+// Accepts the legacy concurrency scalar but rejects the modern v2 feature,
+// which is how older builds that still support the scalar behave.
+const scalarOnlyCodex = (() => {
+  const isWindows = process.platform === "win32";
+  const file = path.join(
+    codexStubDir,
+    isWindows ? "codex-scalar-only.cmd" : "codex-scalar-only",
+  );
+  const contents = isWindows
+    ? `@echo off\r\nfindstr /c:"multi_agent_v2" "%CODEX_HOME%\\config.toml" >nul 2>&1\r\nif %errorlevel% equ 0 (\r\n  echo Error loading configuration: unknown feature multi_agent_v2 1>&2\r\n  exit /b 1\r\n)\r\necho Not logged in 1>&2\r\nexit /b 1\r\n`
+    : `#!/bin/sh
+if grep -q multi_agent_v2 "$CODEX_HOME/config.toml" 2>/dev/null; then
+  echo 'Error loading configuration: unknown feature multi_agent_v2' >&2
+  exit 1
+fi
+echo 'Not logged in' >&2
+exit 1
+`;
+  writeFileSync(file, contents, { mode: 0o755 });
+  return file;
+})();
 
 function run(
   command,
@@ -96,8 +117,13 @@ approval_policy = "never"
     const configured = readFileSync(configPath, "utf8");
     assert.match(configured, /# BEGIN codex-router-managed/);
     assert.match(configured, /# BEGIN codex-router-provider-managed/);
-    assert.match(configured, /# BEGIN codex-router-agent-concurrency-managed/);
-    assert.match(configured, /max_concurrent_threads_per_session = 6/);
+    assert.match(configured, /# BEGIN codex-router-multi-agent-v2-managed/);
+    assert.match(
+      configured,
+      /multi_agent_v2 = \{ enabled = true, max_concurrent_threads_per_session = 6, expose_spawn_agent_model_overrides = true \}/,
+    );
+    assert.doesNotMatch(configured, /codex-router-agent-concurrency-managed/);
+    assert.doesNotMatch(configured, /^max_concurrent_threads_per_session\s*=/m);
     assert.doesNotMatch(configured, /\[agents\]/);
     assert.match(configured, /\[model_providers\.codex-router\]/);
     assert.match(configured, /wire_api = "responses"/);
@@ -141,7 +167,7 @@ approval_policy = "never"
     const restored = readFileSync(configPath, "utf8");
     assert.doesNotMatch(
       restored,
-      /codex-router-(?:(?:provider|agent-concurrency)-)?managed|codex-router-created-agents-table|openai_base_url|model_catalog_json|experimental_realtime_(?:webrtc_call|ws)_base_url/,
+      /codex-router-(?:(?:provider|agent-concurrency|multi-agent-v2)-)?managed|codex-router-created-agents-table|openai_base_url|model_catalog_json|experimental_realtime_(?:webrtc_call|ws)_base_url/,
     );
     assert.doesNotMatch(restored, /\[agents\]|max_concurrent_threads_per_session/);
     assert.match(restored, /model = "gpt-5\.6-sol"/);
@@ -198,17 +224,18 @@ model_reasoning_effort = "high"
   );
 
   try {
-    run("enable", codexHome);
+    run("enable", codexHome, undefined, [], { CODEX_BIN: scalarOnlyCodex });
     const enabled = readFileSync(configPath, "utf8");
     assert.equal((enabled.match(/^\[agents\]$/gm) || []).length, 1);
     assert.match(enabled, /^max_concurrent_threads_per_session = 6$/m);
     assert.match(enabled, /^default_subagent_model = "gpt-5\.6-terra"$/m);
+    assert.doesNotMatch(enabled, /codex-router-multi-agent-v2-managed/);
     assert.ok(
       enabled.indexOf("max_concurrent_threads_per_session = 6") <
         enabled.indexOf("[agents]"),
     );
 
-    run("disable", codexHome);
+    run("disable", codexHome, undefined, [], { CODEX_BIN: scalarOnlyCodex });
     const restored = readFileSync(configPath, "utf8");
     assert.match(restored, /^\[agents\]$/m);
     assert.match(restored, /^default_subagent_model = "gpt-5\.6-terra"$/m);
@@ -253,6 +280,7 @@ test("config manager skips the agents scalar when the codex binary rejects it", 
     run("enable", codexHome, undefined, [], { CODEX_BIN: scalarRejectingCodex });
     const enabled = readFileSync(configPath, "utf8");
     assert.doesNotMatch(enabled, /codex-router-agent-concurrency-managed/);
+    assert.doesNotMatch(enabled, /codex-router-multi-agent-v2-managed/);
     assert.doesNotMatch(enabled, /^\[agents\]$/m);
     assert.match(enabled, /# BEGIN codex-router-managed/);
 
@@ -263,16 +291,49 @@ test("config manager skips the agents scalar when the codex binary rejects it", 
   }
 });
 
-test("config manager keeps writing the agents scalar when the codex binary accepts it", () => {
+test("config manager keeps writing the agents scalar when the codex binary lacks v2 support", () => {
   const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-lenient-schema-"));
   const configPath = path.join(codexHome, "config.toml");
   writeFileSync(configPath, `model = "gpt-5.5"\n`, { mode: 0o600 });
 
   try {
-    run("enable", codexHome, undefined, [], { CODEX_BIN: scalarAcceptingCodex });
+    run("enable", codexHome, undefined, [], { CODEX_BIN: scalarOnlyCodex });
     const enabled = readFileSync(configPath, "utf8");
     assert.match(enabled, /codex-router-agent-concurrency-managed/);
     assert.match(enabled, /^max_concurrent_threads_per_session = 6$/m);
+    assert.doesNotMatch(enabled, /codex-router-multi-agent-v2-managed/);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("config manager enables multi_agent_v2 and skips the legacy agents scalar when supported", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-v2-feature-"));
+  const configPath = path.join(codexHome, "config.toml");
+  writeFileSync(configPath, `model = "gpt-5.5"\n`, { mode: 0o600 });
+
+  try {
+    run("enable", codexHome);
+    const enabled = readFileSync(configPath, "utf8");
+    assert.match(enabled, /# BEGIN codex-router-multi-agent-v2-managed/);
+    assert.match(
+      enabled,
+      /multi_agent_v2 = \{ enabled = true, max_concurrent_threads_per_session = 6, expose_spawn_agent_model_overrides = true \}/,
+    );
+    assert.doesNotMatch(enabled, /codex-router-agent-concurrency-managed/);
+    assert.doesNotMatch(enabled, /^max_concurrent_threads_per_session\s*=/m);
+
+    run("enable", codexHome);
+    const reenabled = readFileSync(configPath, "utf8");
+    assert.equal(
+      (reenabled.match(/# BEGIN codex-router-multi-agent-v2-managed/g) || []).length,
+      1,
+    );
+
+    run("disable", codexHome);
+    const restored = readFileSync(configPath, "utf8");
+    assert.doesNotMatch(restored, /codex-router-multi-agent-v2-managed|multi_agent_v2/);
+    assert.equal(restored.trimStart(), `model = "gpt-5.5"\n`);
   } finally {
     rmSync(codexHome, { recursive: true, force: true });
   }
