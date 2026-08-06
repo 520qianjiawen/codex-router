@@ -188,8 +188,10 @@ backend can open its own opaque payload. In login-free mode the router fails
 closed instead of forwarding unreadable ciphertext to an external provider.
 
 Only registry-proven models are advertised as native v2 spawn-agent overrides
-by default. `bin/multi-agent on` is a local opt-in that promotes every selected
-model to `multi_agent_version: "v2"` in the merged catalog, so any enabled
-model can be chosen as a subagent; `bin/multi-agent off` restores the
-conservative set. The checked-in provider registry is never changed by this
-switch.
+by default. The Settings tab (desktop panel and macOS tray) exposes two local
+accordions: **Subagent models** controls whether all selected models, or only
+individually chosen models, are promoted to `multi_agent_version: "v2"` in the
+merged catalog; **Model picker** hides or shows individual models without
+disconnecting them. `bin/multi-agent on` still promotes every selected model,
+and `bin/multi-agent off` restores the conservative set. The checked-in
+provider registry is never changed by these switches.

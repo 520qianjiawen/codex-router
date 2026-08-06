@@ -88,6 +88,16 @@ test("codex probe folds protocol variants into one provider family", () => {
   assert.ok(!providerIds.some((id) => id.startsWith("opencode-go-")));
 });
 
+test("codex probe folds Command Code protocol variants into one provider family", () => {
+  const slice = probe("codex", ["commandcode"]);
+  const family = slice.models.filter((m) => m.provider === "commandcode");
+  assert.ok(family.length > 0 && family.every((m) => m.enabled));
+  assert.ok(!slice.models.some((m) => m.provider.startsWith("commandcode-")));
+  const providerIds = slice.providers.map((p) => p.id);
+  assert.ok(providerIds.includes("commandcode"));
+  assert.ok(!providerIds.some((id) => id.startsWith("commandcode-")));
+});
+
 test("codex probe exposes only privacy-safe recent usage events", () => {
   const event = {
     at: new Date().toISOString(),
@@ -136,11 +146,14 @@ test("codex probe includes native GPT models and the configured default", () => 
       gatewayModel: "gpt-5.6-terra",
       enabled: true,
       native: true,
+      multiAgentVersion: "v1",
     },
   );
   assert.equal(slice.models.some((model) => model.slug === "codex-auto-review"), false);
   assert.equal(slice.loginFree, false);
   assert.equal(slice.loginFreeManaged, false);
+  assert.equal(slice.modelSettings.picker.hidden.length, 0);
+  assert.ok(["all", "selected", "proven"].includes(slice.modelSettings.subagents.mode));
 });
 
 test("codex probe exposes managed login-free mode without credential details", () => {
@@ -148,6 +161,38 @@ test("codex probe exposes managed login-free mode without credential details", (
   assert.equal(slice.loginFree, true);
   assert.equal(slice.loginFreeManaged, true);
   assert.equal(JSON.stringify(slice).includes("previousModelProvider"), false);
+});
+
+test("control exposes subagent and picker settings without credentials", () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-settings-"));
+  try {
+    const env = {
+      ...process.env,
+      MODEL_ROUTER_TARGET: "codex",
+      MODEL_ROUTER_STATE_DIR: stateDir,
+    };
+    const subagents = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [path.join(root, "src", "control.mjs"), "subagents", "status"],
+        { cwd: root, encoding: "utf8", env },
+      ),
+    );
+    assert.ok(["all", "selected", "proven"].includes(subagents.mode));
+    assert.ok(Array.isArray(subagents.enabled));
+    assert.ok(Array.isArray(subagents.disabled));
+
+    const picker = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [path.join(root, "src", "control.mjs"), "picker", "status"],
+        { cwd: root, encoding: "utf8", env },
+      ),
+    );
+    assert.deepEqual(picker.hidden, []);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
 });
 
 function probeSet(target, providers, provider, desired) {

@@ -622,6 +622,118 @@ h2 {
   font-size: 8.5px;
 }
 
+.accordion {
+  margin-bottom: 10px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.023);
+}
+
+.accordion-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 10px 11px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.accordion-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.accordion-header strong,
+.accordion-header small {
+  display: block;
+}
+
+.accordion-header strong {
+  font-size: 11.5px;
+  font-weight: 610;
+}
+
+.accordion-header small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 8.5px;
+}
+
+.accordion-chevron {
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  border-right: 1.5px solid var(--muted-strong);
+  border-bottom: 1.5px solid var(--muted-strong);
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 160ms ease;
+}
+
+.accordion-header[aria-expanded="false"] .accordion-chevron {
+  transform: rotate(-45deg) translateY(2px);
+}
+
+.accordion-body {
+  padding: 0 10px 10px;
+}
+
+.accordion-body[hidden] {
+  display: none;
+}
+
+.accordion-note {
+  margin: 0 0 9px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.model-settings-list {
+  display: grid;
+  gap: 7px;
+}
+
+.model-setting-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 46px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+}
+
+.model-setting-row strong,
+.model-setting-row small {
+  display: block;
+}
+
+.model-setting-row strong {
+  overflow: hidden;
+  font-size: 10.5px;
+  font-weight: 590;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-setting-row small {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .provider-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

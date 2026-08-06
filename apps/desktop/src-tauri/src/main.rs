@@ -74,6 +74,9 @@ fn main() {
             save_api_key,
             remove_api_key,
             set_provider_enabled,
+            set_subagent_mode,
+            set_subagent_model,
+            set_picker_model,
             set_login_free,
             set_island_enabled,
             set_island_expanded,
@@ -319,6 +322,54 @@ async fn set_provider_enabled(
     })
     .await
     .map_err(|_| "The provider change did not finish.".to_string())?
+}
+
+#[tauri::command]
+async fn set_subagent_mode(state: State<'_, RouterState>, mode: String) -> Result<Value, String> {
+    run_json_command(
+        state.inner().clone(),
+        vec!["subagents".into(), "mode".into(), mode],
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn set_subagent_model(
+    state: State<'_, RouterState>,
+    slug: String,
+    enabled: bool,
+) -> Result<Value, String> {
+    run_json_command(
+        state.inner().clone(),
+        vec![
+            "subagents".into(),
+            "set".into(),
+            slug,
+            (if enabled { "on" } else { "off" }).into(),
+        ],
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn set_picker_model(
+    state: State<'_, RouterState>,
+    slug: String,
+    visible: bool,
+) -> Result<Value, String> {
+    run_json_command(
+        state.inner().clone(),
+        vec![
+            "picker".into(),
+            "set".into(),
+            slug,
+            (if visible { "show" } else { "hide" }).into(),
+        ],
+        None,
+    )
+    .await
 }
 
 #[tauri::command]

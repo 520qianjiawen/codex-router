@@ -11,7 +11,8 @@ import { detectLegacyInstallations } from "./legacy-migration.mjs";
 import { PROVIDERS } from "./model-registry.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
-import { readAllMultiAgent } from "./multi-agent-state.mjs";
+import { readMultiAgentSettings } from "./multi-agent-state.mjs";
+import { readHiddenModels } from "./model-picker-state.mjs";
 import { waitForRouterHealth } from "./router-health.mjs";
 import {
   CALLER_SECRET_PATH,
@@ -277,10 +278,26 @@ add(
 add(
   "ok",
   "Dynamic subagent models",
-  readAllMultiAgent()
-    ? "all selected models exposed as v2 spawn agents"
-    : "only registry-proven v2 models",
+  (() => {
+    const settings = readMultiAgentSettings();
+    if (settings.mode === "all") return "all selected models exposed as v2 spawn agents";
+    if (settings.mode === "selected") {
+      return `${settings.enabled.length} selected model(s) exposed as v2 spawn agents`;
+    }
+    return "only registry-proven v2 models";
+  })(),
   "Run ./bin/multi-agent on to expose every selected model as a subagent.",
+);
+add(
+  "ok",
+  "Model picker visibility",
+  (() => {
+    const hidden = readHiddenModels();
+    return hidden.size === 0
+      ? "all enabled models visible"
+      : `${hidden.size} model(s) hidden from the picker`;
+  })(),
+  "Change per-model visibility in the desktop Models settings.",
 );
 add(
   existsSync(LITELLM_CONFIG_PATH) ? "ok" : "fail",

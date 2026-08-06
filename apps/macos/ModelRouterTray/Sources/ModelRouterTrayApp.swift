@@ -310,6 +310,7 @@ final class RouterStore: ObservableObject {
     "zai-coding": "GLM",
     "qwen-plan": "Qwen",
     "ollama-cloud": "Ollama",
+    "commandcode": "Command Code",
   ]
 
   static func shortName(forRegistryProvider provider: RouterProviderInfo) -> String {
@@ -927,6 +928,36 @@ final class RouterStore: ObservableObject {
     }
   }
 
+  func setSubagentMode(_ mode: String) async {
+    await applyModelSettings(arguments: ["subagents", "mode", mode])
+  }
+
+  func setSubagentModel(_ slug: String, enabled: Bool) async {
+    await applyModelSettings(
+      arguments: ["subagents", "set", slug, enabled ? "on" : "off"]
+    )
+  }
+
+  func setPickerModel(_ slug: String, visible: Bool) async {
+    await applyModelSettings(
+      arguments: ["picker", "set", slug, visible ? "show" : "hide"]
+    )
+  }
+
+  private func applyModelSettings(arguments: [String]) async {
+    guard providerOperation == nil else { return }
+    providerOperation = "models"
+    defer { providerOperation = nil }
+    do {
+      _ = try await runControl(arguments: arguments)
+      await refresh()
+      message = "Model settings applied. Restart Codex to refresh its picker."
+    } catch {
+      message = error.localizedDescription
+      await refresh()
+    }
+  }
+
   private func performProviderOperation(
     _ provider: String,
     successMessage: String,
@@ -1381,6 +1412,7 @@ struct RouterTarget: Decodable {
   let loginFree: Bool?
   let loginFreeManaged: Bool?
   let nativeAliases: [String: String]?
+  let modelSettings: ModelSettingsSnapshot?
 }
 
 struct RouterProviderInfo: Decodable {
@@ -1403,7 +1435,24 @@ struct RouterModel: Decodable, Identifiable {
   let displayName: String
   let provider: String
   let enabled: Bool
+  let multiAgentVersion: String?
   var id: String { slug }
+}
+
+struct ModelSettingsSnapshot: Decodable {
+  let subagents: SubagentSettingsSnapshot
+  let picker: PickerSettingsSnapshot
+}
+
+struct SubagentSettingsSnapshot: Decodable {
+  let mode: String
+  let enabled: [String]
+  let disabled: [String]
+  let all: Bool
+}
+
+struct PickerSettingsSnapshot: Decodable {
+  let hidden: [String]
 }
 
 struct UsageProviderChoice: Identifiable {
@@ -1786,6 +1835,11 @@ private struct TrayView: View {
       isDisabled: store.providerOperation != nil
     )
     sectionLabel(
+      "Models",
+      detail: store.providerOperation == "models" ? "Applying…" : "Subagents + picker"
+    )
+    ModelSettingsAccordion(store: store, target: target)
+    sectionLabel(
       "Maintenance",
       detail: store.maintenanceRunning ? "Updating & checking…" : "Update + doctor"
     )
@@ -1811,6 +1865,183 @@ private struct TrayView: View {
           Divider()
         }
       }
+    }
+  }
+
+  private struct ModelSettingsAccordion: View {
+    @ObservedObject var store: RouterStore
+    let target: RouterTarget
+    @State private var subagentsExpanded = true
+    @State private var pickerExpanded = true
+
+    private var settings: ModelSettingsSnapshot? { target.modelSettings }
+    private var busy: Bool { store.providerOperation == "models" }
+
+    private var enabledExternalModels: [RouterModel] {
+      target.models
+        .filter { $0.enabled && $0.provider != "openai" }
+        .sorted {
+          if $0.provider != $1.provider { return $0.provider < $1.provider }
+          return $0.slug < $1.slug
+        }
+    }
+
+    private var enabledModels: [RouterModel] {
+      target.models
+        .filter(\.enabled)
+        .sorted {
+          if $0.provider != $1.provider { return $0.provider < $1.provider }
+          return $0.slug < $1.slug
+        }
+    }
+
+    var body: some View {
+      VStack(alignment: .leading, spacing: 10) {
+        DisclosureGroup(isExpanded: $subagentsExpanded) {
+          VStack(alignment: .leading, spacing: 8) {
+            toggleRow(
+              title: "All selected models",
+              detail: settings?.subagents.mode == "all"
+                ? "Every enabled model can run as a subagent"
+                : "Only selected models can run as subagents",
+              isOn: Binding(
+                get: { settings?.subagents.mode == "all" },
+                set: { enabled in
+                  let current = settings?.subagents
+                  let mode = enabled
+                    ? "all"
+                    : current?.enabled.isEmpty == false ? "selected" : "proven"
+                  Task { await store.setSubagentMode(mode) }
+                }
+              ),
+              disabled: busy
+            )
+            ForEach(enabledExternalModels) { model in
+              toggleRow(
+                title: model.displayName,
+                detail: subagentDetail(for: model),
+                isOn: Binding(
+                  get: { isSubagent(model) },
+                  set: { enabled in
+                    Task { await store.setSubagentModel(model.slug, enabled: enabled) }
+                  }
+                ),
+                disabled: busy
+              )
+            }
+          }
+          .padding(.top, 8)
+        } label: {
+          HStack {
+            Text("Subagent models")
+              .font(.system(size: 12, weight: .medium))
+            Spacer()
+            Text(subagentSummary)
+              .font(.system(size: 9))
+              .foregroundStyle(routerMuted)
+          }
+        }
+
+        DisclosureGroup(isExpanded: $pickerExpanded) {
+          VStack(alignment: .leading, spacing: 8) {
+            Text("Hidden models stay connected but are not offered by Codex.")
+              .font(.system(size: 9))
+              .foregroundStyle(routerMuted)
+            ForEach(enabledModels) { model in
+              toggleRow(
+                title: model.displayName,
+                detail: model.provider,
+                isOn: Binding(
+                  get: { !hiddenModels.contains(model.slug) },
+                  set: { visible in
+                    Task { await store.setPickerModel(model.slug, visible: visible) }
+                  }
+                ),
+                disabled: busy
+              )
+            }
+          }
+          .padding(.top, 8)
+        } label: {
+          HStack {
+            Text("Model picker")
+              .font(.system(size: 12, weight: .medium))
+            Spacer()
+            Text(pickerSummary)
+              .font(.system(size: 9))
+              .foregroundStyle(routerMuted)
+          }
+        }
+      }
+    }
+
+    private var hiddenModels: Set<String> {
+      Set(settings?.picker.hidden ?? [])
+    }
+
+    private var enabledSubagentSet: Set<String> {
+      Set(settings?.subagents.enabled ?? [])
+    }
+
+    private var disabledSubagentSet: Set<String> {
+      Set(settings?.subagents.disabled ?? [])
+    }
+
+    private func isSubagent(_ model: RouterModel) -> Bool {
+      if disabledSubagentSet.contains(model.slug) { return false }
+      switch settings?.subagents.mode ?? "proven" {
+      case "all":
+        return true
+      case "selected":
+        return model.multiAgentVersion == "v2" || enabledSubagentSet.contains(model.slug)
+      default:
+        return model.multiAgentVersion == "v2"
+      }
+    }
+
+    private func subagentDetail(for model: RouterModel) -> String {
+      let base = model.multiAgentVersion == "v2" ? "\(model.provider) · proven v2" : model.provider
+      if settings?.subagents.mode == "all" && disabledSubagentSet.contains(model.slug) {
+        return "\(base) · excluded"
+      }
+      return base
+    }
+
+    private var subagentSummary: String {
+      let count = enabledExternalModels.filter { isSubagent($0) }.count
+      return "\(count) enabled · \(settings?.subagents.mode ?? "proven")"
+    }
+
+    private var pickerSummary: String {
+      let visible = enabledModels.filter { !hiddenModels.contains($0.slug) }.count
+      return "\(visible) visible · \(hiddenModels.count) hidden"
+    }
+
+    private func toggleRow(
+      title: String,
+      detail: String,
+      isOn: Binding<Bool>,
+      disabled: Bool
+    ) -> some View {
+      HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(.system(size: 11, weight: .medium))
+            .lineLimit(1)
+          Text(detail)
+            .font(.system(size: 9))
+            .foregroundStyle(routerMuted)
+            .lineLimit(1)
+        }
+        Spacer()
+        Toggle("", isOn: isOn)
+          .labelsHidden()
+          .toggleStyle(.switch)
+          .controlSize(.mini)
+          .tint(routerMint)
+          .disabled(disabled)
+      }
+      .padding(.horizontal, 2)
     }
   }
 

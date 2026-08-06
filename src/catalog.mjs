@@ -20,7 +20,11 @@ import { codexAuthStatus, codexVersion, runCodex } from "./codex-binary.mjs";
 import { readUserModels } from "./user-models.mjs";
 import { syncRoutedCodexAgents } from "./codex-agent-catalog.mjs";
 import { MODEL_BY_SLUG } from "./model-registry.mjs";
-import { readAllMultiAgent } from "./multi-agent-state.mjs";
+import {
+  applyMultiAgentSettings,
+  readMultiAgentSettings,
+} from "./multi-agent-state.mjs";
+import { readHiddenModels } from "./model-picker-state.mjs";
 import { buildNativeAliasAssignments } from "./native-alias.mjs";
 import { selectedConfiguredListedModels } from "./provider-selection.mjs";
 import { assertStateOwnership } from "./state-owner.mjs";
@@ -433,9 +437,9 @@ function main() {
   // advertising models the running gateway has no route for.
   assertStateOwnership("write the Codex model catalog");
   const userSlugs = new Set(readUserModels().map((model) => String(model.slug)));
-  const allMultiAgentModels = applyAllMultiAgent(
+  const allMultiAgentModels = applyMultiAgentSettings(
     selectedConfiguredListedModels(),
-    readAllMultiAgent(),
+    readMultiAgentSettings(),
   );
   // Clamp before announcements and agent sync so every surface Codex reads —
   // picker levels, defaults, and announcement copy — stays inside the effort
@@ -461,6 +465,7 @@ function main() {
   }
   const openaiAuthenticated = auth.authenticated;
   const loginFree = loginFreeConfigured();
+  const hiddenModels = readHiddenModels();
   const { models: merged, aliases } = loginFree
     ? buildLoginFreeCatalog(native, routedModels)
     : {
@@ -469,7 +474,13 @@ function main() {
         }),
         aliases: {},
       };
-  atomicJson(MERGED_CATALOG_PATH, { models: merged });
+  atomicJson(MERGED_CATALOG_PATH, {
+    models: merged.map((model) =>
+      hiddenModels.has(String(model.slug))
+        ? { ...model, visibility: "hide" }
+        : model,
+    ),
+  });
   atomicJson(NATIVE_ALIAS_PATH, { version: 1, aliases });
   writeAnnouncedAt(announcedAt);
   const routedAgents = syncRoutedCodexAgents(routedModels);

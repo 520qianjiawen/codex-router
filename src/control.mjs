@@ -66,6 +66,7 @@ function nativeCodexModels(catalogPath) {
         gatewayModel: model.slug,
         enabled: true,
         native: true,
+        multiAgentVersion: model.multi_agent_version || "v1",
       }));
   } catch {
     return [];
@@ -84,6 +85,8 @@ async function emitProbe() {
   const { canonicalProviderId, readProviderSelection } = await import("./provider-selection.mjs");
   const { LISTED_MODELS, PROVIDERS } = await import("./model-registry.mjs");
   const { readNativeAliases } = await import("./native-alias.mjs");
+  const { subagentSettingsSnapshot } = await import("./multi-agent-state.mjs");
+  const { modelPickerSnapshot } = await import("./model-picker-state.mjs");
 
   const enabledProviders = readProviderSelection();
   const usageEvents = TARGET === "codex"
@@ -97,6 +100,7 @@ async function emitProbe() {
     provider: canonicalProviderId(model.provider),
     gatewayModel: model.gatewayModel,
     enabled: enabledProviders.includes(model.provider),
+    multiAgentVersion: model.multiAgentVersion || "v1",
   }));
   const models = TARGET === "codex"
     ? [...nativeCodexModels(NATIVE_CATALOG_PATH), ...routedModels]
@@ -126,7 +130,14 @@ async function emitProbe() {
           }
         : {}),
       ...(TARGET === "codex"
-        ? { usageEvents, nativeAliases: readNativeAliases() }
+        ? {
+            usageEvents,
+            nativeAliases: readNativeAliases(),
+            modelSettings: {
+              subagents: subagentSettingsSnapshot(),
+              picker: modelPickerSnapshot(),
+            },
+          }
         : {}),
     }),
   );
@@ -401,6 +412,91 @@ async function updateAndVerifyCodex() {
   process.stdout.write(`${JSON.stringify(runCodexMaintenance())}\n`);
 }
 
+function refreshModelSettingsCatalog() {
+  const result = spawnSync(
+    process.execPath,
+    [path.join(REPO_ROOT, "src", "catalog.mjs")],
+    {
+      cwd: REPO_ROOT,
+      env: { ...process.env, MODEL_ROUTER_TARGET: "codex" },
+      stdio: "ignore",
+    },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      (result.stderr || "The model settings catalog could not be refreshed.").trim(),
+    );
+  }
+}
+
+async function knownModelSlug(slug) {
+  try {
+    const { MERGED_CATALOG_PATH } = await import("./paths.mjs");
+    const parsed = JSON.parse(readFileSync(MERGED_CATALOG_PATH, "utf8"));
+    if (
+      Array.isArray(parsed.models) &&
+      parsed.models.some((model) => String(model.slug) === slug)
+    ) {
+      return true;
+    }
+  } catch {
+    // Fall back to the checked-in registry for fresh installs.
+  }
+  const { MODEL_BY_SLUG } = await import("./model-registry.mjs");
+  return MODEL_BY_SLUG.has(slug);
+}
+
+async function handleSubagents(action, value, flag) {
+  const {
+    setMultiAgentMode,
+    setMultiAgentModel,
+    subagentSettingsSnapshot,
+  } = await import("./multi-agent-state.mjs");
+  if (action === "status") {
+    process.stdout.write(`${JSON.stringify(subagentSettingsSnapshot())}\n`);
+    return;
+  }
+  if (action === "mode") {
+    setMultiAgentMode(value);
+  } else if (action === "set") {
+    if (!["on", "off"].includes(flag)) {
+      throw new Error("Usage: control subagents set <model-slug> <on|off>");
+    }
+    if (!(await knownModelSlug(value))) {
+      throw new Error(`Unknown model slug: ${value}`);
+    }
+    setMultiAgentModel(value, flag === "on");
+  } else {
+    throw new Error("Usage: control subagents status|mode <all|selected|proven>|set <model-slug> <on|off>");
+  }
+  refreshModelSettingsCatalog();
+  process.stdout.write(`${JSON.stringify(subagentSettingsSnapshot())}\n`);
+}
+
+async function handlePicker(action, value, flag) {
+  const {
+    modelPickerSnapshot,
+    setModelVisible,
+  } = await import("./model-picker-state.mjs");
+  if (action === "status") {
+    process.stdout.write(`${JSON.stringify(modelPickerSnapshot())}\n`);
+    return;
+  }
+  if (action === "set") {
+    if (!["show", "hide"].includes(flag)) {
+      throw new Error("Usage: control picker set <model-slug> <show|hide>");
+    }
+    if (!(await knownModelSlug(value))) {
+      throw new Error(`Unknown model slug: ${value}`);
+    }
+    setModelVisible(value, flag === "show");
+  } else {
+    throw new Error("Usage: control picker status|set <model-slug> <show|hide>");
+  }
+  refreshModelSettingsCatalog();
+  process.stdout.write(`${JSON.stringify(modelPickerSnapshot())}\n`);
+}
+
 // --- dispatch ---------------------------------------------------------------
 
 if (args.includes("--probe")) {
@@ -435,6 +531,10 @@ if (args.includes("--probe")) {
   await setLoginFreeMode(args[1]);
 } else if (args[0] === "model-set") {
   await setLoginFreeModel(args[1]);
+} else if (args[0] === "subagents") {
+  await handleSubagents(args[1], args[2], args[3]);
+} else if (args[0] === "picker") {
+  await handlePicker(args[1], args[2], args[3]);
 } else if (args[0] === "maintenance") {
   await updateAndVerifyCodex();
 } else {

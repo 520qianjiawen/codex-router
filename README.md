@@ -1,7 +1,8 @@
 # Codex Router
 
-Use Anthropic, Kimi, DeepSeek, xAI, opencode Go, and future external models
-inside the Codex App and CLI through one local, credential-isolating router.
+Use Anthropic, Kimi, DeepSeek, xAI, opencode Go, Command Code, and future
+external models inside the Codex App and CLI through one local,
+credential-isolating router.
 The integration speaks the Responses API and merges external entries into
 Codex's native model catalog, so routed models appear in the normal picker
 next to the native GPT models.
@@ -176,6 +177,10 @@ enable the family:
 ./bin/model-router codex multi-agent on
 ```
 
+The desktop panel and macOS tray Settings tab also provide per-model controls:
+which enabled models can run as subagents, and which models appear in the
+Codex picker.
+
 | Picker label | Model ID |
 | --- | --- |
 | Grok 4.5 (opencode Go) | `opencode-go/grok-4.5` |
@@ -207,6 +212,57 @@ Entries that duplicate a vendor-direct provider (for example DeepSeek V4 Pro)
 intentionally coexist because the subscription bills separately. Point
 `OPENCODE_GO_BASE_URL` (or `OPENCODE_ZEN_BASE_URL`) elsewhere to override the
 endpoints.
+
+### Command Code Provider API
+
+Command Code's official Provider API is an OpenAI-compatible chat completions
+surface plus an Anthropic Messages surface at `https://api.commandcode.ai/provider/v1`
+(`COMMAND_CODE_API_KEY` or `COMMANDCODE_API_KEY` in the environment, or store
+the key once). It requires the Provider plan or higher and uses the same key
+that authenticates the Command Code CLI. Everything appears as one
+"Command Code" provider; internally the catalog is split between
+`commandcode` for Chat Completions models and `commandcode-messages` for
+models that require the Messages protocol (Claude). Set the key once and
+enable the family:
+
+```sh
+./bin/model-router codex provider-key commandcode set
+./bin/model-router codex providers enable commandcode
+./bin/model-router codex multi-agent on
+```
+
+| Picker label | Model ID |
+| --- | --- |
+| DeepSeek V4 Flash (Command Code) | `commandcode/deepseek-v4-flash` |
+| DeepSeek V4 Pro (Command Code) | `commandcode/deepseek-v4-pro` |
+| GLM-5.2 (Command Code) | `commandcode/glm-5.2` |
+| Kimi K3 (Command Code) | `commandcode/kimi-k3` |
+| Kimi K2.7 Code (Command Code) | `commandcode/kimi-k2.7-code` |
+| Qwen3.8 Max (Command Code) | `commandcode/qwen3.8-max` |
+| Qwen3.7 Max (Command Code) | `commandcode/qwen3.7-max` |
+| Qwen3.7 Plus (Command Code) | `commandcode/qwen3.7-plus` |
+| MiniMax M3 (Command Code) | `commandcode/minimax-m3` |
+| MiniMax M2.7 (Command Code) | `commandcode/minimax-m2.7` |
+| MiMo-V2.5-Pro (Command Code) | `commandcode/mimo-v2.5-pro` |
+| Grok 4.5 (Command Code) | `commandcode/grok-4.5` |
+| GPT 5.6 Luna (Command Code) | `commandcode/gpt-5.6-luna` |
+| GPT 5.5 (Command Code) | `commandcode/gpt-5.5` |
+| Gemini 3.5 Flash (Command Code) | `commandcode/gemini-3.5-flash` |
+| Hy3 (Command Code) | `commandcode/hy3-paid` |
+| Step 3.7 Flash (Command Code) | `commandcode/step-3.7-flash` |
+| Claude Sonnet 5 (Command Code) | `commandcode-messages/claude-sonnet-5` |
+| Claude Opus 4.8 (Command Code) | `commandcode-messages/claude-opus-4.8` |
+| Claude Fable 5 (Command Code) | `commandcode-messages/claude-fable-5` |
+| Claude Haiku 4.5 (Command Code) | `commandcode-messages/claude-haiku-4.5` |
+
+Both entries are one selectable family that shares a single stored key;
+enabling or disabling either toggles the whole family together. The live
+catalog is available without authentication from
+`https://api.commandcode.ai/provider/v1/models`, and additional models can be
+added per machine with `./bin/curate-models commandcode`. Point
+`COMMANDCODE_BASE_URL` elsewhere to override the endpoint. Command Code does
+not document an account-balance API, so the tray links to Command Code Studio
+for credits and usage.
 
 ### Meta Model API
 
