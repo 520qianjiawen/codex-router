@@ -131,6 +131,7 @@ final class RouterStore: ObservableObject {
   private var hasObservedActiveProvider = false
   private var manuallySelectedUsageProvider = false
   private var latestObservedActivityRequestID: String?
+  private var lastObservedSessionID: String?
   private var activityHealthFailureStartedAt: Date?
   private var dailyUsageCache: [DailyUsageCacheKey: [DailyUsagePoint]] = [:]
   private var localUsageTotalsCache: [LocalUsageTotalsCacheKey: UsageTotals] = [:]
@@ -988,7 +989,21 @@ final class RouterStore: ObservableObject {
         activeRequestCount = nextActiveRequestCount
       }
       if activeModel != health.activity.model { activeModel = health.activity.model }
-      if let sessionName = health.activity.sessionName, !sessionName.isEmpty {
+      let latestActiveRequest = nextActiveRequests.last
+      let activeSessionID = latestActiveRequest?.sessionId ?? latestActiveRequest?.threadId
+      if let activeSessionID, activeSessionID != lastObservedSessionID {
+        lastObservedSessionID = activeSessionID
+        activitySessionName = nil
+      }
+      let activeSessionName = latestActiveRequest?.sessionName?.trimmingCharacters(in: .whitespacesAndNewlines)
+      if let activeSessionID, activeSessionID == lastObservedSessionID,
+         let activeSessionName, !activeSessionName.isEmpty,
+         activitySessionName != activeSessionName {
+        activitySessionName = activeSessionName
+      } else if activeSessionID == nil,
+                let sessionName = health.activity.sessionName?.trimmingCharacters(in: .whitespacesAndNewlines),
+                !sessionName.isEmpty,
+                lastObservedSessionID == nil {
         if activitySessionName != sessionName { activitySessionName = sessionName }
       }
       if health.activity.state == .generating,
