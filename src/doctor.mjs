@@ -52,6 +52,33 @@ function childJson(script, args = []) {
 }
 
 function repair() {
+  const ownership = stateOwnershipStatus();
+  if (
+    ownership.foreign &&
+    !ownership.overridden &&
+    ownership.owner &&
+    existsSync(path.join(ownership.owner, "src", "doctor.mjs")) &&
+    existsSync(path.join(ownership.owner, "bin", "install"))
+  ) {
+    // A foreign doctor run must not repoint the live installation by accident.
+    // The recorded owner still exists, so run the same repair from there; only
+    // an explicit override or a fresh install transfers ownership.
+    process.stderr.write(
+      `codex-router: repairing from the owning checkout ${ownership.owner}\n`,
+    );
+    const result = spawnSync(
+      process.execPath,
+      [path.join(ownership.owner, "src", "doctor.mjs"), ...process.argv.slice(2)],
+      { cwd: ownership.owner, env: process.env, stdio: "inherit" },
+    );
+    if (result.error) {
+      throw new Error(
+        `Could not run doctor from the owning checkout ${ownership.owner}: ${result.error.message}`,
+      );
+    }
+    process.exit(result.status ?? 1);
+  }
+
   const legacy = detectLegacyInstallations();
   if (legacy.unknownConflict) {
     throw new Error(

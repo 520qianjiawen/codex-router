@@ -45,9 +45,11 @@ export function stateOwnershipMessage(operation, status) {
     `Refusing to ${operation}: ${status.stateDir} is owned by another checkout.`,
     `  owner:   ${status.owner}`,
     `  current: ${status.current}`,
-    "Run this command from the owning checkout. Writing generated state from a",
-    "second checkout makes Codex advertise models the running gateway cannot",
-    `route. To deliberately take ownership, reinstall from here, or set ${OVERRIDE_ENV}=1.`,
+    "Writing generated state from a second checkout makes Codex advertise",
+    "models the running gateway cannot route. Run `./bin/model-router codex",
+    "doctor --fix` from this checkout; when the recorded owner is available,",
+    "repair runs there without changing ownership. To deliberately transfer",
+    `ownership to this checkout, reinstall from here or set ${OVERRIDE_ENV}=1.`,
   ].join("\n");
 }
 
