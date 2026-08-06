@@ -65,8 +65,37 @@ function serviceLoaded(label) {
 function rootValues(contents, key) {
   const firstTable = contents.search(/^\s*\[/m);
   const root = firstTable === -1 ? contents : contents.slice(0, firstTable);
-  return [...root.matchAll(new RegExp(`^\\s*${key}\\s*=\\s*["']([^"']+)["']`, "gm"))]
+  return [...root.matchAll(new RegExp(`^\s*${key}\s*=\s*["']([^"']+)["']`, "gm"))]
     .map((match) => match[1]);
+}
+
+// TOML basic strings escape backslashes as "\\". Config values read here are
+// raw file text, so unescape before comparing — otherwise a Windows path
+// written as "C:\\Users\\…" never matches a path built with path.join() and
+// the router reports its own catalog as an unknown, conflicting one.
+function tomlUnescape(value) {
+  return value.replace(/\\(["\\bfnrt])/g, (_match, char) => ({
+    b: "\b",
+    f: "\f",
+    n: "\n",
+    r: "\r",
+    t: "\t",
+    '"': '"',
+    "\\": "\\",
+  })[char]);
+}
+
+// Compares two catalog paths from possibly different sources (raw config text
+// vs. path.join()). On Windows, paths are case-insensitive and both separators
+// are equivalent, so fold both before comparing.
+function catalogPathsEqual(a, b) {
+  let left = tomlUnescape(a);
+  let right = tomlUnescape(b);
+  if (process.platform === "win32") {
+    left = left.replaceAll("\\", "/").toLowerCase();
+    right = right.replaceAll("\\", "/").toLowerCase();
+  }
+  return left === right;
 }
 
 export function detectLegacyInstallations() {
@@ -94,7 +123,9 @@ export function detectLegacyInstallations() {
     MERGED_CATALOG_PATH,
     ...LEGACY_VARIANTS.map((variant) => path.join(variant.stateDir, "merged-models.json")),
   ]);
-  const unknownCatalog = modelCatalogs.find((catalog) => !knownCatalogs.has(catalog));
+  const unknownCatalog = modelCatalogs.find(
+    (catalog) => ![...knownCatalogs].some((known) => catalogPathsEqual(catalog, known)),
+  );
   const unknownConflict = Boolean(unknownCatalog);
 
   return {

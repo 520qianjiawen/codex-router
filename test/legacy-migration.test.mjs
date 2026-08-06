@@ -69,3 +69,28 @@ model_reasoning_effort = "xhigh"
     rmSync(testRoot, { recursive: true, force: true });
   }
 });
+
+test("Windows-style escaped catalog paths are not unknown conflicts", () => {
+  mkdirSync(codexHome, { recursive: true });
+  const configPath = path.join(codexHome, "config.toml");
+  const catalog = path.join(stateDir, "merged-models.json");
+  try {
+    // The config manager writes a TOML basic string (JSON escaping) for
+    // POSIX paths and, after the literal-string change, a single-quoted
+    // literal for Windows paths. Both forms must be recognized as the
+    // router's own catalog, never as an unknown conflicting one.
+    const variants = [JSON.stringify(catalog), `'${catalog}'`];
+    for (const quoted of variants) {
+      writeFileSync(
+        configPath,
+        `model = "gpt-5.6-sol"\nmodel_catalog_json = ${quoted}\n`,
+        { mode: 0o644 },
+      );
+      const detected = detectLegacyInstallations();
+      assert.equal(detected.unknownConflict, false, `catalog quoted as ${quoted}`);
+      assert.deepEqual(detected.installations, []);
+    }
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});

@@ -48,6 +48,14 @@ const managedAgentMaxConcurrency = 6;
 const routerProviderId = "codex-router";
 const defaultChatgptBaseUrl = "https://chatgpt.com/backend-api";
 const defaultRealtimeWebsocketBaseUrl = "https://api.openai.com/v1";
+
+// Renders a string as a TOML basic string. JSON escaping is valid TOML
+// escaping, and unlike TOML literal strings it supports apostrophes anywhere
+// in a Windows path. The legacy-migration detector unescapes basic strings
+// before comparing catalog paths.
+function tomlValue(value) {
+  return JSON.stringify(value);
+}
 const realtimeCallBaseUrlKey = "experimental_realtime_webrtc_call_base_url";
 const realtimeWebsocketBaseUrlKey = "experimental_realtime_ws_base_url";
 const markerPairs = [
@@ -499,7 +507,7 @@ function enabledContents(contents) {
     "",
     startMarker,
     `openai_base_url = ${JSON.stringify(routerBaseUrl)}`,
-    `model_catalog_json = ${JSON.stringify(MERGED_CATALOG_PATH)}`,
+    `model_catalog_json = ${tomlValue(MERGED_CATALOG_PATH)}`,
     ...managedRealtimeOverrides,
     endMarker,
   );
