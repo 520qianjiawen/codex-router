@@ -202,7 +202,7 @@ final class RouterStore: ObservableObject {
   }
 
   var maintenanceRunning: Bool {
-    providerOperation == "maintenance"
+    providerOperation == "maintenance" || providerOperation == "doctor"
   }
 
   // SMAppService needs a real bundle identity; a bare `swift run` binary has
@@ -899,6 +899,26 @@ final class RouterStore: ObservableObject {
       await refreshProviderSetup()
       maintenanceSucceeded = true
       maintenanceMessage = "Verified. Restart Codex to load updated models and agents."
+    } catch {
+      maintenanceMessage = error.localizedDescription
+      await refresh()
+    }
+  }
+
+  func fixAndVerify() async {
+    guard providerOperation == nil else { return }
+    providerOperation = "doctor"
+    maintenanceMessage = "Running doctor --fix…"
+    maintenanceSucceeded = false
+    defer { providerOperation = nil }
+    do {
+      _ = try await runControl(arguments: ["doctor", "--fix"])
+      await refresh()
+      await refreshAccountUsage()
+      await refreshProviderUsage()
+      await refreshProviderSetup()
+      maintenanceSucceeded = true
+      maintenanceMessage = "Fixed. Restart Codex if models changed."
     } catch {
       maintenanceMessage = error.localizedDescription
       await refresh()
@@ -1854,10 +1874,6 @@ private struct TrayView: View {
       ),
       isDisabled: store.providerOperation != nil
     )
-    sectionLabel(
-      "Router update",
-      detail: store.maintenanceRunning ? "Checking…" : "Update + doctor"
-    )
     maintenanceRow
     AccordionPanel(
       title: "Providers",
@@ -2221,29 +2237,25 @@ private struct TrayView: View {
 
   private var maintenanceRow: some View {
     HStack(spacing: 12) {
-      VStack(alignment: .leading, spacing: 3) {
-        Text("Router update")
-          .font(.system(size: 12, weight: .medium))
-        Text(store.maintenanceMessage ?? "Apply changes + doctor")
-          .font(.system(size: 9))
-          .foregroundStyle(
-            store.maintenanceMessage == nil
-              ? routerMuted
-              : store.maintenanceSucceeded
-                ? routerMint
-                : store.maintenanceRunning
-                  ? routerAccent
-                  : routerRed
-          )
-          .lineLimit(2)
-      }
+      Text(store.maintenanceMessage ?? "Router ready")
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(
+          store.maintenanceMessage == nil
+            ? routerMutedStrong
+            : store.maintenanceSucceeded
+              ? routerMint
+              : store.maintenanceRunning
+                ? routerAccent
+                : routerRed
+        )
+        .lineLimit(2)
       Spacer(minLength: 8)
       if store.maintenanceRunning {
         ProgressView()
           .controlSize(.small)
           .tint(routerAccent)
           .frame(width: 94)
-          .accessibilityLabel("Updating Codex Router")
+          .accessibilityLabel("Running Codex Router maintenance")
       } else {
         Button {
           Task { await store.updateAndVerify() }
@@ -2255,6 +2267,16 @@ private struct TrayView: View {
         .opacity(store.providerOperation == nil ? 1 : 0.5)
         .help("Apply the checked-out router revision, then run the Codex doctor")
         .accessibilityLabel("Update and verify Codex Router")
+        Button {
+          Task { await store.fixAndVerify() }
+        } label: {
+          Label("Fix", systemImage: "wrench.and.screwdriver")
+        }
+        .buttonStyle(AccentButtonStyle())
+        .disabled(store.providerOperation != nil)
+        .opacity(store.providerOperation == nil ? 1 : 0.5)
+        .help("Run the Codex doctor and repair managed router files")
+        .accessibilityLabel("Fix Codex Router installation")
       }
     }
     .padding(10)

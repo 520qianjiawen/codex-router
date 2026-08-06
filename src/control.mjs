@@ -415,6 +415,24 @@ async function updateAndVerifyCodex() {
   process.stdout.write(`${JSON.stringify(runCodexMaintenance())}\n`);
 }
 
+function runDoctor(args) {
+  const result = spawnSync(
+    process.execPath,
+    [path.join(REPO_ROOT, "src", "doctor.mjs"), ...args],
+    {
+      cwd: REPO_ROOT,
+      env: { ...process.env, MODEL_ROUTER_TARGET: "codex" },
+      stdio: "inherit",
+    },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      (result.stderr || "The Codex doctor could not finish.").trim(),
+    );
+  }
+  process.stdout.write(`${JSON.stringify({ ok: true })}\n`);
+}
+
 function refreshModelSettingsCatalog() {
   const result = spawnSync(
     process.execPath,
@@ -568,6 +586,8 @@ if (args.includes("--probe")) {
   await handlePicker(args[1], args[2], args[3]);
 } else if (args[0] === "maintenance") {
   await updateAndVerifyCodex();
+} else if (args[0] === "doctor") {
+  runDoctor(args.slice(1));
 } else {
   printOverview(args.includes("--json"));
 }
