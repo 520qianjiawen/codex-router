@@ -68,6 +68,29 @@ function installCurrentCheckout() {
   }
 }
 
+// The tray is rebuilt from the same checkout that owns the router, so an
+// update never leaves a stale companion binary behind. Best-effort: the router
+// update itself succeeded, and a failed tray refresh must not roll it back.
+function refreshTrayCompanion() {
+  if (process.platform !== "darwin") return;
+  const trayBinary = path.join(
+    SOURCE_ROOT,
+    "dist",
+    "Model Router.app",
+    "Contents",
+    "MacOS",
+    "ModelRouterTray",
+  );
+  if (!existsSync(trayBinary)) return;
+  const launcher = path.join(SOURCE_ROOT, "bin", "model-router-tray");
+  const result = spawnSync(launcher, [], { cwd: SOURCE_ROOT, stdio: "inherit" });
+  if (result.error) {
+    process.stderr.write(`Menu-bar companion refresh did not finish: ${result.error.message}\n`);
+  } else if (result.status !== 0) {
+    process.stderr.write(`Menu-bar companion refresh exited with status ${result.status}.\n`);
+  }
+}
+
 function revisionExists(revision) {
   try {
     git(["cat-file", "-e", `${revision}^{commit}`]);
@@ -101,6 +124,7 @@ export function updateCheckout() {
       return { ...status, updated: false, reinstalled: false };
     }
     installCurrentCheckout();
+    refreshTrayCompanion();
     return { ...status, updated: false, reinstalled: true };
   }
   let branch = git(["branch", "--show-current"]);
@@ -115,6 +139,7 @@ export function updateCheckout() {
   git(["merge", "--ff-only", status.available], { inherit: true });
   try {
     installCurrentCheckout();
+    refreshTrayCompanion();
   } catch (error) {
     try {
       restoreRevision(status.current);

@@ -120,6 +120,7 @@ final class RouterStore: ObservableObject {
   private let islandVisibilityKey = "ModelRouterTray.islandVisible"
   private let islandModeKey = "ModelRouterTray.islandMode"
   private let loginItemAutoRegisteredKey = "ModelRouterTray.loginItemAutoRegistered"
+  private let loginItemBundlePathKey = "ModelRouterTray.loginItemBundlePath"
   private let presenceModeKey = "ModelRouterTray.presenceMode"
   // The Codex desktop app plus the ChatGPT desktop app, either of which counts
   // as "Codex is open" for the follow mode.
@@ -213,13 +214,27 @@ final class RouterStore: ObservableObject {
   func bootstrapLaunchAtLogin() {
     guard launchAtLoginAvailable else { return }
     let service = SMAppService.mainApp
+    let bundlePath = Bundle.main.bundlePath
     launchAtLogin = service.status == .enabled
+    let registeredPath = defaults.string(forKey: loginItemBundlePathKey)
+    // Migrate the first-run registration if the tray moved (for example from
+    // a checkout on a removable volume to the stable install). Older builds
+    // saved no path, so a one-time unregister/register replaces whatever the
+    // old login item points at when that item is still enabled.
+    if registeredPath != bundlePath && service.status == .enabled {
+      try? service.unregister()
+      try? service.register()
+      defaults.set(bundlePath, forKey: loginItemBundlePathKey)
+      launchAtLogin = service.status == .enabled
+      return
+    }
     // Register once on first launch so the tray survives reboots without a
     // manual relaunch. The stored flag makes this a one-time default: if the
     // user later disables the item here or in System Settings, we never
     // re-add it behind their back.
     guard !defaults.bool(forKey: loginItemAutoRegisteredKey) else { return }
     defaults.set(true, forKey: loginItemAutoRegisteredKey)
+    defaults.set(bundlePath, forKey: loginItemBundlePathKey)
     guard service.status == .notRegistered || service.status == .notFound else { return }
     do {
       try service.register()
@@ -271,6 +286,8 @@ final class RouterStore: ObservableObject {
     do {
       if enabled {
         try service.register()
+        defaults.set(Bundle.main.bundlePath, forKey: loginItemBundlePathKey)
+        defaults.set(true, forKey: loginItemAutoRegisteredKey)
       } else {
         try service.unregister()
       }

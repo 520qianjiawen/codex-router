@@ -22,7 +22,10 @@ under System Settings › General › Login Items. The automatic registration
 happens only once: if you turn the item off in either place, the tray never
 re-adds it. The login item points at the built bundle (`dist/Model
 Router.app` by default), so rerun `./bin/model-router-tray` after an update
-to rebuild the binary the login item launches. Running the bare executable
+to rebuild the binary the login item launches. If the bundle moves after that
+first launch (for example from a checkout on a removable volume to the stable
+install), the next launch replaces the old login-item path with the current
+bundle instead of leaving a broken item behind. Running the bare executable
 via `swift run` provides no bundle identity, so the toggle is hidden there.
 The router's background service is a separate launchd agent and keeps running
 regardless of this setting.
@@ -138,6 +141,11 @@ Run it from a stable checkout on macOS:
 The app builds a local `dist/Model Router.app` bundle and opens it. The bundle
 records the checkout path used at build time, so rebuild it after moving the
 repository.
+
+`bin/model-router-tray` replaces an already-running tray with the rebuilt
+bundle before opening it, and `codex update` rebuilds and relaunches an
+installed tray from the updated checkout, so the companion stays current
+without a manual rerun.
 
 Provider changes apply automatically. Enabling, disabling, signing in, or
 adding an API key updates Codex immediately; the provider row shows progress

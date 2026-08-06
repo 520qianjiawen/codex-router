@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **The macOS tray stays linked to the apps that launch it.** If the tray
+  bundle moves (for example from a checkout on a removable volume to the
+  stable install), the next launch re-registers the login item against the
+  current bundle; the launcher replaces an already-running tray with the
+  rebuilt bundle; and `codex update` rebuilds and relaunches an installed tray
+  so a router update never leaves a stale companion behind.
+
 ## 0.4.0-beta.2
 
 - **Reasoning efforts now match what the installed Codex build can display.**
