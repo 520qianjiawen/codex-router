@@ -10,6 +10,7 @@ let routerYellow = Color(red: 0.94, green: 0.68, blue: 0.25)
 let routerRed = Color(red: 0.91, green: 0.35, blue: 0.32)
 let routerInk = Color(red: 0.035, green: 0.043, blue: 0.055)
 let routerMuted = Color.secondary.opacity(0.72)
+let routerMutedStrong = Color.secondary.opacity(0.96)
 let removalArmWindow: TimeInterval = 4
 
 enum RouterActivityState: String, Decodable {
@@ -2099,7 +2100,7 @@ private struct TrayView: View {
             .lineLimit(1)
           Text(detail)
             .font(.system(size: 9))
-            .foregroundStyle(routerMuted)
+            .foregroundStyle(routerMutedStrong)
             .lineLimit(1)
         }
         Spacer()
@@ -2150,7 +2151,7 @@ private struct TrayView: View {
               if !summary.isEmpty {
                 Text(summary)
                   .font(.system(size: 9))
-                  .foregroundStyle(routerMuted)
+                  .foregroundStyle(routerMutedStrong)
                   .lineLimit(1)
               }
             }
@@ -2173,7 +2174,10 @@ private struct TrayView: View {
       }
       .background(
         LinearGradient(
-          colors: [Color.white.opacity(0.055), Color.white.opacity(0.028)],
+          colors: [
+            Color(red: 0.15, green: 0.18, blue: 0.23).opacity(0.9),
+            Color(red: 0.11, green: 0.13, blue: 0.17).opacity(0.9),
+          ],
           startPoint: .top,
           endPoint: .bottom
         )
@@ -2181,7 +2185,7 @@ private struct TrayView: View {
       .clipShape(RoundedRectangle(cornerRadius: 10))
       .overlay(
         RoundedRectangle(cornerRadius: 10)
-          .stroke(Color.white.opacity(0.08), lineWidth: 1)
+          .stroke(Color.white.opacity(0.12), lineWidth: 1)
       )
     }
   }
@@ -2266,7 +2270,10 @@ private struct TrayView: View {
     .padding(10)
     .background(
       LinearGradient(
-        colors: [Color.white.opacity(0.055), Color.white.opacity(0.028)],
+        colors: [
+          Color(red: 0.15, green: 0.18, blue: 0.23).opacity(0.9),
+          Color(red: 0.11, green: 0.13, blue: 0.17).opacity(0.9),
+        ],
         startPoint: .top,
         endPoint: .bottom
       )
@@ -2274,7 +2281,7 @@ private struct TrayView: View {
     .clipShape(RoundedRectangle(cornerRadius: 10))
     .overlay(
       RoundedRectangle(cornerRadius: 10)
-        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        .stroke(Color.white.opacity(0.12), lineWidth: 1)
     )
   }
 

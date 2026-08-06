@@ -628,8 +628,8 @@ h2 {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 11px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.024)),
-    rgba(13, 17, 24, 0.35);
+    linear-gradient(180deg, rgba(36, 42, 54, 0.9), rgba(26, 31, 40, 0.9)),
+    rgba(13, 17, 24, 0.9);
 }
 
 .accordion-header {
@@ -663,7 +663,7 @@ h2 {
 
 .accordion-header small {
   margin-top: 3px;
-  color: var(--muted);
+  color: var(--muted-strong);
   font-size: 8.5px;
 }
 
@@ -691,7 +691,7 @@ h2 {
 
 .accordion-note {
   margin: 0 0 9px;
-  color: var(--muted);
+  color: var(--muted-strong);
   font-size: 9px;
   line-height: 1.45;
 }
@@ -790,7 +790,7 @@ h2 {
 .model-setting-row small {
   margin-top: 2px;
   overflow: hidden;
-  color: var(--muted);
+  color: var(--muted-strong);
   font-size: 8px;
   text-overflow: ellipsis;
   white-space: nowrap;
