@@ -2173,19 +2173,12 @@ private struct TrayView: View {
         }
       }
       .background(
-        LinearGradient(
-          colors: [
-            Color(red: 0.15, green: 0.18, blue: 0.23).opacity(0.9),
-            Color(red: 0.11, green: 0.13, blue: 0.17).opacity(0.9),
-          ],
-          startPoint: .top,
-          endPoint: .bottom
-        )
+        .regularMaterial,
+        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
       )
-      .clipShape(RoundedRectangle(cornerRadius: 10))
       .overlay(
         RoundedRectangle(cornerRadius: 10)
-          .stroke(Color.white.opacity(0.12), lineWidth: 1)
+          .stroke(Color.white.opacity(0.1), lineWidth: 1)
       )
     }
   }
@@ -2269,19 +2262,12 @@ private struct TrayView: View {
     }
     .padding(10)
     .background(
-      LinearGradient(
-        colors: [
-          Color(red: 0.15, green: 0.18, blue: 0.23).opacity(0.9),
-          Color(red: 0.11, green: 0.13, blue: 0.17).opacity(0.9),
-        ],
-        startPoint: .top,
-        endPoint: .bottom
-      )
+      .regularMaterial,
+      in: RoundedRectangle(cornerRadius: 10, style: .continuous)
     )
-    .clipShape(RoundedRectangle(cornerRadius: 10))
     .overlay(
       RoundedRectangle(cornerRadius: 10)
-        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        .stroke(Color.white.opacity(0.1), lineWidth: 1)
     )
   }
 
