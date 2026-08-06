@@ -625,15 +625,9 @@ h2 {
 .accordion {
   margin-bottom: 10px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  border: 1px solid var(--line);
   border-radius: 11px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.035)),
-    rgba(10, 13, 19, 0.46);
-  box-shadow:
-    inset 0 1px rgba(255, 255, 255, 0.09),
-    0 10px 30px rgba(0, 0, 0, 0.26);
-  backdrop-filter: blur(18px) saturate(1.4);
+  background: rgba(255, 255, 255, 0.023);
 }
 
 .accordion-header {
