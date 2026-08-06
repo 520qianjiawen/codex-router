@@ -1615,6 +1615,7 @@ private struct TrayView: View {
       }
       .padding(14)
     }
+    .preferredColorScheme(.dark)
     .foregroundStyle(.primary)
     .task { await store.refresh() }
   }
@@ -2173,13 +2174,36 @@ private struct TrayView: View {
         }
       }
       .background(
-        .regularMaterial,
+        .ultraThinMaterial,
+        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+      )
+      .background(
+        LinearGradient(
+          colors: [
+            Color.white.opacity(0.1),
+            Color.white.opacity(0.035),
+          ],
+          startPoint: .top,
+          endPoint: .bottom
+        ),
         in: RoundedRectangle(cornerRadius: 10, style: .continuous)
       )
       .overlay(
-        RoundedRectangle(cornerRadius: 10)
-          .stroke(Color.white.opacity(0.1), lineWidth: 1)
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .fill(Color.black.opacity(0.18))
       )
+      .overlay(
+        RoundedRectangle(cornerRadius: 10)
+          .stroke(
+            LinearGradient(
+              colors: [Color.white.opacity(0.28), Color.white.opacity(0.1)],
+              startPoint: .top,
+              endPoint: .bottom
+            ),
+            lineWidth: 1
+          )
+      )
+      .shadow(color: Color.black.opacity(0.2), radius: 8, y: 3)
     }
   }
 
@@ -2262,13 +2286,36 @@ private struct TrayView: View {
     }
     .padding(10)
     .background(
-      .regularMaterial,
+      .ultraThinMaterial,
+      in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+    )
+    .background(
+      LinearGradient(
+        colors: [
+          Color.white.opacity(0.1),
+          Color.white.opacity(0.035),
+        ],
+        startPoint: .top,
+        endPoint: .bottom
+      ),
       in: RoundedRectangle(cornerRadius: 10, style: .continuous)
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 10)
-        .stroke(Color.white.opacity(0.1), lineWidth: 1)
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .fill(Color.black.opacity(0.18))
     )
+    .overlay(
+      RoundedRectangle(cornerRadius: 10)
+        .stroke(
+          LinearGradient(
+            colors: [Color.white.opacity(0.28), Color.white.opacity(0.1)],
+            startPoint: .top,
+            endPoint: .bottom
+          ),
+          lineWidth: 1
+        )
+    )
+    .shadow(color: Color.black.opacity(0.2), radius: 8, y: 3)
   }
 
   private var emptyState: some View {
