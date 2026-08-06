@@ -629,7 +629,7 @@ model = "gpt-5.6-terra"
   }
 });
 
-test("model_catalog_json round-trips without backslash escaping", () => {
+test("model_catalog_json round-trips through TOML escaping", () => {
   const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-config-catalog-"));
   const configPath = path.join(codexHome, "config.toml");
   writeFileSync(configPath, 'model = "gpt-5.6-sol"\n', { mode: 0o644 });
@@ -639,11 +639,28 @@ test("model_catalog_json round-trips without backslash escaping", () => {
     const line = configured.split("\n").find((l) => l.startsWith("model_catalog_json"));
     assert.ok(line, "model_catalog_json is emitted");
     const raw = line.slice(line.indexOf("=") + 1).trim();
-    // Windows paths are emitted as TOML literal strings (single quotes) so the
-    // raw text never needs backslash escaping; anything else must parse as JSON.
-    const value = raw.startsWith("'") ? raw.slice(1, -1) : JSON.parse(raw);
+    // Basic strings are emitted with JSON escaping so any Windows path,
+    // including one containing apostrophes, stays valid TOML.
+    assert.equal(raw.startsWith('"'), true, "catalog path must be a basic string");
+    const value = JSON.parse(raw);
     assert.equal(value, path.join(codexHome, "router-state", "merged-models.json"));
-    assert.equal(raw.includes("\\\\"), false, "raw path must not be backslash-escaped");
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("model_catalog_json accepts apostrophes and backslashes in the path", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-config-catalog-"));
+  const configPath = path.join(codexHome, "config.toml");
+  const stateDir = path.join(codexHome, "O'Brien router-state\\win");
+  writeFileSync(configPath, 'model = "gpt-5.6-sol"\n', { mode: 0o644 });
+  try {
+    run("enable", codexHome, stateDir);
+    const configured = readFileSync(configPath, "utf8");
+    const line = configured.split("\n").find((l) => l.startsWith("model_catalog_json"));
+    assert.ok(line, "model_catalog_json is emitted");
+    const raw = line.slice(line.indexOf("=") + 1).trim();
+    assert.equal(JSON.parse(raw), path.join(stateDir, "merged-models.json"));
   } finally {
     rmSync(codexHome, { recursive: true, force: true });
   }
