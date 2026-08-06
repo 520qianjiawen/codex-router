@@ -20,7 +20,7 @@ import {
 } from "./provider-credentials.mjs";
 import { disableProvider } from "./provider-selection.mjs";
 
-const OAUTH_CLIS = Object.freeze({
+const SIGN_IN_CLIS = Object.freeze({
   "kimi-oauth": {
     executable: "kimi",
     npmPackage: KIMI_CLI_NPM_PACKAGE,
@@ -49,7 +49,7 @@ function commandPath(name) {
 }
 
 export function oauthCliPath(providerId) {
-  const cli = OAUTH_CLIS[providerId];
+  const cli = SIGN_IN_CLIS[providerId];
   if (!cli) throw new Error(`Unknown OAuth provider: ${providerId}`);
   if (providerId === "grok-oauth") return grokCliPath();
   const discovered = commandPath(cli.executable);
@@ -58,7 +58,7 @@ export function oauthCliPath(providerId) {
 }
 
 export function oauthLoginArgs(providerId) {
-  const cli = OAUTH_CLIS[providerId];
+  const cli = SIGN_IN_CLIS[providerId];
   if (!cli) throw new Error(`Unknown OAuth provider: ${providerId}`);
   return [...cli.loginArgs];
 }
@@ -123,7 +123,7 @@ function npmPath() {
 }
 
 export function installOauthCli(providerId) {
-  const cli = OAUTH_CLIS[providerId];
+  const cli = SIGN_IN_CLIS[providerId];
   if (!cli) throw new Error(`Unknown OAuth provider: ${providerId}`);
   if (providerId === "grok-oauth") {
     const preflight = grokCliPreflight();
