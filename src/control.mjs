@@ -569,6 +569,28 @@ function handleService(action) {
   }
 }
 
+// Supervision for the tray companion. `disable` boots the agent out, which
+// stops the running tray too -- that is why the Settings toggle does not call
+// it and this stays an explicit command.
+const TRAY_COMMANDS = { enable: "install", disable: "uninstall", status: "status", restart: "restart" };
+
+function handleTray(action) {
+  const value = action || "status";
+  const subcommand = TRAY_COMMANDS[value];
+  if (!subcommand) {
+    throw new Error(`Usage: control tray ${Object.keys(TRAY_COMMANDS).join("|")}`);
+  }
+  const result = spawnSync(
+    process.execPath,
+    [path.join(REPO_ROOT, "src", "tray-service.mjs"), subcommand],
+    { stdio: "inherit", env: process.env },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`Tray ${value} failed with exit code ${result.status}.`);
+  }
+}
+
 async function handlePresence(action, value) {
   const { PRESENCE_MODES, presenceSnapshot, setPresenceMode } = await import(
     "./presence-state.mjs"
@@ -623,6 +645,8 @@ if (args.includes("--probe")) {
   await handlePicker(args[1], args[2], args[3]);
 } else if (args[0] === "service") {
   handleService(args[1]);
+} else if (args[0] === "tray") {
+  handleTray(args[1]);
 } else if (args[0] === "presence") {
   await handlePresence(args[1], args[2]);
 } else if (args[0] === "maintenance") {

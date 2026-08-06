@@ -226,10 +226,30 @@ final class RouterStore: ObservableObject {
     Bundle.main.bundleIdentifier != nil
   }
 
+  // The launchd agent supersedes the login item: it starts the tray at login
+  // *and* restarts it when it exits abnormally, which a login item never did.
+  // Both mechanisms at once would open two trays every login, so the login item
+  // is retired the moment the agent exists.
+  var supervisedByAgent: Bool {
+    FileManager.default.fileExists(atPath: trayAgentPath)
+  }
+
+  private var trayAgentPath: String {
+    FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent("Library/LaunchAgents/io.github.codex-router.tray.plist")
+      .path
+  }
+
   func bootstrapLaunchAtLogin() {
     guard launchAtLoginAvailable else { return }
     let service = SMAppService.mainApp
     let bundlePath = Bundle.main.bundlePath
+    if supervisedByAgent {
+      if service.status == .enabled { try? service.unregister() }
+      defaults.set(bundlePath, forKey: loginItemBundlePathKey)
+      launchAtLogin = true
+      return
+    }
     launchAtLogin = service.status == .enabled
     let registeredPath = defaults.string(forKey: loginItemBundlePathKey)
     // Migrate the first-run registration if the tray moved (for example from
@@ -395,6 +415,16 @@ final class RouterStore: ObservableObject {
 
   func setLaunchAtLogin(_ enabled: Bool) {
     guard launchAtLoginAvailable else { return }
+    if supervisedByAgent {
+      // launchd owns startup now. Turning this off would mean booting the agent
+      // out, which kills the running tray -- the switch would quit the app
+      // instead of changing a preference. Removing the agent is an explicit
+      // `./bin/control tray disable`.
+      launchAtLogin = true
+      message = "launchd starts the tray and restarts it if it stops. "
+        + "Run ./bin/control tray disable to hand startup back to a login item."
+      return
+    }
     let service = SMAppService.mainApp
     do {
       if enabled {

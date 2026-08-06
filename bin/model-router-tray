@@ -6,14 +6,20 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 case $(uname -s) in
   Darwin)
     bundle_dir=$("$repo_dir/scripts/build-macos-tray-app.sh")
-    # A running tray keeps executing its old binary; replace it before opening
-    # the rebuilt bundle so updates take effect immediately.
+    # A running tray keeps executing its old binary; replace it before starting
+    # the rebuilt bundle so updates take effect immediately. A tray that was
+    # opened by hand is outside launchd's reach, so ask it to quit as well.
     if pgrep -x ModelRouterTray >/dev/null 2>&1; then
       osascript -e 'tell application id "io.github.codex-router.tray" to quit' >/dev/null 2>&1 \
         || killall -QUIT ModelRouterTray >/dev/null 2>&1 || true
       sleep 1
     fi
-    open "$bundle_dir"
+    # launchd owns the companion from here. Installing the agent starts it now,
+    # starts it at every login, and restarts it if it ever exits abnormally --
+    # a login item alone only covers the login case, which left a crashed tray
+    # gone until the next one.
+    node "$repo_dir/src/tray-service.mjs" install >/dev/null
+    printf 'Tray installed and supervised by launchd: %s\n' "$bundle_dir"
     ;;
   Linux)
     binary_path=$("$repo_dir/scripts/build-desktop-tray.sh" --binary-only | tail -n 1)
