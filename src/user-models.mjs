@@ -27,6 +27,8 @@ const METADATA_FIELDS = new Set([
   "inputModalities",
   "reasoningLevels",
   "defaultEffort",
+  "availabilityNux",
+  "upgradeTo",
 ]);
 
 function gatewaySafe(value) {

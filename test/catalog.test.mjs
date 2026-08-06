@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  AUTO_ANNOUNCE_WINDOW_MS,
+  annotateNewModelAnnouncements,
   buildMergedCatalog,
   buildLoginFreeCatalog,
   nativeCatalogIsReusable,
@@ -70,6 +72,78 @@ test("routed models advertise reasoning summaries only when the registry opts in
   });
   assert.equal(summarized.supports_reasoning_summaries, true);
   assert.equal(summarized.default_reasoning_summary, "auto");
+});
+
+test("routed models announce availability only when curated with NUX copy", () => {
+  // Default stays null: an empty announcement card must never render.
+  const plain = routedModel(template, grok);
+  assert.equal(plain.availability_nux, null);
+  const announced = routedModel(template, {
+    ...grok,
+    availabilityNux: "  Grok 4.5 now routes through your own X subscription.  ",
+  });
+  assert.deepEqual(announced.availability_nux, {
+    message: "Grok 4.5 now routes through your own X subscription.",
+  });
+});
+
+test("first capture seeds announcement state without announcing anything", () => {
+  const { models, announcedAt } = annotateNewModelAnnouncements([grok], null, new Set(), 1000);
+  assert.equal(models[0].availabilityNux, undefined);
+  assert.equal(announcedAt.get(grok.slug), 0);
+});
+
+test("models new since the last capture announce for a window, then go quiet", () => {
+  const seeded = new Map([["kimi-oauth/k3", 0]]);
+  const now = 5000;
+  const { models, announcedAt } = annotateNewModelAnnouncements([grok], seeded, new Set(), now);
+  assert.equal(
+    models[0].availabilityNux,
+    "Grok 4.5 (OAuth) just landed in your model picker. It comes with a 500K-token context window and image input.",
+  );
+  assert.equal(announcedAt.get(grok.slug), now);
+  // Within the window the copy persists across rebuilds; after it, silence.
+  const later = annotateNewModelAnnouncements([grok], announcedAt, new Set(), now + 1);
+  assert.ok(later.models[0].availabilityNux);
+  const expired = annotateNewModelAnnouncements(
+    [grok],
+    announcedAt,
+    new Set(),
+    now + AUTO_ANNOUNCE_WINDOW_MS,
+  );
+  assert.equal(expired.models[0].availabilityNux, undefined);
+  assert.equal(expired.announcedAt.get(grok.slug), now);
+});
+
+test("curated copy and locally curated models are left alone by auto-announce", () => {
+  const seeded = new Map();
+  const curated = { ...grok, availabilityNux: "Hand-written copy." };
+  const { models } = annotateNewModelAnnouncements([curated], seeded, new Set(), 1000);
+  assert.equal(models[0].availabilityNux, "Hand-written copy.");
+  const userModel = { ...grok, slug: "deepseek/user-added" };
+  const skipped = annotateNewModelAnnouncements(
+    [userModel],
+    seeded,
+    new Set(["deepseek/user-added"]),
+    1000,
+  );
+  assert.equal(skipped.models[0].availabilityNux, undefined);
+});
+
+test("routed models carry a migration prompt only when curated with upgradeTo", () => {
+  const plain = routedModel(template, grok);
+  assert.equal(plain.upgrade, null);
+  const upgraded = routedModel(template, {
+    ...grok,
+    upgradeTo: {
+      model: "kimi-oauth/k3",
+      markdown: "# Introducing Kimi K3\n\nSwitch from {model_from} to {model_to}.\n",
+    },
+  });
+  assert.deepEqual(upgraded.upgrade, {
+    model: "kimi-oauth/k3",
+    migration_markdown: "# Introducing Kimi K3\n\nSwitch from {model_from} to {model_to}.",
+  });
 });
 
 test("unverified routed models retain conservative v1 collaboration", () => {

@@ -97,8 +97,11 @@ to ship tested support to every installer.
    effort in the picker); the deterministic `--models` form takes
    conservative defaults, `--efforts minimal,low,medium,high,xhigh` sets the
    effort ladder, and every stored value stays editable in
-   `user-models.json`. Curated models are not implicitly approved as native
-   v2 subagent model overrides.
+   `user-models.json`. An optional `availabilityNux` string on a model becomes
+   the Codex "Introducing {model}" announcement (shown a limited number of
+   times per slug, tracked by the Codex client itself); leave it unset unless
+   the model is genuinely news to the operator. Curated models are not
+   implicitly approved as native v2 subagent model overrides.
 6. Run `./bin/model-router codex doctor`. A live `bin/test-model` request uses
    provider quota, so run it only with the user's approval. Finally, tell the
    user to fully quit and reopen Codex before checking the picker.
@@ -116,7 +119,23 @@ installation. It is repository development and requires the process below.
    `gatewayModel`, and provider/upstream IDs; complete picker metadata;
    supported reasoning levels; input modalities; context/compaction limits;
    and the correct request profile. Use `listed: false` for compatibility-only
-   aliases.
+   aliases. An optional `availabilityNux` string ships announcement copy that
+   Codex renders as its "Introducing {model}" card the first few launches
+   after the model appears; reserve it for a genuinely new flagship, because
+   every installer will see it. Checked-in models that newly become routable
+   (added by an update, or unlocked when the operator credentials and enables
+   their provider) also announce automatically for seven days with copy
+   assembled from their verified picker metadata (context window, effort
+   ladder, image support) — tracked in the protected
+   `announced-models.json` state; the first catalog capture seeds that state
+   silently, curated `availabilityNux` copy wins over the generated text, and
+   locally curated user models never self-announce. In the CLI TUI this renders as a startup tip
+   line; the full-screen prompt is instead driven by an optional `upgradeTo`
+   object (`{ "model": "target/slug", "markdown": "..." }`) on the model the
+   operator currently runs: Codex renders the markdown as the entire
+   "Codex just got an upgrade" modal (with `{model_from}`/`{model_to}`
+   placeholders), and accepting switches the operator's default model to the
+   target, so ship one only for a genuine successor.
 3. A new provider also needs credential isolation, discovery metadata,
    selection/onboarding support, request translation, health behavior, and
    tests. Never place an API key or OAuth artifact in the registry. A new

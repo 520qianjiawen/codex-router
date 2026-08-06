@@ -105,11 +105,21 @@ test("readUserModels returns an empty list when the file is absent or invalid", 
 
 test("registry merges valid user models and skips collisions", async () => {
   const entries = [
-    userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-user-test", priority: 100 }),
+    userModelEntry({
+      providerId: "deepseek",
+      upstreamId: "deepseek-user-test",
+      priority: 100,
+      metadata: { availabilityNux: "Now available through your DeepSeek key." },
+    }),
     // Collides with a built-in slug and must be skipped, not fatal.
     { ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-v4-pro", priority: 101 }) },
     // Unknown provider must be skipped, not fatal.
     userModelEntry({ providerId: "no-such-provider", upstreamId: "x-model", priority: 102 }),
+    // Announcement copy must be a non-empty string; a blank one is skipped.
+    {
+      ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-blank-nux", priority: 103 }),
+      availabilityNux: "   ",
+    },
   ];
   writeUserModels(entries);
   const registry = await import("../src/model-registry.mjs");
@@ -117,8 +127,10 @@ test("registry merges valid user models and skips collisions", async () => {
   assert.ok(slugs.includes("deepseek/deepseek-user-test"));
   assert.equal(slugs.filter((slug) => slug === "deepseek/deepseek-v4-pro").length, 1);
   assert.ok(!slugs.includes("no-such-provider/x-model"));
+  assert.ok(!slugs.includes("deepseek/deepseek-blank-nux"));
   assert.ok(registry.MODEL_BY_GATEWAY_ID.has("deepseek-deepseek-user-test"));
-  assert.ok(registry.USER_MODEL_WARNINGS.length >= 2);
+  assert.ok(registry.USER_MODEL_WARNINGS.length >= 3);
   const merged = registry.MODEL_BY_SLUG.get("deepseek/deepseek-user-test");
   assert.equal(merged.listed, true);
+  assert.equal(merged.availabilityNux, "Now available through your DeepSeek key.");
 });

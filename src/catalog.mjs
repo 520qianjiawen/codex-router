@@ -10,12 +10,14 @@ import { fileURLToPath } from "node:url";
 
 import { protectPrivateFile } from "./file-security.mjs";
 import {
+  ANNOUNCED_MODELS_PATH,
   CONFIG_PATH,
   MERGED_CATALOG_PATH,
   NATIVE_ALIAS_PATH,
   NATIVE_CATALOG_PATH,
 } from "./paths.mjs";
 import { codexAuthStatus, codexVersion, runCodex } from "./codex-binary.mjs";
+import { readUserModels } from "./user-models.mjs";
 import { syncRoutedCodexAgents } from "./codex-agent-catalog.mjs";
 import { MODEL_BY_SLUG } from "./model-registry.mjs";
 import { buildNativeAliasAssignments } from "./native-alias.mjs";
@@ -183,8 +185,22 @@ export function routedModel(template, model) {
     comp_hash: model.compHash,
     additional_speed_tiers: [],
     service_tiers: [],
-    availability_nux: null,
-    upgrade: null,
+    // Codex surfaces this once per slug (up to its own show cap) as the
+    // "Introducing {model}" announcement; absent copy must stay null so the
+    // client never renders an empty card.
+    availability_nux:
+      typeof model.availabilityNux === "string" && model.availabilityNux.trim()
+        ? { message: model.availabilityNux.trim() }
+        : null,
+    // Codex renders the markdown as the whole "Codex just got an upgrade"
+    // modal when this entry is the operator's current model and the target
+    // slug is listed; {model_from}/{model_to} are substituted by the client.
+    upgrade: model.upgradeTo
+      ? {
+          model: model.upgradeTo.model,
+          migration_markdown: model.upgradeTo.markdown.trim(),
+        }
+      : null,
     supports_reasoning_summaries: model.supportsReasoningSummaries === true,
     default_reasoning_summary:
       model.supportsReasoningSummaries === true
@@ -207,6 +223,88 @@ export function routedModel(template, model) {
     next.model_messages = rewriteModelMessages(next.model_messages, model);
   }
   return next;
+}
+
+export const AUTO_ANNOUNCE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+function formatTokenCount(tokens) {
+  if (tokens >= 995_000) {
+    const millions = Math.round((tokens / 1_000_000) * 10) / 10;
+    return `${millions % 1 === 0 ? Math.round(millions) : millions}M`;
+  }
+  return `${Math.round(tokens / 1000)}K`;
+}
+
+function joinNaturally(parts) {
+  if (parts.length <= 1) return parts.join("");
+  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
+  return `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`;
+}
+
+// Announcement copy is assembled from verified registry capabilities only, so
+// it can never claim more than the picker metadata already does.
+function autoAnnouncementCopy(model) {
+  const details = [];
+  if (Number.isInteger(model.contextWindow)) {
+    details.push(`a ${formatTokenCount(model.contextWindow)}-token context window`);
+  }
+  const efforts = Array.isArray(model.reasoningLevels)
+    ? model.reasoningLevels.map((level) => level.effort)
+    : [];
+  if (efforts.length > 1) {
+    details.push(`reasoning efforts from ${efforts[0]} to ${efforts[efforts.length - 1]}`);
+  }
+  if ((model.inputModalities || []).includes("image")) {
+    details.push("image input");
+  }
+  const capabilities = details.length ? ` It comes with ${joinNaturally(details)}.` : "";
+  return `${model.displayName} just landed in your model picker.${capabilities}`;
+}
+
+// A new checked-in model announces itself for a window of rebuilds rather
+// than a single one, because catalogs rebuild on updates and provider toggles
+// and the operator may not launch Codex in between; Codex itself stops the
+// card after four showings per slug. The first capture seeds silently so an
+// install never announces the entire catalog, and locally curated models are
+// excluded because the operator added those deliberately. Only models whose
+// provider is selected and credentialed ever reach this list, so a model the
+// operator cannot use never announces.
+export function annotateNewModelAnnouncements(routedModelsList, announcedAt, userSlugs, now) {
+  const firstRun = announcedAt === null;
+  const nextAnnouncedAt = new Map(firstRun ? [] : announcedAt);
+  const models = routedModelsList.map((model) => {
+    if (!nextAnnouncedAt.has(model.slug)) {
+      nextAnnouncedAt.set(model.slug, firstRun ? 0 : now);
+    }
+    if (model.availabilityNux || userSlugs.has(model.slug)) return model;
+    const since = nextAnnouncedAt.get(model.slug);
+    if (since === 0 || now - since >= AUTO_ANNOUNCE_WINDOW_MS) return model;
+    return { ...model, availabilityNux: autoAnnouncementCopy(model) };
+  });
+  return { models, announcedAt: nextAnnouncedAt };
+}
+
+function readAnnouncedAt() {
+  if (!existsSync(ANNOUNCED_MODELS_PATH)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(ANNOUNCED_MODELS_PATH, "utf8"));
+    if (!parsed || typeof parsed.models !== "object" || Array.isArray(parsed.models)) {
+      return null;
+    }
+    return new Map(
+      Object.entries(parsed.models).filter(([, value]) => Number.isFinite(value)),
+    );
+  } catch {
+    // Corrupt state must reseed silently, not announce the whole catalog.
+    return null;
+  }
+}
+
+function writeAnnouncedAt(announcedAt) {
+  atomicJson(ANNOUNCED_MODELS_PATH, {
+    version: 1,
+    models: Object.fromEntries([...announcedAt.entries()].sort()),
+  });
 }
 
 function sortCatalogModels(models) {
@@ -264,7 +362,13 @@ function main() {
   // that does not own this state directory is how the picker ends up
   // advertising models the running gateway has no route for.
   assertStateOwnership("write the Codex model catalog");
-  const routedModels = selectedConfiguredListedModels();
+  const userSlugs = new Set(readUserModels().map((model) => String(model.slug)));
+  const { models: routedModels, announcedAt } = annotateNewModelAnnouncements(
+    selectedConfiguredListedModels(),
+    readAnnouncedAt(),
+    userSlugs,
+    Date.now(),
+  );
   const native = nativeCatalog();
   // Dropping every native model is destructive, so only do it when Codex
   // actually answered that the session is signed out. If the probe could not
@@ -290,6 +394,7 @@ function main() {
       };
   atomicJson(MERGED_CATALOG_PATH, { models: merged });
   atomicJson(NATIVE_ALIAS_PATH, { version: 1, aliases });
+  writeAnnouncedAt(announcedAt);
   const routedAgents = syncRoutedCodexAgents(routedModels);
   process.stdout.write(
     `${JSON.stringify({

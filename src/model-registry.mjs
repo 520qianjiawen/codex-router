@@ -136,6 +136,29 @@ function modelProblem(model, providers, slugs, gatewayModels) {
   ) {
     return `model ${model.slug} has an invalid defaultReasoningSummary`;
   }
+  if (
+    model.availabilityNux !== undefined &&
+    (typeof model.availabilityNux !== "string" || !model.availabilityNux.trim())
+  ) {
+    return `model ${model.slug} has an invalid availabilityNux`;
+  }
+  // The markdown is the entire migration modal body, so an empty one would
+  // render a blank prompt; a self-target would loop the prompt forever.
+  if (model.upgradeTo !== undefined) {
+    const upgrade = model.upgradeTo;
+    if (
+      !upgrade ||
+      typeof upgrade !== "object" ||
+      Array.isArray(upgrade) ||
+      typeof upgrade.model !== "string" ||
+      !upgrade.model ||
+      upgrade.model === model.slug ||
+      typeof upgrade.markdown !== "string" ||
+      !upgrade.markdown.trim()
+    ) {
+      return `model ${model.slug} has an invalid upgradeTo`;
+    }
+  }
   if (slugs.has(model.slug)) return `duplicate model slug ${model.slug}`;
   if (gatewayModels.has(model.gatewayModel)) {
     return `duplicate gateway model ${model.gatewayModel}`;

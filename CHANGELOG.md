@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **New models announce themselves in Codex.** Checked-in models that newly
+  become routable — shipped by a router update, or unlocked the moment their
+  provider is credentialed and enabled — now carry Codex's native
+  "Introducing {model}" announcement for seven days, with copy assembled from
+  their verified picker metadata (context window, effort ladder, image
+  input). The first catalog capture seeds the tracking state silently so an
+  install never announces the whole catalog, locally curated models never
+  self-announce, and Codex's own per-model show cap still applies. Curators
+  can override the generated copy with an `availabilityNux` string on the
+  registry entry, and a new `upgradeTo` field (`{ model, markdown }`) drives
+  Codex's full-screen migration prompt for a genuine successor model —
+  accepting it switches the operator's default model, so it is reserved for
+  deliberate hand-offs.
+
 - **Adapted the managed `[agents]` concurrency default to the installed Codex
   build.** Some Codex builds (observed on 0.141-0.145) parse `[agents]` as a
   pure role map and refuse to load any config containing the scalar, which

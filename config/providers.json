@@ -1630,6 +1630,7 @@
       "listed": true,
       "displayName": "Muse Spark 1.2 (Meta)",
       "description": "Meta's coding-optimized agentic model with a 1M context window, through the Meta Model API using the Responses API.",
+      "availabilityNux": "Muse Spark 1.2 is now in your curated catalog: Meta's coding-optimized agentic model with a 1M-token context window, a minimal-to-xhigh effort ladder, and reasoning summaries.",
       "priority": 48,
       "defaultEffort": "high",
       "reasoningLevels": [
