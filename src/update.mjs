@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -68,11 +69,45 @@ function installCurrentCheckout() {
   }
 }
 
+function registeredTrayBundlePath() {
+  try {
+    const value = execFileSync(
+      "defaults",
+      [
+        "read",
+        "io.github.codex-router.tray",
+        "ModelRouterTray.loginItemBundlePath",
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
+    return value || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function trayRefreshRequired({
+  platform = process.platform,
+  home = os.homedir(),
+  sourceRoot = SOURCE_ROOT,
+  registeredPath = registeredTrayBundlePath(),
+} = {}) {
+  if (platform !== "darwin") return false;
+  const candidates = [
+    path.join(sourceRoot, "dist", "Model Router.app"),
+    path.join(home, "Applications", "Model Router.app"),
+  ];
+  return (
+    candidates.some((candidate) => existsSync(candidate)) ||
+    Boolean(registeredPath && existsSync(registeredPath))
+  );
+}
+
 // The tray is rebuilt from the same checkout that owns the router, so an
 // update never leaves a stale companion binary behind. Best-effort: the router
 // update itself succeeded, and a failed tray refresh must not roll it back.
 function refreshTrayCompanion() {
-  if (process.platform !== "darwin") return;
+  if (!trayRefreshRequired()) return;
   const trayBinary = path.join(
     SOURCE_ROOT,
     "dist",

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Codex updates now refresh the tray for every supported install location.**
+  Guided setup installs the companion at `~/Applications/Model Router.app`,
+  but updates only refreshed the tray when the checkout's own `dist/Model
+  Router.app` existed. The update path now also detects the home-Applications
+  bundle and the registered login-item bundle, then rebuilds and relaunches
+  the tray from the updated checkout.
+
 - **The macOS tray stays linked to the apps that launch it.** If the tray
   bundle moves (for example from a checkout on a removable volume to the
   stable install), the next launch re-registers the login item against the
