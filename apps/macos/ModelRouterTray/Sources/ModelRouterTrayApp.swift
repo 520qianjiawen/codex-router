@@ -83,6 +83,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     Task { await store.startAccountUsagePolling() }
     Task { await store.startProviderPolling() }
   }
+
+  func applicationWillTerminate(_ notification: Notification) {
+    store.restoreServiceOnQuit()
+  }
 }
 
 @MainActor
@@ -127,6 +131,15 @@ final class RouterStore: ObservableObject {
   // as "Codex is open" for the follow mode.
   private let hostAppBundleIDs = ["com.openai.codex", "com.openai.chat"]
   private var workspaceObservers: [NSObjectProtocol] = []
+  private var pendingServiceStop: Task<Void, Never>?
+  private var serviceWork: Task<Void, Never>?
+  private var serviceIntent: ServiceIntent = .unknown
+  // Codex relaunches itself to apply updates, so a momentary disappearance must
+  // not bounce the router. Wait the absence out and re-check before stopping.
+  private let hostAppAbsenceGrace = Duration.seconds(30)
+  // A request in flight outlives the window that started it; retry rather than
+  // cutting a generation off mid-stream.
+  private let activeRequestRecheck = Duration.seconds(15)
   private var accountUsageResolved = false
   private var hasResolvedInitialUsageProvider = false
   private var hasObservedActiveProvider = false
@@ -213,10 +226,30 @@ final class RouterStore: ObservableObject {
     Bundle.main.bundleIdentifier != nil
   }
 
+  // The launchd agent supersedes the login item: it starts the tray at login
+  // *and* restarts it when it exits abnormally, which a login item never did.
+  // Both mechanisms at once would open two trays every login, so the login item
+  // is retired the moment the agent exists.
+  var supervisedByAgent: Bool {
+    FileManager.default.fileExists(atPath: trayAgentPath)
+  }
+
+  private var trayAgentPath: String {
+    FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent("Library/LaunchAgents/io.github.codex-router.tray.plist")
+      .path
+  }
+
   func bootstrapLaunchAtLogin() {
     guard launchAtLoginAvailable else { return }
     let service = SMAppService.mainApp
     let bundlePath = Bundle.main.bundlePath
+    if supervisedByAgent {
+      if service.status == .enabled { try? service.unregister() }
+      defaults.set(bundlePath, forKey: loginItemBundlePathKey)
+      launchAtLogin = true
+      return
+    }
     launchAtLogin = service.status == .enabled
     let registeredPath = defaults.string(forKey: loginItemBundlePathKey)
     // Migrate the first-run registration if the tray moved (for example from
@@ -250,6 +283,11 @@ final class RouterStore: ObservableObject {
   // The process itself stays resident as the watcher — quitting on app exit
   // would leave nothing around to notice the next launch.
   func startHostAppObservation() {
+    // The mode lives in two places: UserDefaults for the tray and presence.json
+    // for doctor. Only a toggle used to write the second one, so a reinstall or
+    // a cleared state directory left doctor believing the router should always
+    // be up while the tray was quietly stopping it. Republish on every launch.
+    persistPresenceMode(presenceMode)
     let center = NSWorkspace.shared.notificationCenter
     for name in [
       NSWorkspace.didLaunchApplicationNotification,
@@ -268,6 +306,11 @@ final class RouterStore: ObservableObject {
     presenceMode = mode
     defaults.set(mode.rawValue, forKey: presenceModeKey)
     refreshSurfacesVisible()
+    // doctor reads the mode from the router's own state directory: without it a
+    // service the tray stopped on purpose reads as a crash and drives the Fix
+    // button into a full repair.
+    persistPresenceMode(mode)
+    reconcileService()
   }
 
   private func refreshHostAppRunning() {
@@ -276,14 +319,117 @@ final class RouterStore: ObservableObject {
         .contains { !$0.isTerminated }
     }
     refreshSurfacesVisible()
+    reconcileService()
   }
 
   private func refreshSurfacesVisible() {
     surfacesVisible = presenceMode == .always || hostAppRunning
   }
 
+  private func persistPresenceMode(_ mode: TrayPresenceMode) {
+    enqueueServiceWork { [weak self] in
+      _ = try? await self?.runControl(arguments: ["presence", "set", mode.controlValue])
+    }
+  }
+
+  // In follow mode the router runs only while Codex or ChatGPT is open. Starts
+  // are immediate so the gateway is warming while the user walks to the prompt.
+  // Stops are deferred: Codex restarts itself, and a request can outlive the
+  // window that issued it.
+  private func reconcileService() {
+    pendingServiceStop?.cancel()
+    pendingServiceStop = nil
+    guard presenceMode == .followCodex else {
+      // Leaving follow mode hands the router back to launchd's always-on
+      // contract, so anything the tray stopped has to come back up.
+      if serviceIntent == .stopped { startService() }
+      serviceIntent = .unknown
+      return
+    }
+    if hostAppRunning {
+      startService()
+      return
+    }
+    pendingServiceStop = Task { [weak self] in
+      guard let self else { return }
+      try? await Task.sleep(for: self.hostAppAbsenceGrace)
+      guard !Task.isCancelled else { return }
+      await self.stopServiceWhenIdle()
+    }
+  }
+
+  private func stopServiceWhenIdle() async {
+    while !Task.isCancelled {
+      guard presenceMode == .followCodex, !hostAppRunning else { return }
+      if activityState == .idle { break }
+      try? await Task.sleep(for: activeRequestRecheck)
+    }
+    guard !Task.isCancelled, presenceMode == .followCodex, !hostAppRunning else { return }
+    guard serviceIntent != .stopped else { return }
+    serviceIntent = .stopped
+    enqueueServiceWork { [weak self] in
+      await self?.runServiceCommand("stop")
+    }
+  }
+
+  private func startService() {
+    guard serviceIntent != .running else { return }
+    serviceIntent = .running
+    enqueueServiceWork { [weak self] in
+      await self?.runServiceCommand("start")
+    }
+  }
+
+  // launchctl rejects overlapping bootstrap/bootout for the same label, so every
+  // service call queues behind the previous one.
+  private func enqueueServiceWork(_ work: @escaping @Sendable () async -> Void) {
+    let previous = serviceWork
+    serviceWork = Task { [weak self] in
+      _ = await previous?.value
+      guard self != nil else { return }
+      await work()
+    }
+  }
+
+  private func runServiceCommand(_ action: String) async {
+    do {
+      _ = try await runControl(arguments: ["service", action])
+    } catch {
+      // A failed stop is harmless; a failed start is not, so surface it and let
+      // the next Codex launch retry from a known-unknown intent.
+      serviceIntent = .unknown
+      message = "Router \(action): \(error.localizedDescription)"
+    }
+    await refresh()
+  }
+
+  // The tray is the only watcher in follow mode. If it goes away with the router
+  // stopped, nothing is left to notice the next Codex launch, so hand the router
+  // back to launchd on the way out. Detached so quitting never blocks on the
+  // gateway's health wait.
+  func restoreServiceOnQuit() {
+    pendingServiceStop?.cancel()
+    guard presenceMode == .followCodex, serviceIntent == .stopped else { return }
+    guard let root = try? sourceRoot() else { return }
+    let task = Process()
+    task.executableURL = root.appendingPathComponent("bin/control")
+    task.arguments = ["service", "start"]
+    task.currentDirectoryURL = root
+    try? task.run()
+  }
+
   func setLaunchAtLogin(_ enabled: Bool) {
     guard launchAtLoginAvailable else { return }
+    if supervisedByAgent {
+      // launchd owns startup now. Turning this off would mean booting the agent
+      // out, which kills the running tray -- the switch would quit the app
+      // instead of changing a preference. Removing the agent is an explicit
+      // `./bin/control tray disable`.
+      launchAtLogin = true
+      message = "launchd starts the tray and restarts it if it stops. "
+        + "Run ./bin/control tray disable to hand startup back to a login item."
+      return
+    }
     let service = SMAppService.mainApp
     do {
       if enabled {
@@ -1527,6 +1673,22 @@ enum TrayPresenceMode: String, CaseIterable, Identifiable {
     case .followCodex: return "With Codex"
     }
   }
+
+  // `control presence` spells the modes in the router's kebab-case vocabulary.
+  var controlValue: String {
+    switch self {
+    case .always: return "always"
+    case .followCodex: return "follow-codex"
+    }
+  }
+}
+
+// What the tray last asked the background service to do, so a burst of
+// workspace notifications does not re-issue a start the router already honored.
+enum ServiceIntent {
+  case unknown
+  case running
+  case stopped
 }
 
 enum IslandMode: String, CaseIterable, Identifiable {

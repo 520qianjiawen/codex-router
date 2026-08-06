@@ -57,6 +57,17 @@ export const LAUNCH_AGENTS_DIR =
   process.env.CODEX_ROUTER_LAUNCH_AGENTS_DIR ||
   path.join(os.homedir(), "Library", "LaunchAgents");
 export const LAUNCH_AGENT_PATH = path.join(LAUNCH_AGENTS_DIR, `${SERVICE_LABEL}.plist`);
+// The tray runs under its own agent rather than a login item: launchd is the
+// only thing that brings it back when it exits, and a login item only fires at
+// login. Both are registered by the installer so the companion is supervised
+// from the moment it is set up.
+export const TRAY_SERVICE_LABEL = `${SERVICE_LABEL}.tray`;
+export const TRAY_LAUNCH_AGENT_PATH = path.join(
+  LAUNCH_AGENTS_DIR,
+  `${TRAY_SERVICE_LABEL}.plist`,
+);
+export const TRAY_APP_PATH = path.join(SOURCE_ROOT, "dist", "Model Router.app");
+export const TRAY_APP_BINARY = path.join(TRAY_APP_PATH, "Contents", "MacOS", "ModelRouterTray");
 
 function port(name, fallback) {
   const value = Number(process.env[name] || fallback);
