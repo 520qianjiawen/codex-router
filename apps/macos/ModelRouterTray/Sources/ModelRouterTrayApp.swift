@@ -1584,6 +1584,7 @@ enum TrayTab: String, CaseIterable, Identifiable {
 private struct TrayView: View {
   @ObservedObject var store: RouterStore
   @AppStorage("trayTab") private var tab: TrayTab = .usage
+  @State private var providersExpanded = true
 
   private var target: RouterTarget? { store.snapshot.targets["codex"] }
   private var providers: [(id: String, enabled: Bool)] {
@@ -1852,37 +1853,38 @@ private struct TrayView: View {
       isDisabled: store.providerOperation != nil
     )
     sectionLabel(
-      "Models",
-      detail: store.providerOperation == "models" ? "Applying…" : "Subagents + picker"
-    )
-    ModelSettingsAccordion(store: store, target: target)
-    sectionLabel(
       "Maintenance",
       detail: store.maintenanceRunning ? "Updating & checking…" : "Update + doctor"
     )
     maintenanceRow
-    sectionLabel("Providers", detail: store.providerOperation == nil ? "Auto-saved" : "Applying…")
-    VStack(spacing: 0) {
-      ForEach(providers, id: \.id) { provider in
-        ProviderSetupRow(
-          provider: provider,
-          setup: store.providerSetup[provider.id],
-          account: store.providerUsage(for: provider.id)?.account,
-          isBusy: store.providerOperation == provider.id,
-          controlsDisabled: store.providerOperation != nil,
-          onToggle: { enabled in
-            Task { await store.setProvider(provider.id, enabled: enabled) }
-          },
-          onInstall: { Task { await store.installProviderCLI(provider.id) } },
-          onLogin: { Task { await store.loginProvider(provider.id) } },
-          onSaveKey: { key in Task { await store.saveProviderKey(provider.id, key: key) } },
-          onRemoveKey: { Task { await store.removeProviderKey(provider.id) } }
-        )
-        if provider.id != providers.last?.id {
-          Divider()
+    AccordionPanel(
+      title: "Providers",
+      summary: store.providerOperation == nil ? "Auto-saved" : "Applying…",
+      expanded: $providersExpanded
+    ) {
+      VStack(spacing: 0) {
+        ForEach(providers, id: \.id) { provider in
+          ProviderSetupRow(
+            provider: provider,
+            setup: store.providerSetup[provider.id],
+            account: store.providerUsage(for: provider.id)?.account,
+            isBusy: store.providerOperation == provider.id,
+            controlsDisabled: store.providerOperation != nil,
+            onToggle: { enabled in
+              Task { await store.setProvider(provider.id, enabled: enabled) }
+            },
+            onInstall: { Task { await store.installProviderCLI(provider.id) } },
+            onLogin: { Task { await store.loginProvider(provider.id) } },
+            onSaveKey: { key in Task { await store.saveProviderKey(provider.id, key: key) } },
+            onRemoveKey: { Task { await store.removeProviderKey(provider.id) } }
+          )
+          if provider.id != providers.last?.id {
+            Divider()
+          }
         }
       }
     }
+    ModelSettingsAccordion(store: store, target: target)
   }
 
   private struct ModelSettingsAccordion: View {
@@ -1890,6 +1892,13 @@ private struct TrayView: View {
     let target: RouterTarget
     @State private var subagentsExpanded = true
     @State private var pickerExpanded = true
+    @State private var collapsedProviders = Set<String>()
+
+    private struct ProviderModels: Identifiable {
+      let provider: String
+      let models: [RouterModel]
+      var id: String { provider }
+    }
 
     private var settings: ModelSettingsSnapshot? { target.modelSettings }
     private var busy: Bool { store.providerOperation == "models" }
@@ -1912,9 +1921,37 @@ private struct TrayView: View {
         }
     }
 
+    private func providerGroups(_ models: [RouterModel]) -> [ProviderModels] {
+      Dictionary(grouping: models, by: \.provider)
+        .map { ProviderModels(provider: $0.key, models: $0.value.sorted { $0.slug < $1.slug }) }
+        .sorted { $0.provider < $1.provider }
+    }
+
+    private func providerName(_ id: String) -> String {
+      if id == "openai" { return "OpenAI" }
+      return target.providers?.first(where: { $0.id == id })?.displayName ?? id
+    }
+
+    private func providerBinding(_ provider: String) -> Binding<Bool> {
+      Binding(
+        get: { !collapsedProviders.contains(provider) },
+        set: { expanded in
+          if expanded {
+            collapsedProviders.remove(provider)
+          } else {
+            collapsedProviders.insert(provider)
+          }
+        }
+      )
+    }
+
     var body: some View {
       VStack(alignment: .leading, spacing: 10) {
-        DisclosureGroup(isExpanded: $subagentsExpanded) {
+        AccordionPanel(
+          title: "Subagent models",
+          summary: subagentSummary,
+          expanded: $subagentsExpanded
+        ) {
           VStack(alignment: .leading, spacing: 8) {
             toggleRow(
               title: "All selected models",
@@ -1933,72 +1970,76 @@ private struct TrayView: View {
               ),
               disabled: busy
             )
-            ForEach(enabledExternalModels) { model in
-              toggleRow(
-                title: model.displayName,
-                detail: subagentDetail(for: model),
-                isOn: Binding(
-                  get: { isSubagent(model) },
-                  set: { enabled in
-                    Task { await store.setSubagentModel(model.slug, enabled: enabled) }
-                  }
-                ),
-                disabled: busy
-              )
-            }
             toolbar(
               buttons: [
                 ("Select all", { Task { await store.selectAllSubagents() } }),
                 ("Unselect all", { Task { await store.unselectAllSubagents() } }),
               ]
             )
-          }
-          .padding(.top, 8)
-        } label: {
-          HStack {
-            Text("Subagent models")
-              .font(.system(size: 12, weight: .medium))
-            Spacer()
-            Text(subagentSummary)
-              .font(.system(size: 9))
-              .foregroundStyle(routerMuted)
+            ForEach(providerGroups(enabledExternalModels)) { group in
+              AccordionPanel(
+                title: providerName(group.provider),
+                summary: "\(group.models.count) models",
+                expanded: providerBinding(group.provider)
+              ) {
+                VStack(alignment: .leading, spacing: 6) {
+                  ForEach(group.models) { model in
+                    toggleRow(
+                      title: model.displayName,
+                      detail: subagentDetail(for: model),
+                      isOn: Binding(
+                        get: { isSubagent(model) },
+                        set: { enabled in
+                          Task { await store.setSubagentModel(model.slug, enabled: enabled) }
+                        }
+                      ),
+                      disabled: busy
+                    )
+                  }
+                }
+              }
+            }
           }
         }
 
-        DisclosureGroup(isExpanded: $pickerExpanded) {
+        AccordionPanel(
+          title: "Model picker",
+          summary: pickerSummary,
+          expanded: $pickerExpanded
+        ) {
           VStack(alignment: .leading, spacing: 8) {
             Text("Hidden models stay connected but are not offered by Codex.")
               .font(.system(size: 9))
               .foregroundStyle(routerMuted)
-            ForEach(enabledModels) { model in
-              toggleRow(
-                title: model.displayName,
-                detail: model.provider,
-                isOn: Binding(
-                  get: { !hiddenModels.contains(model.slug) },
-                  set: { visible in
-                    Task { await store.setPickerModel(model.slug, visible: visible) }
-                  }
-                ),
-                disabled: busy
-              )
-            }
             toolbar(
               buttons: [
                 ("Show all", { Task { await store.showAllPickerModels() } }),
                 ("Hide all", { Task { await store.hideAllPickerModels() } }),
               ]
             )
-          }
-          .padding(.top, 8)
-        } label: {
-          HStack {
-            Text("Model picker")
-              .font(.system(size: 12, weight: .medium))
-            Spacer()
-            Text(pickerSummary)
-              .font(.system(size: 9))
-              .foregroundStyle(routerMuted)
+            ForEach(providerGroups(enabledModels)) { group in
+              AccordionPanel(
+                title: providerName(group.provider),
+                summary: "\(group.models.count) models",
+                expanded: providerBinding(group.provider)
+              ) {
+                VStack(alignment: .leading, spacing: 6) {
+                  ForEach(group.models) { model in
+                    toggleRow(
+                      title: model.displayName,
+                      detail: model.slug,
+                      isOn: Binding(
+                        get: { !hiddenModels.contains(model.slug) },
+                        set: { visible in
+                          Task { await store.setPickerModel(model.slug, visible: visible) }
+                        }
+                      ),
+                      disabled: busy
+                    )
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -2029,11 +2070,10 @@ private struct TrayView: View {
     }
 
     private func subagentDetail(for model: RouterModel) -> String {
-      let base = model.multiAgentVersion == "v2" ? "\(model.provider) · proven v2" : model.provider
-      if settings?.subagents.mode == "all" && disabledSubagentSet.contains(model.slug) {
-        return "\(base) · excluded"
+      if isSubagent(model) {
+        return model.multiAgentVersion == "v2" ? "Proven v2" : "Subagent"
       }
-      return base
+      return "Not selected"
     }
 
     private var subagentSummary: String {
@@ -2086,6 +2126,53 @@ private struct TrayView: View {
             .disabled(busy)
         }
       }
+    }
+  }
+
+  private struct AccordionPanel<Content: View>: View {
+    let title: String
+    let summary: String
+    @Binding var expanded: Bool
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+      VStack(spacing: 0) {
+        Button(action: {
+          withAnimation(.easeInOut(duration: 0.16)) {
+            expanded.toggle()
+          }
+        }) {
+          HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+              Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+              if !summary.isEmpty {
+                Text(summary)
+                  .font(.system(size: 9))
+                  .foregroundStyle(routerMuted)
+                  .lineLimit(1)
+              }
+            }
+            Spacer()
+            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+              .font(.system(size: 10, weight: .semibold))
+              .foregroundStyle(routerMuted)
+              .frame(width: 14)
+          }
+          .padding(10)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+
+        if expanded {
+          content()
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
+        }
+      }
+      .background(Color.black.opacity(0.14))
+      .clipShape(RoundedRectangle(cornerRadius: 10))
     }
   }
 

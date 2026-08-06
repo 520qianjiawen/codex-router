@@ -354,6 +354,39 @@ function startPanel() {
     const enabledSubagents = new Set(subagent.enabled || []);
     const disabledSubagents = new Set(subagent.disabled || []);
     const hiddenModels = new Set(settings?.picker?.hidden || []);
+    const providerNames = new Map(
+      (snapshot?.providers || []).map((provider) => [provider.id, provider.displayName]),
+    );
+    providerNames.set("openai", "OpenAI");
+
+    function providerLabel(provider) {
+      return providerNames.get(provider) || provider;
+    }
+
+    function groupModels(list) {
+      const groups = new Map();
+      for (const model of list) {
+        if (!groups.has(model.provider)) groups.set(model.provider, []);
+        groups.get(model.provider).push(model);
+      }
+      return [...groups.entries()]
+        .sort(([left], [right]) => String(left).localeCompare(String(right)))
+        .map(([provider, items]) => ({
+          provider,
+          items: items.sort((left, right) => String(left.slug).localeCompare(String(right.slug))),
+        }));
+    }
+
+    function providerGroupsMarkup(groups, rowMarkup) {
+      return groups
+        .map(
+          (group) => `<details class="model-provider-group" open>
+            <summary><span>${escapeHtml(providerLabel(group.provider))}</span><span class="model-provider-count">${group.items.length}</span></summary>
+            <div class="model-settings-list">${group.items.map(rowMarkup).join("")}</div>
+          </details>`,
+        )
+        .join("");
+    }
 
     elements.subagentAllSwitch.disabled = state.modelSettingsBusy;
     elements.subagentAllSwitch.checked = subagent.mode === "all";
@@ -363,23 +396,23 @@ function startPanel() {
         ? "Only selected models are exposed as Codex subagents."
         : "Only registry-proven v2 models are exposed as Codex subagents.";
 
-    const subagentRows = enabledModels
+    const subagentModels = enabledModels
       .filter((model) => !model.native && model.visible !== false)
-      .sort((left, right) => String(left.provider).localeCompare(right.provider) || String(left.slug).localeCompare(right.slug))
-      .map((model) => {
+    const subagentGroups = groupModels(subagentModels);
+    const subagentRow = (model) => {
         const checked = subagent.mode === "all"
           ? !disabledSubagents.has(model.slug)
           : (model.multiAgentVersion === "v2" || enabledSubagents.has(model.slug)) &&
             !disabledSubagents.has(model.slug);
         const badge = model.multiAgentVersion === "v2" ? " · proven v2" : "";
         return `<label class="model-setting-row">
-          <span><strong>${escapeHtml(model.displayName)}</strong><small>${escapeHtml(model.provider)}${escapeHtml(badge)}</small></span>
+          <span><strong>${escapeHtml(model.displayName)}</strong><small>${escapeHtml(badge)}</small></span>
           <span class="provider-check"><input type="checkbox" data-subagent="${escapeHtml(model.slug)}" aria-label="Use ${escapeHtml(model.displayName)} as a subagent"${checked ? " checked" : ""}${state.modelSettingsBusy ? " disabled" : ""}></span>
         </label>`;
-      });
+      };
 
-    elements.subagentModelList.innerHTML = subagentRows.length
-      ? subagentRows.join("")
+    elements.subagentModelList.innerHTML = subagentGroups.length
+      ? providerGroupsMarkup(subagentGroups, subagentRow)
       : '<div class="empty-state">Enable a provider to choose subagent models here.</div>';
     const subagentCount = subagent.mode === "all"
       ? enabledModels.filter(
@@ -394,18 +427,17 @@ function startPanel() {
         ).length;
     elements.subagentSummary.textContent = `${subagentCount} subagent model${subagentCount === 1 ? "" : "s"} · ${subagent.mode}`;
 
-    const pickerRows = pickerModels
-      .sort((left, right) => String(left.provider).localeCompare(right.provider) || String(left.slug).localeCompare(right.slug))
-      .map((model) => {
+    const pickerGroups = groupModels(pickerModels);
+    const pickerRow = (model) => {
         const visible = !hiddenModels.has(model.slug);
         return `<label class="model-setting-row">
-          <span><strong>${escapeHtml(model.displayName)}</strong><small>${escapeHtml(model.provider)}</small></span>
+          <span><strong>${escapeHtml(model.displayName)}</strong><small>${escapeHtml(model.slug)}</small></span>
           <span class="provider-check"><input type="checkbox" data-picker="${escapeHtml(model.slug)}" aria-label="Show ${escapeHtml(model.displayName)} in the picker"${visible ? " checked" : ""}${state.modelSettingsBusy ? " disabled" : ""}></span>
         </label>`;
-      });
+      };
 
-    elements.pickerModelList.innerHTML = pickerRows.length
-      ? pickerRows.join("")
+    elements.pickerModelList.innerHTML = pickerGroups.length
+      ? providerGroupsMarkup(pickerGroups, pickerRow)
       : '<div class="empty-state">No enabled models to show.</div>';
     const pickerCount = pickerModels.filter((model) => !hiddenModels.has(model.slug)).length;
     elements.pickerSummary.textContent = `${pickerCount} visible · ${hiddenModels.size} hidden`;

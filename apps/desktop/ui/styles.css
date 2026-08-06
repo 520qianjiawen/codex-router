@@ -699,6 +699,59 @@ h2 {
   gap: 7px;
 }
 
+.model-provider-group {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.model-provider-group summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 38px;
+  padding: 8px 10px;
+  color: var(--muted-strong);
+  font-size: 10px;
+  font-weight: 630;
+  cursor: pointer;
+  list-style: none;
+}
+
+.model-provider-group summary::-webkit-details-marker {
+  display: none;
+}
+
+.model-provider-group summary::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid var(--muted-strong);
+  border-bottom: 1.5px solid var(--muted-strong);
+  transform: rotate(45deg) translateY(-1px);
+  transition: transform 150ms ease;
+}
+
+.model-provider-group:not([open]) summary::before {
+  transform: rotate(-45deg) translateY(1px);
+}
+
+.model-provider-group summary > span:first-child {
+  flex: 1;
+}
+
+.model-provider-count {
+  color: var(--muted);
+  font-size: 8.5px;
+  font-weight: 560;
+}
+
+.model-provider-group > .model-settings-list {
+  padding: 0 8px 8px;
+}
+
 .accordion-toolbar {
   display: flex;
   justify-content: flex-end;
