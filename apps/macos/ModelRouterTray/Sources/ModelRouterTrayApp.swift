@@ -1853,8 +1853,8 @@ private struct TrayView: View {
       isDisabled: store.providerOperation != nil
     )
     sectionLabel(
-      "Maintenance",
-      detail: store.maintenanceRunning ? "Updating & checking…" : "Update + doctor"
+      "Router update",
+      detail: store.maintenanceRunning ? "Checking…" : "Update + doctor"
     )
     maintenanceRow
     AccordionPanel(
@@ -2228,9 +2228,9 @@ private struct TrayView: View {
   private var maintenanceRow: some View {
     HStack(spacing: 12) {
       VStack(alignment: .leading, spacing: 3) {
-        Text("Router installation")
+        Text("Router update")
           .font(.system(size: 12, weight: .medium))
-        Text(store.maintenanceMessage ?? "Apply pulled changes and verify routed model agents")
+        Text(store.maintenanceMessage ?? "Apply changes + doctor")
           .font(.system(size: 9))
           .foregroundStyle(
             store.maintenanceMessage == nil
@@ -2249,12 +2249,12 @@ private struct TrayView: View {
           .controlSize(.small)
           .tint(routerAccent)
           .frame(width: 94)
-          .accessibilityLabel("Updating and verifying Codex Router")
+          .accessibilityLabel("Updating Codex Router")
       } else {
         Button {
           Task { await store.updateAndVerify() }
         } label: {
-          Label("Update & Verify", systemImage: "arrow.triangle.2.circlepath")
+          Label("Update", systemImage: "arrow.triangle.2.circlepath")
         }
         .buttonStyle(AccentButtonStyle())
         .disabled(store.providerOperation != nil)
@@ -2265,8 +2265,16 @@ private struct TrayView: View {
     }
     .padding(10)
     .background(
-      Color.primary.opacity(0.045),
-      in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+      LinearGradient(
+        colors: [Color.white.opacity(0.075), Color.white.opacity(0.04)],
+        startPoint: .top,
+        endPoint: .bottom
+      )
+    )
+    .clipShape(RoundedRectangle(cornerRadius: 10))
+    .overlay(
+      RoundedRectangle(cornerRadius: 10)
+        .stroke(Color.white.opacity(0.09), lineWidth: 1)
     )
   }
 
