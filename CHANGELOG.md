@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Codex updates now refresh the tray for every supported install location.**
+  Guided setup installs the companion at `~/Applications/Model Router.app`,
+  but updates only refreshed the tray when the checkout's own `dist/Model
+  Router.app` existed. The update path now also detects the home-Applications
+  bundle and the registered login-item bundle, then rebuilds and relaunches
+  the tray from the updated checkout.
+
 - **`doctor --fix` no longer breaks a running install from a second checkout.**
   When the recorded state owner still exists, repair now runs from that
   checkout and keeps ownership there. Deliberate ownership transfer still
