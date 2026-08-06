@@ -2236,47 +2236,55 @@ private struct TrayView: View {
   }
 
   private var maintenanceRow: some View {
-    HStack(spacing: 12) {
-      Text(store.maintenanceMessage ?? "Router ready")
-        .font(.system(size: 10, weight: .medium))
-        .foregroundStyle(
-          store.maintenanceMessage == nil
-            ? routerMutedStrong
-            : store.maintenanceSucceeded
-              ? routerMint
-              : store.maintenanceRunning
-                ? routerAccent
-                : routerRed
-        )
-        .lineLimit(2)
-      Spacer(minLength: 8)
-      if store.maintenanceRunning {
-        ProgressView()
-          .controlSize(.small)
-          .tint(routerAccent)
-          .frame(width: 94)
-          .accessibilityLabel("Running Codex Router maintenance")
-      } else {
-        Button {
-          Task { await store.updateAndVerify() }
-        } label: {
-          Label("Update", systemImage: "arrow.triangle.2.circlepath")
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 12) {
+        Text(maintenanceStatus)
+          .font(.system(size: 10, weight: .medium))
+          .foregroundStyle(
+            store.maintenanceMessage == nil
+              ? routerMutedStrong
+              : store.maintenanceSucceeded
+                ? routerMint
+                : store.maintenanceRunning
+                  ? routerAccent
+                  : routerRed
+          )
+          .lineLimit(2)
+        Spacer(minLength: 8)
+        if store.maintenanceRunning {
+          ProgressView()
+            .controlSize(.small)
+            .tint(routerAccent)
+            .frame(width: 94)
+            .accessibilityLabel("Running Codex Router maintenance")
+        } else {
+          Button {
+            Task { await store.updateAndVerify() }
+          } label: {
+            Label("Update", systemImage: "arrow.triangle.2.circlepath")
+          }
+          .buttonStyle(AccentButtonStyle())
+          .disabled(store.providerOperation != nil)
+          .opacity(store.providerOperation == nil ? 1 : 0.5)
+          .help("Apply the checked-out router revision, then run the Codex doctor")
+          .accessibilityLabel("Update and verify Codex Router")
+          Button {
+            Task { await store.fixAndVerify() }
+          } label: {
+            Label("Fix", systemImage: "wrench.and.screwdriver")
+          }
+          .buttonStyle(AccentButtonStyle())
+          .disabled(store.providerOperation != nil)
+          .opacity(store.providerOperation == nil ? 1 : 0.5)
+          .help("Run the Codex doctor and repair managed router files")
+          .accessibilityLabel("Fix Codex Router installation")
         }
-        .buttonStyle(AccentButtonStyle())
-        .disabled(store.providerOperation != nil)
-        .opacity(store.providerOperation == nil ? 1 : 0.5)
-        .help("Apply the checked-out router revision, then run the Codex doctor")
-        .accessibilityLabel("Update and verify Codex Router")
-        Button {
-          Task { await store.fixAndVerify() }
-        } label: {
-          Label("Fix", systemImage: "wrench.and.screwdriver")
-        }
-        .buttonStyle(AccentButtonStyle())
-        .disabled(store.providerOperation != nil)
-        .opacity(store.providerOperation == nil ? 1 : 0.5)
-        .help("Run the Codex doctor and repair managed router files")
-        .accessibilityLabel("Fix Codex Router installation")
+      }
+      if maintenanceFailed {
+        Text(maintenanceHint)
+          .font(.system(size: 9))
+          .foregroundStyle(routerRed.opacity(0.9))
+          .lineLimit(3)
       }
     }
     .padding(10)
@@ -2284,6 +2292,30 @@ private struct TrayView: View {
       Color.primary.opacity(0.045),
       in: RoundedRectangle(cornerRadius: 10, style: .continuous)
     )
+  }
+
+  private var maintenanceStatus: String {
+    if store.maintenanceRunning {
+      return "Working…"
+    }
+    if store.maintenanceSucceeded {
+      return store.maintenanceMessage ?? "All good"
+    }
+    if maintenanceFailed {
+      return "Update or fix failed"
+    }
+    return store.maintenanceMessage ?? "Router ready"
+  }
+
+  private var maintenanceFailed: Bool {
+    store.maintenanceMessage != nil &&
+      !store.maintenanceSucceeded &&
+      !store.maintenanceRunning
+  }
+
+  private var maintenanceHint: String {
+    guard let message = store.maintenanceMessage else { return "" }
+    return "\(message)\nIf this keeps failing, run ./bin/support-bundle and share the path."
   }
 
   private var emptyState: some View {
