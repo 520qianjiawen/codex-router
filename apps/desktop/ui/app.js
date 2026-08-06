@@ -106,7 +106,9 @@ function startPanel() {
   });
   elements.subagentAllSwitch.addEventListener("change", handleSubagentAllToggle);
   elements.subagentModelList.addEventListener("change", handleModelSettingsToggle);
+  elements.subagentModelList.addEventListener("click", handleModelSettingsClick);
   elements.pickerModelList.addEventListener("change", handleModelSettingsToggle);
+  elements.pickerModelList.addEventListener("click", handleModelSettingsClick);
   elements.loginFreeSwitch.addEventListener("change", handleLoginFreeToggle);
   elements.islandSwitch.addEventListener("change", handleIslandToggle);
   elements.keyForm.addEventListener("submit", saveKey);
@@ -347,6 +349,7 @@ function startPanel() {
     const enabledModels = models.filter(
       (model) => model.enabled && enabledProviders.has(model.provider),
     );
+    const pickerModels = models.filter((model) => model.enabled);
     const subagent = settings?.subagents || { mode: "proven", enabled: [], disabled: [] };
     const enabledSubagents = new Set(subagent.enabled || []);
     const disabledSubagents = new Set(subagent.disabled || []);
@@ -361,7 +364,7 @@ function startPanel() {
         : "Only registry-proven v2 models are exposed as Codex subagents.";
 
     const subagentRows = enabledModels
-      .filter((model) => !model.native)
+      .filter((model) => !model.native && model.visible !== false)
       .sort((left, right) => String(left.provider).localeCompare(right.provider) || String(left.slug).localeCompare(right.slug))
       .map((model) => {
         const checked = subagent.mode === "all"
@@ -379,17 +382,19 @@ function startPanel() {
       ? subagentRows.join("")
       : '<div class="empty-state">Enable a provider to choose subagent models here.</div>';
     const subagentCount = subagent.mode === "all"
-      ? enabledModels.filter((model) => !model.native && !disabledSubagents.has(model.slug)).length
+      ? enabledModels.filter(
+          (model) => !model.native && model.visible !== false && !disabledSubagents.has(model.slug),
+        ).length
       : enabledModels.filter(
           (model) =>
             !model.native &&
+            model.visible !== false &&
             (model.multiAgentVersion === "v2" || enabledSubagents.has(model.slug)) &&
             !disabledSubagents.has(model.slug),
         ).length;
     elements.subagentSummary.textContent = `${subagentCount} subagent model${subagentCount === 1 ? "" : "s"} · ${subagent.mode}`;
 
-    const pickerRows = models
-      .filter((model) => model.enabled)
+    const pickerRows = pickerModels
       .sort((left, right) => String(left.provider).localeCompare(right.provider) || String(left.slug).localeCompare(right.slug))
       .map((model) => {
         const visible = !hiddenModels.has(model.slug);
@@ -402,7 +407,7 @@ function startPanel() {
     elements.pickerModelList.innerHTML = pickerRows.length
       ? pickerRows.join("")
       : '<div class="empty-state">No enabled models to show.</div>';
-    const pickerCount = models.filter((model) => model.enabled && !hiddenModels.has(model.slug)).length;
+    const pickerCount = pickerModels.filter((model) => !hiddenModels.has(model.slug)).length;
     elements.pickerSummary.textContent = `${pickerCount} visible · ${hiddenModels.size} hidden`;
   }
 
@@ -419,6 +424,32 @@ function startPanel() {
       await refreshPanel({ quiet: true });
     } catch (error) {
       elements.subagentAllSwitch.checked = !enabled;
+      showToast(errorMessage(error), true);
+    } finally {
+      state.modelSettingsBusy = false;
+      renderModelSettings();
+    }
+  }
+
+  async function handleModelSettingsClick(event) {
+    const button = event.target.closest("button[data-model-action]");
+    if (!button) return;
+    const group = button.dataset.modelAction;
+    const action = button.dataset.action;
+    state.modelSettingsBusy = true;
+    renderModelSettings();
+    try {
+      if (group === "subagents") {
+        const selectAll = action === "select-all";
+        state.snapshot = await call("set_subagent_selection", { selectAll });
+        showToast(selectAll ? "Every picker-visible model can now run as a subagent." : "Subagent selection cleared.");
+      } else {
+        const showAll = action === "show-all";
+        state.snapshot = await call("set_picker_models", { showAll });
+        showToast(showAll ? "Every model is visible in the picker." : "All models hidden from the picker.");
+      }
+      await refreshPanel({ quiet: true });
+    } catch (error) {
       showToast(errorMessage(error), true);
     } finally {
       state.modelSettingsBusy = false;

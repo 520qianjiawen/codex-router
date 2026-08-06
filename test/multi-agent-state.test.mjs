@@ -68,6 +68,25 @@ test("all mode promotes every model except explicit exclusions", () => {
   );
 });
 
+test("all mode follows picker visibility before promoting models", () => {
+  const models = [
+    { slug: "opencode-go/deepseek-v4-flash" },
+    { slug: "qwen-plan/qwen3.8-max" },
+  ];
+  const promoted = applyMultiAgentSettings(
+    models,
+    { version: 2, mode: "all", enabled: [], disabled: [] },
+    new Set(["opencode-go/deepseek-v4-flash"]),
+  );
+  assert.deepEqual(
+    promoted.map((model) => [model.slug, model.multiAgentVersion]),
+    [
+      ["opencode-go/deepseek-v4-flash", "v1"],
+      ["qwen-plan/qwen3.8-max", "v2"],
+    ],
+  );
+});
+
 test("selected mode only promotes the chosen plus registry-proven models", () => {
   const models = [
     { slug: "opencode-go/deepseek-v4-flash" },

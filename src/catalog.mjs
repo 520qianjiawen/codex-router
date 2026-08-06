@@ -437,9 +437,11 @@ function main() {
   // advertising models the running gateway has no route for.
   assertStateOwnership("write the Codex model catalog");
   const userSlugs = new Set(readUserModels().map((model) => String(model.slug)));
+  const hiddenModels = readHiddenModels();
   const allMultiAgentModels = applyMultiAgentSettings(
     selectedConfiguredListedModels(),
     readMultiAgentSettings(),
+    hiddenModels,
   );
   // Clamp before announcements and agent sync so every surface Codex reads —
   // picker levels, defaults, and announcement copy — stays inside the effort
@@ -465,7 +467,6 @@ function main() {
   }
   const openaiAuthenticated = auth.authenticated;
   const loginFree = loginFreeConfigured();
-  const hiddenModels = readHiddenModels();
   const { models: merged, aliases } = loginFree
     ? buildLoginFreeCatalog(native, routedModels)
     : {

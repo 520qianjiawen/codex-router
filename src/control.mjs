@@ -53,7 +53,7 @@ function codexConfigSnapshot() {
   }
 }
 
-function nativeCodexModels(catalogPath) {
+function nativeCodexModels(catalogPath, hiddenModels = new Set()) {
   if (!existsSync(catalogPath)) return [];
   try {
     const parsed = JSON.parse(readFileSync(catalogPath, "utf8"));
@@ -67,6 +67,7 @@ function nativeCodexModels(catalogPath) {
         enabled: true,
         native: true,
         multiAgentVersion: model.multi_agent_version || "v1",
+        visible: !hiddenModels.has(model.slug),
       }));
   } catch {
     return [];
@@ -89,6 +90,7 @@ async function emitProbe() {
   const { modelPickerSnapshot } = await import("./model-picker-state.mjs");
 
   const enabledProviders = readProviderSelection();
+  const hiddenModels = new Set(modelPickerSnapshot().hidden);
   const usageEvents = TARGET === "codex"
     ? (await import("./usage-events.mjs")).recentUsageEvents()
     : [];
@@ -101,9 +103,10 @@ async function emitProbe() {
     gatewayModel: model.gatewayModel,
     enabled: enabledProviders.includes(model.provider),
     multiAgentVersion: model.multiAgentVersion || "v1",
+    visible: !hiddenModels.has(model.slug),
   }));
   const models = TARGET === "codex"
-    ? [...nativeCodexModels(NATIVE_CATALOG_PATH), ...routedModels]
+    ? [...nativeCodexModels(NATIVE_CATALOG_PATH, hiddenModels), ...routedModels]
     : routedModels;
   const selectedModel = TARGET === "codex" ? configuredDefaultModel(CONFIG_PATH) : undefined;
   const codexConfig = TARGET === "codex" ? codexConfigSnapshot() : undefined;
@@ -448,6 +451,7 @@ async function knownModelSlug(slug) {
 
 async function handleSubagents(action, value, flag) {
   const {
+    replaceMultiAgentState,
     setMultiAgentMode,
     setMultiAgentModel,
     subagentSettingsSnapshot,
@@ -456,7 +460,21 @@ async function handleSubagents(action, value, flag) {
     process.stdout.write(`${JSON.stringify(subagentSettingsSnapshot())}\n`);
     return;
   }
-  if (action === "mode") {
+  if (action === "select-all") {
+    replaceMultiAgentState({ mode: "all", enabled: [], disabled: [] });
+  } else if (action === "unselect-all") {
+    const { selectedConfiguredListedModels } = await import("./provider-selection.mjs");
+    const { readHiddenModels } = await import("./model-picker-state.mjs");
+    const hidden = readHiddenModels();
+    const visibleExternal = selectedConfiguredListedModels()
+      .filter((model) => !hidden.has(model.slug))
+      .map((model) => model.slug);
+    replaceMultiAgentState({
+      mode: "selected",
+      enabled: [],
+      disabled: visibleExternal,
+    });
+  } else if (action === "mode") {
     setMultiAgentMode(value);
   } else if (action === "set") {
     if (!["on", "off"].includes(flag)) {
@@ -467,7 +485,9 @@ async function handleSubagents(action, value, flag) {
     }
     setMultiAgentModel(value, flag === "on");
   } else {
-    throw new Error("Usage: control subagents status|mode <all|selected|proven>|set <model-slug> <on|off>");
+    throw new Error(
+      "Usage: control subagents status|select-all|unselect-all|mode <all|selected|proven>|set <model-slug> <on|off>",
+    );
   }
   refreshModelSettingsCatalog();
   process.stdout.write(`${JSON.stringify(subagentSettingsSnapshot())}\n`);
@@ -476,13 +496,24 @@ async function handleSubagents(action, value, flag) {
 async function handlePicker(action, value, flag) {
   const {
     modelPickerSnapshot,
+    setAllModelsVisible,
     setModelVisible,
   } = await import("./model-picker-state.mjs");
   if (action === "status") {
     process.stdout.write(`${JSON.stringify(modelPickerSnapshot())}\n`);
     return;
   }
-  if (action === "set") {
+  if (action === "all") {
+    if (!["show", "hide"].includes(flag)) {
+      throw new Error("Usage: control picker all <show|hide>");
+    }
+    const { MERGED_CATALOG_PATH } = await import("./paths.mjs");
+    const parsed = JSON.parse(readFileSync(MERGED_CATALOG_PATH, "utf8"));
+    const slugs = Array.isArray(parsed.models)
+      ? parsed.models.map((model) => String(model.slug))
+      : [];
+    setAllModelsVisible(slugs, flag === "show");
+  } else if (action === "set") {
     if (!["show", "hide"].includes(flag)) {
       throw new Error("Usage: control picker set <model-slug> <show|hide>");
     }
@@ -491,7 +522,7 @@ async function handlePicker(action, value, flag) {
     }
     setModelVisible(value, flag === "show");
   } else {
-    throw new Error("Usage: control picker status|set <model-slug> <show|hide>");
+    throw new Error("Usage: control picker status|all <show|hide>|set <model-slug> <show|hide>");
   }
   refreshModelSettingsCatalog();
   process.stdout.write(`${JSON.stringify(modelPickerSnapshot())}\n`);

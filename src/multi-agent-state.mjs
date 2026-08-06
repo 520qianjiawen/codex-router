@@ -92,7 +92,10 @@ export function setMultiAgentMode(mode) {
     throw new Error(`Unknown subagent mode "${mode}". Choose: ${SUBAGENT_MODES.join(", ")}`);
   }
   const current = readMultiAgentSettings();
-  const next = { ...current, version: 2, mode };
+  const next =
+    mode === "all"
+      ? { ...current, version: 2, mode, disabled: [] }
+      : { ...current, version: 2, mode };
   writeSettings(next);
   return subagentSettingsSnapshot();
 }
@@ -120,10 +123,27 @@ export function setMultiAgentModel(slug, enabled) {
   return subagentSettingsSnapshot();
 }
 
-export function applyMultiAgentSettings(models, settings) {
+export function replaceMultiAgentState({ mode, enabled = [], disabled = [] }) {
+  if (!SUBAGENT_MODES.includes(mode)) {
+    throw new Error(`Unknown subagent mode "${mode}". Choose: ${SUBAGENT_MODES.join(", ")}`);
+  }
+  const next = {
+    version: 2,
+    mode,
+    enabled: [...new Set(enabled)].sort(),
+    disabled: [...new Set(disabled)].sort(),
+  };
+  writeSettings(next);
+  return subagentSettingsSnapshot();
+}
+
+export function applyMultiAgentSettings(models, settings, hidden = new Set()) {
   const enabled = new Set(settings.enabled || []);
   const disabled = new Set(settings.disabled || []);
   return models.map((model) => {
+    if (hidden.has(model.slug)) {
+      return { ...model, multiAgentVersion: "v1" };
+    }
     if (disabled.has(model.slug)) {
       return { ...model, multiAgentVersion: "v1" };
     }

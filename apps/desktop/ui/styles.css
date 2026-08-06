@@ -699,6 +699,13 @@ h2 {
   gap: 7px;
 }
 
+.accordion-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin: 2px 0 8px;
+}
+
 .model-setting-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

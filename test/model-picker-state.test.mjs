@@ -11,6 +11,7 @@ const {
   MODEL_PICKER_STATE_PATH,
   modelPickerSnapshot,
   readHiddenModels,
+  setAllModelsVisible,
   setModelVisible,
 } = await import("../src/model-picker-state.mjs");
 
@@ -27,4 +28,12 @@ test("picker visibility round-trips through protected state", () => {
   setModelVisible("opencode-go/deepseek-v4-flash", true);
   assert.deepEqual([...readHiddenModels()], []);
   assert.ok(MODEL_PICKER_STATE_PATH.startsWith(stateDir));
+});
+
+test("picker bulk visibility hides and shows every supplied model", () => {
+  const slugs = ["opencode-go/deepseek-v4-flash", "kimi-oauth/k3", "gpt-5.6-sol"];
+  setAllModelsVisible(slugs, false);
+  assert.deepEqual([...readHiddenModels()].sort(), [...slugs].sort());
+  setAllModelsVisible(slugs, true);
+  assert.deepEqual([...readHiddenModels()], []);
 });

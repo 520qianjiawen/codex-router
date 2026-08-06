@@ -147,6 +147,7 @@ test("codex probe includes native GPT models and the configured default", () => 
       enabled: true,
       native: true,
       multiAgentVersion: "v1",
+      visible: true,
     },
   );
   assert.equal(slice.models.some((model) => model.slug === "codex-auto-review"), false);

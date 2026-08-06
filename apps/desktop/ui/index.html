@@ -128,6 +128,10 @@
                 <span class="sr-only">Use all selected models as subagents</span>
               </label>
             </div>
+            <div class="accordion-toolbar">
+              <button class="text-button" type="button" data-model-action="subagents" data-action="select-all">Select all</button>
+              <button class="text-button" type="button" data-model-action="subagents" data-action="unselect-all">Unselect all</button>
+            </div>
             <div id="subagent-model-list" class="model-settings-list"></div>
           </div>
         </div>
@@ -142,6 +146,10 @@
           </button>
           <div class="accordion-body is-open" data-accordion-body="picker">
             <p class="accordion-note">Models hidden here stay connected but are not offered by Codex.</p>
+            <div class="accordion-toolbar">
+              <button class="text-button" type="button" data-model-action="picker" data-action="show-all">Show all</button>
+              <button class="text-button" type="button" data-model-action="picker" data-action="hide-all">Unselect all</button>
+            </div>
             <div id="picker-model-list" class="model-settings-list"></div>
           </div>
         </div>

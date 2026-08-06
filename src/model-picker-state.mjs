@@ -56,3 +56,21 @@ export function setModelVisible(slug, visible) {
   protectPrivateFile(MODEL_PICKER_STATE_PATH);
   return modelPickerSnapshot();
 }
+
+export function setAllModelsVisible(slugs, visible) {
+  const known = [...new Set(slugs.map((slug) => String(slug).trim()).filter(Boolean))];
+  const hidden = visible ? new Set() : new Set(known);
+  const stateDir = path.dirname(MODEL_PICKER_STATE_PATH);
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  chmodSync(stateDir, 0o700);
+  const temporary = `${MODEL_PICKER_STATE_PATH}.tmp.${process.pid}`;
+  writeFileSync(
+    temporary,
+    `${JSON.stringify({ version: 1, hidden: [...hidden].sort() }, null, 2)}\n`,
+    { encoding: "utf8", mode: 0o600 },
+  );
+  protectPrivateFile(temporary);
+  renameSync(temporary, MODEL_PICKER_STATE_PATH);
+  protectPrivateFile(MODEL_PICKER_STATE_PATH);
+  return modelPickerSnapshot();
+}

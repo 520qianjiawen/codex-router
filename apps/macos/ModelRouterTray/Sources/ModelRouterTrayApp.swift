@@ -944,6 +944,22 @@ final class RouterStore: ObservableObject {
     )
   }
 
+  func selectAllSubagents() async {
+    await applyModelSettings(arguments: ["subagents", "select-all"])
+  }
+
+  func unselectAllSubagents() async {
+    await applyModelSettings(arguments: ["subagents", "unselect-all"])
+  }
+
+  func showAllPickerModels() async {
+    await applyModelSettings(arguments: ["picker", "all", "show"])
+  }
+
+  func hideAllPickerModels() async {
+    await applyModelSettings(arguments: ["picker", "all", "hide"])
+  }
+
   private func applyModelSettings(arguments: [String]) async {
     guard providerOperation == nil else { return }
     providerOperation = "models"
@@ -1436,6 +1452,7 @@ struct RouterModel: Decodable, Identifiable {
   let provider: String
   let enabled: Bool
   let multiAgentVersion: String?
+  let visible: Bool?
   var id: String { slug }
 }
 
@@ -1879,7 +1896,7 @@ private struct TrayView: View {
 
     private var enabledExternalModels: [RouterModel] {
       target.models
-        .filter { $0.enabled && $0.provider != "openai" }
+        .filter { $0.enabled && $0.provider != "openai" && $0.visible != false }
         .sorted {
           if $0.provider != $1.provider { return $0.provider < $1.provider }
           return $0.slug < $1.slug
@@ -1929,6 +1946,12 @@ private struct TrayView: View {
                 disabled: busy
               )
             }
+            toolbar(
+              buttons: [
+                ("Select all", { Task { await store.selectAllSubagents() } }),
+                ("Unselect all", { Task { await store.unselectAllSubagents() } }),
+              ]
+            )
           }
           .padding(.top, 8)
         } label: {
@@ -1960,6 +1983,12 @@ private struct TrayView: View {
                 disabled: busy
               )
             }
+            toolbar(
+              buttons: [
+                ("Show all", { Task { await store.showAllPickerModels() } }),
+                ("Hide all", { Task { await store.hideAllPickerModels() } }),
+              ]
+            )
           }
           .padding(.top, 8)
         } label: {
@@ -2042,6 +2071,21 @@ private struct TrayView: View {
           .disabled(disabled)
       }
       .padding(.horizontal, 2)
+    }
+
+    private func toolbar(
+      buttons: [(String, () -> Void)]
+    ) -> some View {
+      HStack {
+        Spacer()
+        ForEach(Array(buttons.enumerated()), id: \.offset) { _, entry in
+          Button(entry.0, action: entry.1)
+            .buttonStyle(.borderless)
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(routerMint)
+            .disabled(busy)
+        }
+      }
     }
   }
 
