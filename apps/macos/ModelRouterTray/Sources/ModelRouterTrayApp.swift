@@ -1688,6 +1688,10 @@ struct ProviderSetupState: Decodable, Identifiable, Equatable {
   let signIn: Bool?
   let signedIn: Bool?
   let signInAction: String?
+  // Set when connecting successfully still leaves the account unable to use
+  // the API, because its plan does not include one. Shown before the buttons
+  // rather than after a 403 lands in Codex.
+  let planNote: String?
 }
 
 private struct StatusItemLabel: View {
@@ -2522,6 +2526,17 @@ private struct ProviderSetupRow: View {
         }
         Spacer()
         actionControl
+      }
+
+      if let planNote = setup?.planNote {
+        HStack(alignment: .top, spacing: 5) {
+          Image(systemName: "creditcard")
+            .font(.system(size: 9, weight: .semibold))
+          Text(planNote)
+            .font(.system(size: 9))
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(routerYellow.opacity(0.9))
       }
 
       if showingKeyField, setup?.kind == "api" {

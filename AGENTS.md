@@ -232,7 +232,13 @@ surfaces.
    - Add the provider icon under
      `apps/macos/ModelRouterTray/Resources/` and record its source in
      `PROVIDER-ICON-SOURCES.md`.
-3. **Usage, limits, and balance in the tray.** Wire the provider's account
+3. **Plan entitlement.** When a provider's credential can authenticate an
+   account whose plan still may not call the API, set `planNote` on its
+   registry entry. `providers enable`, `doctor`, and the tray all print it, so
+   the requirement is visible where someone connects instead of arriving as a
+   403 inside Codex. Command Code is the case: any plan signs in, only the
+   Provider plan is served.
+4. **Usage, limits, and balance in the tray.** Wire the provider's account
    endpoint into `src/provider-account-usage.mjs` so `provider-usage --json`
    returns real metrics: `quota` metrics (used/limit/remaining with reset
    time) for plan- or window-limited providers, and `balance` metrics (the

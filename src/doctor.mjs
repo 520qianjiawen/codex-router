@@ -383,6 +383,12 @@ for (const provider of PROVIDERS.values()) {
       ? `Run ${session.loginCommand}, or ./bin/provider-key ${provider.id} set.`
       : `Run ./bin/provider-key ${provider.id} set.`,
   );
+  // A credential that resolves says nothing about whether the account's plan
+  // may use the API. Only warn once the provider is actually selected, so the
+  // doctor does not lecture about providers nobody enabled.
+  if (provider.planNote && selection.providers.includes(provider.id)) {
+    add("warn", `${provider.displayName} plan`, provider.planNote, "Check the plan on the provider's billing page.");
+  }
   // A working key on a catalog-only provider still shows an empty picker until
   // its models are curated, and nothing else says so after the key is stored.
   // Anyone who set a key before that hint existed can only find out here.

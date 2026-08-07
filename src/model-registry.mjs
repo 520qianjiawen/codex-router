@@ -142,6 +142,15 @@ function loadRegistry() {
       }
       const sessionProblem = cliSessionProblem(provider);
       if (sessionProblem) fail(sessionProblem);
+      // Some providers authenticate a credential their plan may still not
+      // entitle to the API. The note says so everywhere a user connects, so
+      // the first sign of it is not a 403 inside Codex.
+      if (
+        provider.planNote !== undefined &&
+        (typeof provider.planNote !== "string" || !provider.planNote.trim())
+      ) {
+        fail(`provider ${provider.id} has an invalid planNote`);
+      }
       if (
         provider.protocol !== undefined &&
         !["openai", "anthropic", "openai-responses"].includes(provider.protocol)

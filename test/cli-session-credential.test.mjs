@@ -309,3 +309,43 @@ test("a CLI session descriptor may not escape its own home directory", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Connecting succeeds and then every request 403s unless the account holds the
+// Provider plan. That gap is invisible at connect time, so the note has to
+// reach the surfaces where someone decides to connect.
+test("the Provider plan requirement is stated wherever Command Code is connected", () => {
+  const { testRoot, sessionDirectory } = sessionRoot(SESSION_KEY);
+  const environmentValues = environment(testRoot, sessionDirectory);
+  try {
+    const enabled = spawnSync(
+      process.execPath,
+      [path.join(root, "src", "providers.mjs"), "enable", "commandcode"],
+      { cwd: root, encoding: "utf8", env: environmentValues },
+    );
+    assert.equal(enabled.status, 0, enabled.stderr);
+    assert.match(enabled.stdout, /Provider plan/);
+
+    const doctor = spawnSync(process.execPath, [path.join(root, "src", "doctor.mjs"), "--json"], {
+      cwd: root,
+      encoding: "utf8",
+      env: environmentValues,
+      timeout: 120_000,
+    });
+    const planCheck = JSON.parse(doctor.stdout).checks.find((c) => c.name === "Command Code plan");
+    assert.ok(planCheck, "doctor must raise the plan requirement for a selected provider");
+    assert.equal(planCheck.status, "warn");
+
+    const snapshot = spawnSync(
+      process.execPath,
+      [path.join(root, "src", "control.mjs"), "providers"],
+      { cwd: root, encoding: "utf8", env: environmentValues },
+    );
+    const row = JSON.parse(snapshot.stdout).providers.find((p) => p.id === "commandcode");
+    assert.match(row.planNote, /Provider plan/);
+    // Providers without the gate must stay silent about plans.
+    const deepseek = JSON.parse(snapshot.stdout).providers.find((p) => p.id === "deepseek");
+    assert.equal("planNote" in deepseek, false);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});

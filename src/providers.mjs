@@ -93,6 +93,9 @@ function main() {
   process.stdout.write(
     `${provider.displayName} ${visibility}. Enabled providers: ${providers.join(", ") || "none"}.${refreshed ? ` Fully quit and reopen ${targetPickerName()}.` : ""}\n`,
   );
+  if (command === "enable" && provider.planNote) {
+    process.stdout.write(`${provider.planNote}\n`);
+  }
   if (uncurated) {
     process.stdout.write(
       `Run ./bin/curate-models ${providerId} in an interactive terminal to choose its models.\n`,

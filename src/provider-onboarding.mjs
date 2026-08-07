@@ -166,6 +166,9 @@ export function providerOnboardingSnapshot() {
         kind: "api",
         configured,
         action: configured ? "ready" : "add-key",
+        // Carried to the tray so the plan requirement is visible at the
+        // moment someone decides to connect, not after Codex 403s.
+        ...(provider.planNote ? { planNote: provider.planNote } : {}),
       };
       // A provider whose CLI mints its key through a browser sign-in keeps the
       // key field (people with a Studio key still paste it) and gains a second
