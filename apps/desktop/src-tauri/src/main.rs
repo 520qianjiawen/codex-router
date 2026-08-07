@@ -60,6 +60,16 @@ impl Default for DesktopSettings {
 }
 
 fn main() {
+    // WebKitGTK's accelerated compositor crashes inside the NVIDIA EGL driver
+    // (SIGSEGV in libnvidia-eglcore.so on the SkiaGPUWorker thread) when the
+    // tray webviews are shown. Force the software compositor on Linux so the
+    // panel renders reliably on NVIDIA and other GPU stacks.
+    #[cfg(target_os = "linux")]
+    {
+        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             platform_info,
@@ -104,6 +114,13 @@ fn main() {
             });
 
             install_tray(app)?;
+
+            // Verification aid: open the panel on startup when requested. Lets a
+            // smoke test exercise the exact window-show path that historically
+            // crashed WebKitGTK's GPU worker on NVIDIA.
+            if std::env::var_os("CODEX_ROUTER_SHOW_PANEL").is_some() {
+                let _ = show_panel_window(app.handle());
+            }
 
             if should_show_island {
                 show_island_window(app.handle(), false)?;

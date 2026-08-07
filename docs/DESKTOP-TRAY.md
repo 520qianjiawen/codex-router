@@ -101,3 +101,17 @@ provider selection is restored.
 Windows and Linux builds run in CI on every change. UI data shaping and chart
 behavior have platform-neutral Node tests, while the Rust tests cover provider
 validation, health parsing, and multi-monitor placement math.
+
+## Troubleshooting: WebKitGTK crashes on NVIDIA
+
+On some Linux systems with the NVIDIA proprietary driver, showing the tray
+panel crashed WebKitGTK's GPU worker (SIGSEGV in `libnvidia-eglcore.so` on the
+`SkiaGPUWorker` thread), which also took down the tray app. The companion now
+forces WebKit's software compositor on Linux by setting
+`WEBKIT_DISABLE_COMPOSITING_MODE=1` and `WEBKIT_DISABLE_DMABUF_RENDERER=1`
+before the webviews are created. The panel is small, so software rendering has
+no visible impact.
+
+To reproduce the exact window-show path in a smoke test, start the binary with
+`CODEX_ROUTER_SHOW_PANEL=1`; the panel opens on startup instead of waiting for
+a tray interaction.
