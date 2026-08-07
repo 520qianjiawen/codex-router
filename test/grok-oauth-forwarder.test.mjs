@@ -9,6 +9,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  hostedSearchEnabledFor,
   mergeHostedSearchTools,
   toResponsesRequest,
 } from "../src/grok-oauth-forwarder.mjs";
@@ -309,6 +310,36 @@ test("mergeHostedSearchTools can be disabled", () => {
   );
 });
 
+test("mergeHostedSearchTools drops repeated function names", () => {
+  assert.deepEqual(
+    mergeHostedSearchTools(
+      [
+        { type: "function", name: "file_write", description: "native", parameters: { type: "object" }, strict: false },
+        { type: "function", name: "file_write", description: "collab", parameters: { type: "object" }, strict: false },
+        { type: "function", name: "bash", parameters: { type: "object" }, strict: false },
+      ],
+      { enabled: false },
+    ),
+    [
+      { type: "function", name: "file_write", description: "native", parameters: { type: "object" }, strict: false },
+      { type: "function", name: "bash", parameters: { type: "object" }, strict: false },
+    ],
+  );
+});
+
+test("toResponsesRequest sends each duplicated tool name upstream once", () => {
+  const request = toResponsesRequest({
+    model: "grok-4.5",
+    messages: [{ role: "user", content: "write a file" }],
+    tools: [
+      { type: "function", function: { name: "file_write", parameters: { type: "object" } } },
+      { type: "function", function: { name: "file_write", parameters: { type: "object" } } },
+    ],
+  });
+  const fileWrites = request.tools.filter((tool) => tool.name === "file_write");
+  assert.equal(fileWrites.length, 1);
+});
+
 test("toResponsesRequest always includes hosted search tools when enabled", () => {
   const request = toResponsesRequest({
     model: "grok-4.5",
@@ -320,4 +351,62 @@ test("toResponsesRequest always includes hosted search tools when enabled", () =
   assert.equal(request.tools.some((tool) => tool.type === "x_search"), true);
   assert.equal(request.tools.some((tool) => tool.type === "web_search"), true);
   assert.equal(request.tools.some((tool) => tool.name === "bash"), true);
+});
+
+test("toResponsesRequest omits hosted search tools when disabled", () => {
+  const request = toResponsesRequest(
+    {
+      model: "grok-4.5",
+      messages: [{ role: "user", content: "latest from X?" }],
+      tools: [
+        { type: "function", function: { name: "bash", parameters: { type: "object" } } },
+      ],
+    },
+    { hostedSearchEnabled: false },
+  );
+  assert.equal(request.tools.some((tool) => tool.type === "x_search"), false);
+  assert.equal(request.tools.some((tool) => tool.type === "web_search"), false);
+  assert.equal(request.tools.some((tool) => tool.name === "bash"), true);
+});
+
+test("hostedSearchEnabledFor follows the registry searchTool declaration", () => {
+  const models = [
+    {
+      provider: "grok-oauth",
+      upstreamModel: "grok-4.5",
+      searchTool: { mode: "hosted" },
+    },
+    { provider: "grok-oauth", upstreamModel: "grok-4.5-mini" },
+    { provider: "kimi-oauth", upstreamModel: "kimi-k3", searchTool: { mode: "hosted" } },
+  ];
+  assert.equal(hostedSearchEnabledFor("grok-4.5", models), true);
+  // No declaration means conservative plain function calling.
+  assert.equal(hostedSearchEnabledFor("grok-4.5-mini", models), false);
+  // Another provider's declaration must not leak into this forwarder.
+  assert.equal(hostedSearchEnabledFor("kimi-k3", models), false);
+});
+
+test("hostedSearchEnabledFor covers the checked-in Grok OAuth model", () => {
+  assert.equal(hostedSearchEnabledFor("grok-4.5"), true);
+});
+
+test("toResponsesRequest preserves the client's image detail level", () => {
+  const request = toResponsesRequest({
+    model: "grok-4.5",
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "what is in this screenshot?" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAAA", detail: "high" } },
+          { type: "image_url", image_url: { url: "data:image/png;base64,BBBB" } },
+        ],
+      },
+    ],
+  });
+  const images = request.input[0].content.filter((part) => part.type === "input_image");
+  assert.equal(images.length, 2);
+  assert.equal(images[0].detail, "high");
+  // Absent detail must stay absent, not default to a resolution choice.
+  assert.equal("detail" in images[1], false);
 });

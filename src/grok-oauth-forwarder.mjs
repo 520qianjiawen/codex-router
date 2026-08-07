@@ -12,6 +12,7 @@ import {
   writeJson,
 } from "./http-utils.mjs";
 import { PORTS } from "./paths.mjs";
+import { MODELS } from "./model-registry.mjs";
 import { ensureFreshGrokOAuthToken } from "./grok-oauth-session.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { VERSION } from "./version.mjs";
@@ -35,6 +36,20 @@ const HOSTED_SEARCH_TOOLS = Object.freeze([
   { type: "x_search" },
 ]);
 const HOSTED_SEARCH_FUNCTION_NAMES = new Set(["web_search", "x_search"]);
+
+// The registry entry is the single capability source: hosted search attaches
+// only when the slug that resolves to this upstream model declares it, so a
+// curated model without the flag keeps plain function calling. The forwarder
+// receives the upstream model id (LiteLLM translates OAuth slugs before the
+// request arrives), so the lookup goes provider + upstreamModel, not slug.
+export function hostedSearchEnabledFor(upstreamModel, models = MODELS) {
+  return models.some(
+    (model) =>
+      model.provider === "grok-oauth" &&
+      model.upstreamModel === upstreamModel &&
+      model.searchTool?.mode === "hosted",
+  );
+}
 
 function grokClientVersion() {
   const fallbackVersion = VERSION.match(/\b(\d+\.\d+\.\d+)\b/)?.[1] || "0.0.0";
@@ -75,7 +90,14 @@ function messageContentParts(content, textType) {
   const parts = [];
   for (const part of content) {
     if (part?.type === "image_url" && part.image_url?.url) {
-      parts.push({ type: "input_image", image_url: part.image_url.url });
+      const image = { type: "input_image", image_url: part.image_url.url };
+      // Codex only attaches a detail level when the catalog entry advertises
+      // supports_image_detail_original; forward it untouched so the backend
+      // sees the client's resolution intent instead of a silent downgrade.
+      if (typeof part.image_url.detail === "string" && part.image_url.detail) {
+        image.detail = part.image_url.detail;
+      }
+      parts.push(image);
     } else if (typeof part?.text === "string") {
       parts.push({ type: textType, text: part.text });
     }
@@ -93,10 +115,19 @@ function mapEffort(effort) {
 // Merge client function tools with bare hosted search tools.
 // Hosted tools are type-tagged (web_search / x_search), not function tools.
 // Drop any client function with the same name so the backend owns search.
+// The xAI backend rejects the whole request when a function name repeats
+// ("Duplicate function definition provided"), so only the first definition
+// of each name is forwarded.
 export function mergeHostedSearchTools(clientTools = [], { enabled = true } = {}) {
-  const functions = (Array.isArray(clientTools) ? clientTools : []).filter(
-    (tool) => tool?.type === "function" && !HOSTED_SEARCH_FUNCTION_NAMES.has(tool.name),
-  );
+  const seenNames = new Set();
+  const functions = (Array.isArray(clientTools) ? clientTools : []).filter((tool) => {
+    if (tool?.type !== "function" || HOSTED_SEARCH_FUNCTION_NAMES.has(tool.name)) {
+      return false;
+    }
+    if (seenNames.has(tool.name)) return false;
+    seenNames.add(tool.name);
+    return true;
+  });
   if (!enabled) return functions;
   const hosted = HOSTED_SEARCH_TOOLS.filter(
     (hostedTool) => !functions.some((tool) => tool.type === hostedTool.type),
@@ -230,7 +261,9 @@ async function handleChatCompletions(request, response) {
   const chat = JSON.parse((await readRequestBody(request)).toString("utf8"));
   const wantsStream = chat.stream === true;
   const model = typeof chat.model === "string" ? chat.model : "";
-  const responsesRequest = toResponsesRequest(chat);
+  const responsesRequest = toResponsesRequest(chat, {
+    hostedSearchEnabled: hostedSearchEnabledFor(model),
+  });
 
   const controller = new AbortController();
   request.once("aborted", () => controller.abort());
