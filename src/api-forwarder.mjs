@@ -281,8 +281,18 @@ function normalizeBody(buffer, contentType, route) {
   }
 
   payload.model = model.upstreamModel;
-  // Gemini has no OpenAI-shaped web search parameter and 400s on the field.
-  if (isGeminiProvider(provider)) delete payload.web_search_options;
+  // Google's OpenAI-compatible endpoint (/v1beta/openai/chat/completions)
+  // rejects any field outside the OpenAI schema with a hard 400
+  // (INVALID_ARGUMENT: Unknown name "..."). Two such fields reach this hop for
+  // Gemini: web_search_options, and the thinking/think reasoning controls that
+  // upstream reasoning translation attaches for Gemini 3.x thinking models.
+  // Left in place the 400 surfaces as a misleading native-ChatGPT fallback
+  // error rather than a routing failure, so strip them before forwarding.
+  if (isGeminiProvider(provider)) {
+    delete payload.web_search_options;
+    delete payload.thinking;
+    delete payload.think;
+  }
   if (Array.isArray(payload.messages)) {
     payload.messages = sanitizeChatToolHistory(payload.messages, provider);
   }
