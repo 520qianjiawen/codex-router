@@ -203,6 +203,12 @@ surfaces.
      session-refresh, and reconnect-on-expiry wiring in the provider's OAuth
      status/session modules (follow `kimi-oauth-*` / `grok-oauth-*` as the
      patterns).
+   - Some official CLIs draw a full-screen terminal interface and put stdin in
+     raw mode (`command-code login` uses Ink). Spawned with pipes they die on
+     "Raw mode is not supported" before reaching the browser, so the tray must
+     hand them a real terminal (`needsTerminal` in `SIGN_IN_CLIS`) and then
+     wait for the credential to be rewritten. Check this by running the login
+     with `</dev/null` before wiring a button to it.
    - Connecting is always one click. Any tray sign-in button installs the
      official CLI when it is missing and then runs the login in the same
      operation (`connectProvider` in the tray), rather than stopping after the

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -212,6 +212,54 @@ test("a selection may never name two routes into the same account", () => {
     assert.equal(result.status, 0, result.stderr);
     // The stored-key route wins the tie because setting it up was deliberate.
     assert.deepEqual(JSON.parse(result.stdout).providers, ["commandcode", "deepseek"]);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+// `command-code login` is an Ink interface that needs stdin in raw mode, so a
+// piped spawn dies on "Raw mode is not supported" before it opens a browser.
+// The tray has to hand it a terminal instead, and that is worth pinning: the
+// regression is invisible until someone clicks Sign In.
+test("signing in without a terminal launches one rather than piping the CLI", () => {
+  const { testRoot, sessionDirectory } = sessionRoot();
+  try {
+    const fakeBin = path.join(testRoot, "bin");
+    mkdirSync(fakeBin, { recursive: true, mode: 0o700 });
+    const pipedLog = path.join(testRoot, "piped.log");
+    // Stands in for the real CLI. An entry here means the router spawned it
+    // directly with pipes, which is exactly the path that cannot work.
+    writeFileSync(
+      path.join(fakeBin, "command-code"),
+      `#!/bin/sh\necho piped >> ${JSON.stringify(pipedLog)}\n`,
+      { mode: 0o700 },
+    );
+    // Stands in for Terminal.app, and finishes the sign-in the way a real
+    // window would, so the test never opens one.
+    writeFileSync(
+      path.join(fakeBin, "launcher"),
+      `#!/bin/sh\nprintf '{"apiKey":"TERMINAL_SIGNED_IN_KEY"}' > ${JSON.stringify(
+        path.join(sessionDirectory, "auth.json"),
+      )}\n`,
+      { mode: 0o700 },
+    );
+    const result = spawnSync(
+      process.execPath,
+      [path.join(root, "src", "control.mjs"), "login", "commandcode-oauth"],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: environment(testRoot, sessionDirectory, {
+          PATH: `${fakeBin}${path.delimiter}/usr/bin:/bin`,
+          MODEL_ROUTER_TERMINAL_LAUNCHER: path.join(fakeBin, "launcher"),
+        }),
+        timeout: 60_000,
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(pipedLog), false, "the CLI must never be spawned with pipes");
+    const row = JSON.parse(result.stdout).providers.find((p) => p.id === "commandcode-oauth");
+    assert.equal(row.configured, true);
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }
