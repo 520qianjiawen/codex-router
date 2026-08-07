@@ -102,3 +102,25 @@ test("rotation runs while the service is stopped, never from inside it", () => {
     "Linux must stop the unit before rotating",
   );
 });
+
+test("rotating twice does not lose the log to a failed replace", () => {
+  // rename replaces the destination atomically. Unlinking the previous
+  // generation first left a window where a failure between the two calls
+  // would have destroyed both, so the module must not do that.
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const source = readFileSync(path.join(root, "src", "log-rotation.mjs"), "utf8");
+  assert.doesNotMatch(source, /unlinkSync/);
+
+  const dir = mkdtempSync(path.join(os.tmpdir(), "log-rotation-twice-"));
+  const log = path.join(dir, "router.log");
+  try {
+    for (const marker of ["first", "second"]) {
+      writeFileSync(log, marker + "z".repeat(DEFAULT_MAX_LOG_BYTES), "utf8");
+      assert.equal(rotateLog(log).rotated, true);
+    }
+    assert.ok(readFileSync(`${log}.1`, "utf8").startsWith("second"));
+    assert.equal(existsSync(log), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

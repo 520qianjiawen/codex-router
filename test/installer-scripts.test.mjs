@@ -51,3 +51,21 @@ test("both installers keep the update when setup reports exit 2", () => {
   assert.match(posix, /switch --detach "\$previous_revision"/);
   assert.match(windows, /switch --detach \$PreviousRevision/);
 });
+
+test("the kept-update message names the way back", () => {
+  // Keeping the update on exit 2 is the right default, but a user who wanted
+  // the old revision needs to be told the escape hatch exists; the retained
+  // ref is invisible otherwise.
+  const posix = readFileSync(path.join(root, "install.sh"), "utf8");
+  const windows = readFileSync(path.join(root, "install.ps1"), "utf8");
+  assert.match(posix, /\.\/bin\/rollback/);
+  assert.match(windows, /codex-router\.ps1 rollback/);
+});
+
+test("the documented rollback behaviour matches the exit-2 contract", () => {
+  // The docs previously said a failed install always restores the previous
+  // revision, which stopped being true when exit 2 was introduced.
+  const docs = readFileSync(path.join(root, "docs", "INSTALL.md"), "utf8");
+  assert.match(docs, /exits 2/);
+  assert.match(docs, /the update is kept/);
+});

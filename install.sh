@@ -218,7 +218,7 @@ setup_status=0
 # other non-zero status still restores the checkout, so the running service is
 # never left on half-applied code by an unrecognized failure.
 if [ "$setup_status" -eq 2 ]; then
-  printf 'setup did not finish configuring; the update was kept. Re-run setup to continue.\n' >&2
+  printf 'setup did not finish configuring; the update was kept. Re-run setup to continue, or ./bin/rollback to return to the previous revision.\n' >&2
   exit 2
 elif [ "$setup_status" -ne 0 ]; then
   if [ -n "$previous_revision" ]; then

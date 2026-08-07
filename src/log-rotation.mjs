@@ -1,4 +1,4 @@
-import { existsSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { renameSync, statSync } from "node:fs";
 
 // The router and the gateway share one append-only file, and nothing ever
 // trimmed it. The gateway logs an access line for every `/health/liveliness`
@@ -33,7 +33,9 @@ export function rotateLog(logPath, { maxBytes = DEFAULT_MAX_LOG_BYTES } = {}) {
   }
   const previous = `${logPath}.1`;
   try {
-    if (existsSync(previous)) unlinkSync(previous);
+    // rename replaces an existing destination atomically on both POSIX and
+    // Windows. Unlinking first would add a window where neither generation
+    // exists if the rename then failed, for no benefit.
     renameSync(logPath, previous);
     return { rotated: true, size, previous };
   } catch (error) {

@@ -268,6 +268,16 @@ fetches `origin/main`, retains the current revision under
 automatically checks out and reinstalls the previous revision. `update check`
 only compares the revisions and changes nothing.
 
+Setup distinguishes a broken checkout from unfinished configuration. When it
+exits 2 — a declined prompt, a missing credential, an invalid `--providers`
+value — the update is kept, because none of those say anything about the code
+that was just fetched, and discarding it means the next attempt repeats the
+same failure with the same code. Rolling back there is what made a setup-path
+bug impossible to fix by updating: the fix was fetched and then thrown away.
+Any other non-zero exit still restores the previous revision. Re-run setup to
+continue, or `./bin/rollback` (`./codex-router.ps1 rollback` on Windows) to
+return to the retained revision deliberately.
+
 The reinstall skips dependency work whose inputs are unchanged, so an update
 that carries no `package-lock.json` or LiteLLM pin change costs a service
 restart rather than a full `npm ci` and PyPI resolution. `./bin/doctor --fix`
