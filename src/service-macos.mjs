@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { rotateLog } from "./log-rotation.mjs";
 import {
   chmodSync,
   existsSync,
@@ -188,6 +189,13 @@ if (command === "render") {
   );
 } else if (command === "install") {
   bootout();
+  // Only safe here. launchd opens StandardOutPath before it execs the service,
+  // so a rotation performed by the started process renames a file the process
+  // already holds a descriptor on: it keeps appending to the renamed inode and
+  // the log grows exactly as before, just under a different name. Between
+  // bootout and bootstrap nothing holds it and the next start creates a fresh
+  // file. Failures are ignored -- housekeeping must not block an install.
+  rotateLog(LOG_PATH);
   writePlist();
   bootstrap();
   process.stdout.write(`${JSON.stringify({ installed: true, path: LAUNCH_AGENT_PATH })}\n`);

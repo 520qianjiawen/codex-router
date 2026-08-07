@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { rotateLog } from "./log-rotation.mjs";
 import {
   chmodSync,
   existsSync,
@@ -108,6 +109,12 @@ if (command === "render") {
 } else if (command === "install") {
   writeUnit();
   systemctl(["daemon-reload"], { quiet: true });
+  // systemd's append: opens the log before the service runs, so the started
+  // process cannot rotate a file it already holds open. Stop first, rotate
+  // while nothing holds it, then start: enable --now on an already-running
+  // unit would otherwise leave the old descriptor on the renamed inode.
+  systemctl(["stop", unitName], { quiet: true });
+  rotateLog(LOG_PATH);
   systemctl(["enable", "--now", unitName], { quiet: true });
   process.stdout.write(`${JSON.stringify({ installed: true, path: unitPath })}\n`);
 } else if (command === "uninstall") {

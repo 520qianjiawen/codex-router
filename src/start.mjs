@@ -7,7 +7,6 @@ import {
   CALLER_SECRET_PATH,
   INTERNAL_SECRET_PATH,
   LITELLM_CONFIG_PATH,
-  LOG_PATH,
   MERGED_CATALOG_PATH,
   PORTS,
   SOURCE_ROOT,
@@ -16,7 +15,6 @@ import {
   loopback,
 } from "./paths.mjs";
 import { writeLiteLlmConfig } from "./litellm-config.mjs";
-import { rotateLog } from "./log-rotation.mjs";
 
 const litellm =
   process.env.MODEL_ROUTER_LITELLM_BIN ||
@@ -43,16 +41,6 @@ if (!internalKey) throw new Error("Internal service key is empty.");
 const callerKey = assertCallerSecret(
   readFileSync(CALLER_SECRET_PATH, "utf8").trim(),
 );
-// Before anything opens the shared log for append. launchd reopens
-// StandardOutPath on each start, so a rotation here is picked up immediately;
-// rotating while the writers hold it would leave them on an unlinked inode.
-const rotation = rotateLog(LOG_PATH);
-if (rotation.rotated) {
-  console.error(
-    `[start] rotated ${Math.round(rotation.size / 1024 / 1024)}MB of logs to ${rotation.previous}`,
-  );
-}
-
 writeLiteLlmConfig();
 
 const commonEnv = {
