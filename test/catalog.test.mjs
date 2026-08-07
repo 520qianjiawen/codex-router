@@ -78,6 +78,20 @@ test("routed models advertise reasoning summaries only when the registry opts in
   assert.equal(summarized.default_reasoning_summary, "auto");
 });
 
+test("routed models advertise search and image detail only when the registry opts in", () => {
+  // Defaults stay off: external models must not claim capabilities untested.
+  const plain = routedModel(template, grok);
+  assert.equal(plain.supports_search_tool, false);
+  assert.equal(plain.supports_image_detail_original, false);
+  const capable = routedModel(template, {
+    ...grok,
+    searchTool: { mode: "hosted" },
+    supportsImageDetailOriginal: true,
+  });
+  assert.equal(capable.supports_search_tool, true);
+  assert.equal(capable.supports_image_detail_original, true);
+});
+
 test("routed models inherit apply_patch unless the registry opts out", () => {
   const plain = routedModel(template, grok);
   assert.equal(plain.apply_patch_tool_type, "freeform");

@@ -543,7 +543,8 @@
         "image"
       ],
       "requestProfile": "kimi-oauth",
-      "compHash": "kimi-oauth-kimi-for-coding-v1"
+      "supportsImageDetailOriginal": true,
+      "compHash": "kimi-oauth-kimi-for-coding-v2"
     },
     {
       "slug": "kimi-oauth/kimi-for-coding-highspeed",
@@ -569,7 +570,8 @@
         "image"
       ],
       "requestProfile": "kimi-oauth",
-      "compHash": "kimi-oauth-kimi-for-coding-highspeed-v1"
+      "supportsImageDetailOriginal": true,
+      "compHash": "kimi-oauth-kimi-for-coding-highspeed-v2"
     },
     {
       "slug": "kimi-oauth/k3",
@@ -603,7 +605,8 @@
         "image"
       ],
       "requestProfile": "kimi-oauth",
-      "compHash": "kimi-oauth-k3-v2"
+      "supportsImageDetailOriginal": true,
+      "compHash": "kimi-oauth-k3-v3"
     },
     {
       "slug": "kimi-api/kimi-k3",
@@ -637,7 +640,8 @@
         "image"
       ],
       "requestProfile": "kimi-k3",
-      "compHash": "kimi-api-k3-v2"
+      "supportsImageDetailOriginal": true,
+      "compHash": "kimi-api-k3-v3"
     },
     {
       "slug": "deepseek/deepseek-v4-flash",
@@ -747,7 +751,11 @@
         "image"
       ],
       "requestProfile": "xai-reasoning",
-      "compHash": "grok-oauth-grok-4-5-v1"
+      "searchTool": {
+        "mode": "hosted"
+      },
+      "supportsImageDetailOriginal": true,
+      "compHash": "grok-oauth-grok-4-5-v2"
     },
     {
       "slug": "grok-api/grok-4.5",
@@ -781,7 +789,8 @@
         "image"
       ],
       "requestProfile": "xai-reasoning",
-      "compHash": "grok-api-grok-4-5-v1"
+      "supportsImageDetailOriginal": true,
+      "compHash": "grok-api-grok-4-5-v2"
     },
     {
       "slug": "anthropic-api/claude-opus-4.8",
@@ -822,7 +831,8 @@
         "image"
       ],
       "requestProfile": "anthropic-reasoning",
-      "compHash": "anthropic-api-claude-opus-4-8-v1"
+      "supportsImageDetailOriginal": true,
+      "compHash": "anthropic-api-claude-opus-4-8-v2"
     },
     {
       "slug": "zai-coding/glm-5.2",
@@ -895,10 +905,12 @@
       "contextWindow": 262144,
       "autoCompact": 235000,
       "inputModalities": [
-        "text"
+        "text",
+        "image"
       ],
       "requestProfile": "qwen-plan",
-      "compHash": "qwen-plan-qwen3-7-max-v1"
+      "supportsImageDetailOriginal": true,
+      "compHash": "qwen-plan-qwen3-7-max-v3"
     },
     {
       "slug": "qwen-plan/qwen3.7-plus",
@@ -947,7 +959,8 @@
         "image"
       ],
       "requestProfile": "qwen-plan",
-      "compHash": "qwen-plan-qwen3-8-max-v1"
+      "supportsImageDetailOriginal": true,
+      "compHash": "qwen-plan-qwen3-8-max-v2"
     },
     {
       "slug": "qwen-plan/qwen3.8-max-preview",
@@ -972,7 +985,8 @@
         "image"
       ],
       "requestProfile": "qwen-plan",
-      "compHash": "qwen-plan-qwen3-8-max-preview-v1"
+      "supportsImageDetailOriginal": true,
+      "compHash": "qwen-plan-qwen3-8-max-preview-v2"
     },
     {
       "slug": "qwen-plan/qwen3.6-flash",
@@ -997,7 +1011,8 @@
         "image"
       ],
       "requestProfile": "qwen-plan",
-      "compHash": "qwen-plan-qwen3-6-flash-v1"
+      "supportsImageDetailOriginal": true,
+      "compHash": "qwen-plan-qwen3-6-flash-v2"
     },
     {
       "slug": "qwen-plan/deepseek-v4-pro",
@@ -1150,10 +1165,11 @@
       "contextWindow": 524288,
       "autoCompact": 470000,
       "inputModalities": [
-        "text"
+        "text",
+        "image"
       ],
       "requestProfile": "ollama-cloud",
-      "compHash": "ollama-cloud-minimax-m3-v1"
+      "compHash": "ollama-cloud-minimax-m3-v2"
     },
     {
       "slug": "ollama-cloud/deepseek-v4-pro",
@@ -1202,7 +1218,8 @@
         "image"
       ],
       "requestProfile": "minimax-m3",
-      "compHash": "minimax-token-plan-minimax-m3-v1"
+      "supportsImageDetailOriginal": true,
+      "compHash": "minimax-token-plan-minimax-m3-v2"
     },
     {
       "slug": "opencode-go/grok-4.5",
@@ -1231,9 +1248,10 @@
       "contextWindow": 500000,
       "autoCompact": 440000,
       "inputModalities": [
-        "text"
+        "text",
+        "image"
       ],
-      "compHash": "opencode-go-grok-4-5-v1"
+      "compHash": "opencode-go-grok-4-5-v2"
     },
     {
       "slug": "opencode-go/glm-5.2",
@@ -1301,6 +1319,14 @@
       "defaultEffort": "max",
       "reasoningLevels": [
         {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Balanced deep reasoning"
+        },
+        {
           "effort": "max",
           "description": "Maximum reasoning depth"
         }
@@ -1308,9 +1334,11 @@
       "contextWindow": 262144,
       "autoCompact": 235000,
       "inputModalities": [
-        "text"
+        "text",
+        "image"
       ],
-      "compHash": "opencode-go-kimi-k3-v1"
+      "requestProfile": "kimi-k3",
+      "compHash": "opencode-go-kimi-k3-v2"
     },
     {
       "slug": "opencode-go/kimi-k2.7-code",
@@ -1485,9 +1513,10 @@
       "contextWindow": 1000000,
       "autoCompact": 900000,
       "inputModalities": [
-        "text"
+        "text",
+        "image"
       ],
-      "compHash": "opencode-go-messages-minimax-m3-v1"
+      "compHash": "opencode-go-messages-minimax-m3-v2"
     },
     {
       "slug": "opencode-go-messages/minimax-m2.7",
@@ -1535,9 +1564,10 @@
       "contextWindow": 262144,
       "autoCompact": 235000,
       "inputModalities": [
-        "text"
+        "text",
+        "image"
       ],
-      "compHash": "opencode-go-messages-qwen3-8-max-v1"
+      "compHash": "opencode-go-messages-qwen3-8-max-v2"
     },
     {
       "slug": "opencode-go-messages/qwen3.7-max",
@@ -1558,9 +1588,10 @@
       "contextWindow": 262144,
       "autoCompact": 235000,
       "inputModalities": [
-        "text"
+        "text",
+        "image"
       ],
-      "compHash": "opencode-go-messages-qwen3-7-max-v1"
+      "compHash": "opencode-go-messages-qwen3-7-max-v2"
     },
     {
       "slug": "opencode-go-messages/qwen3.7-plus",
@@ -1773,6 +1804,14 @@
       "defaultEffort": "max",
       "reasoningLevels": [
         {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Balanced deep reasoning"
+        },
+        {
           "effort": "max",
           "description": "Maximum reasoning depth"
         }
@@ -1780,9 +1819,11 @@
       "contextWindow": 1000000,
       "autoCompact": 900000,
       "inputModalities": [
-        "text"
+        "text",
+        "image"
       ],
-      "compHash": "commandcode-kimi-k3-v1"
+      "requestProfile": "kimi-k3",
+      "compHash": "commandcode-kimi-k3-v2"
     },
     {
       "slug": "commandcode/kimi-k2.7-code",
@@ -2207,9 +2248,10 @@
       "contextWindow": 1000000,
       "autoCompact": 900000,
       "inputModalities": [
-        "text"
+        "text",
+        "image"
       ],
-      "compHash": "commandcode-messages-claude-opus-4-8-v1"
+      "compHash": "commandcode-messages-claude-opus-4-8-v2"
     },
     {
       "slug": "commandcode-messages/claude-fable-5",

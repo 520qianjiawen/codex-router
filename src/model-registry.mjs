@@ -159,6 +159,26 @@ function modelProblem(model, providers, slugs, gatewayModels) {
     return `model ${model.slug} has an invalid supportsApplyPatchTool`;
   }
   if (
+    model.supportsImageDetailOriginal !== undefined &&
+    typeof model.supportsImageDetailOriginal !== "boolean"
+  ) {
+    return `model ${model.slug} has an invalid supportsImageDetailOriginal`;
+  }
+  // "hosted" means the provider's own backend executes web searches
+  // server-side (xAI's Responses proxy today). No other mode may be declared
+  // yet: an unimplemented mode would make the catalog advertise a search
+  // toggle the request path cannot serve, so the router-side "emulated"
+  // executor must ship before this enum grows.
+  if (
+    model.searchTool !== undefined &&
+    (!model.searchTool ||
+      typeof model.searchTool !== "object" ||
+      Array.isArray(model.searchTool) ||
+      model.searchTool.mode !== "hosted")
+  ) {
+    return `model ${model.slug} has an invalid searchTool`;
+  }
+  if (
     model.defaultReasoningSummary !== undefined &&
     !["auto", "concise", "detailed"].includes(model.defaultReasoningSummary)
   ) {

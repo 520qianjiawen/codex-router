@@ -120,6 +120,17 @@ test("registry merges valid user models and skips collisions", async () => {
       ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-blank-nux", priority: 103 }),
       availabilityNux: "   ",
     },
+    // Only the implemented "hosted" search mode may be declared; anything
+    // else would advertise a search the request path cannot serve.
+    {
+      ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-bad-search", priority: 106 }),
+      searchTool: { mode: "emulated" },
+    },
+    // Capability toggles are booleans; a truthy string must not slip through.
+    {
+      ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-bad-detail", priority: 107 }),
+      supportsImageDetailOriginal: "yes",
+    },
     // An upgrade prompt pointing at a slug the merged registry does not carry
     // can never render, so the entry is skipped.
     {
@@ -139,6 +150,8 @@ test("registry merges valid user models and skips collisions", async () => {
   assert.equal(slugs.filter((slug) => slug === "deepseek/deepseek-v4-pro").length, 1);
   assert.ok(!slugs.includes("no-such-provider/x-model"));
   assert.ok(!slugs.includes("deepseek/deepseek-blank-nux"));
+  assert.ok(!slugs.includes("deepseek/deepseek-bad-search"));
+  assert.ok(!slugs.includes("deepseek/deepseek-bad-detail"));
   assert.ok(!slugs.includes("deepseek/deepseek-bad-upgrade"));
   assert.deepEqual(
     registry.MODEL_BY_SLUG.get("deepseek/deepseek-good-upgrade").upgradeTo,

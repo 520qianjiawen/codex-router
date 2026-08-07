@@ -151,6 +151,55 @@ test("provider registry exposes configured API and OAuth model families", () => 
       { effort: "high", description: "Always-on coding reasoning" },
     ]);
   }
+  // K3 documents low/high/max regardless of gateway; the opencode Go relay
+  // forwards reasoning_effort, so it carries the same ladder and profile as
+  // the direct Moonshot entry.
+  for (const slug of ["opencode-go/kimi-k3", "commandcode/kimi-k3"]) {
+    const k3 = MODEL_BY_SLUG.get(slug);
+    assert.deepEqual(
+      k3.reasoningLevels.map((level) => level.effort),
+      ["low", "high", "max"],
+      slug,
+    );
+    assert.equal(k3.defaultEffort, "max", slug);
+    assert.equal(k3.requestProfile, "kimi-k3", slug);
+  }
+  // Hosted search is an xAI-backend behavior, so only the Grok OAuth slug may
+  // declare it; every other search-capable path waits on the router-side
+  // emulated executor.
+  assert.deepEqual(MODEL_BY_SLUG.get("grok-oauth/grok-4.5").searchTool, {
+    mode: "hosted",
+  });
+  for (const model of MODELS) {
+    if (model.slug === "grok-oauth/grok-4.5") continue;
+    assert.equal(model.searchTool, undefined, model.slug);
+  }
+  // Original-detail images are declared per slug on canonical vision
+  // flagships only; gateway variants stay conservative until each relay is
+  // probed live.
+  const originalDetailSlugs = MODELS.filter(
+    (model) => model.supportsImageDetailOriginal === true,
+  ).map((model) => model.slug);
+  assert.deepEqual(originalDetailSlugs.sort(), [
+    "anthropic-api/claude-opus-4.8",
+    "grok-api/grok-4.5",
+    "grok-oauth/grok-4.5",
+    "kimi-api/kimi-k3",
+    "kimi-oauth/k3",
+    "kimi-oauth/kimi-for-coding",
+    "kimi-oauth/kimi-for-coding-highspeed",
+    "minimax-token-plan/minimax-m3",
+    "qwen-plan/qwen3.6-flash",
+    "qwen-plan/qwen3.7-max",
+    "qwen-plan/qwen3.8-max",
+    "qwen-plan/qwen3.8-max-preview",
+  ]);
+  for (const slug of originalDetailSlugs) {
+    assert.ok(
+      MODEL_BY_SLUG.get(slug).inputModalities.includes("image"),
+      `${slug} declares original image detail without image input`,
+    );
+  }
   const minimax = MODEL_BY_SLUG.get("minimax-token-plan/minimax-m3");
   assert.equal(minimax.contextWindow, 1_000_000);
   assert.equal(minimax.autoCompact, 900_000);
