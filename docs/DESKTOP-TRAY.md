@@ -104,13 +104,19 @@ validation, health parsing, and multi-monitor placement math.
 
 ## Troubleshooting: WebKitGTK crashes on NVIDIA
 
-On some Linux systems with the NVIDIA proprietary driver, showing the tray
-panel crashed WebKitGTK's GPU worker (SIGSEGV in `libnvidia-eglcore.so` on the
-`SkiaGPUWorker` thread), which also took down the tray app. The companion now
-forces WebKit's software compositor on Linux by setting
-`WEBKIT_DISABLE_COMPOSITING_MODE=1` and `WEBKIT_DISABLE_DMABUF_RENDERER=1`
-before the webviews are created. The panel is small, so software rendering has
-no visible impact.
+WebKitGTK's DMA-BUF renderer shares GPU buffers with the Wayland compositor
+(Hyprland, GNOME, KDE, ...) through the graphics driver. With the proprietary
+NVIDIA kernel driver that handoff crashed (SIGSEGV in `libnvidia-eglcore.so`
+on the `SkiaGPUWorker` thread) as soon as the tray panel was shown, which also
+took down the tray app.
+
+The companion now detects the proprietary NVIDIA kernel driver via
+`/proc/driver/nvidia/version` and disables only the DMA-BUF renderer
+(`WEBKIT_DISABLE_DMABUF_RENDERER=1`) before the webviews are created, falling
+back to `wl_shm`. Accelerated compositing stays enabled, and non-NVIDIA
+systems keep the DMA-BUF fast path. Set `CODEX_ROUTER_WEBKIT_DMABUF=1` to
+force the renderer back on (for example after a driver update fixes the
+crash) or `CODEX_ROUTER_WEBKIT_DMABUF=0` to force it off on any system.
 
 To reproduce the exact window-show path in a smoke test, start the binary with
 `CODEX_ROUTER_SHOW_PANEL=1`; the panel opens on startup instead of waiting for
