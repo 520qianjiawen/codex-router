@@ -119,7 +119,15 @@ if (-not $CheckoutInstall) {
   if ($SmokeTest) { $SetupArguments += "--smoke-test" }
   & node @SetupArguments
   $SetupExitCode = $LASTEXITCODE
-  if ($SetupExitCode -ne 0 -and $PreviousRevision) {
+  # Exit 2 means setup left configuration unfinished (a declined prompt, a
+  # missing credential) and says nothing about the code that was just pulled.
+  # Rolling back there discards the update the user ran this for, and if the
+  # unfinished step is itself the bug being fixed, every retry repeats it.
+  # Any other non-zero code still restores the checkout, so the running
+  # service is never left on half-applied code by an unrecognized failure.
+  if ($SetupExitCode -eq 2) {
+    Write-Warning "Setup did not finish configuring; the update was kept. Re-run setup to continue."
+  } elseif ($SetupExitCode -ne 0 -and $PreviousRevision) {
     & git -C $Repository switch --detach $PreviousRevision 2>$null | Out-Null
     Write-Warning "Setup failed; the managed source checkout was restored to $PreviousRevision."
   }

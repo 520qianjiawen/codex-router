@@ -209,7 +209,18 @@ if [ "$migrate_known" = true ]; then set -- "$@" --migrate-known; fi
 if [ "$smoke_test" = true ]; then set -- "$@" --smoke-test; fi
 if [ "$with_tray" = true ]; then set -- "$@" --with-tray; fi
 if [ "$no_tray" = true ]; then set -- "$@" --no-tray; fi
-if ! "$repo_dir/bin/setup" "$@"; then
+setup_status=0
+"$repo_dir/bin/setup" "$@" || setup_status=$?
+# Exit 2 means setup left configuration unfinished (a declined prompt, a
+# missing credential) and says nothing about the code that was just pulled.
+# Rolling back there discards the update the user ran this for, and if the
+# unfinished step is itself the bug being fixed, every retry repeats it. Any
+# other non-zero status still restores the checkout, so the running service is
+# never left on half-applied code by an unrecognized failure.
+if [ "$setup_status" -eq 2 ]; then
+  printf 'setup did not finish configuring; the update was kept. Re-run setup to continue.\n' >&2
+  exit 2
+elif [ "$setup_status" -ne 0 ]; then
   if [ -n "$previous_revision" ]; then
     git -C "$repo_dir" switch --detach "$previous_revision" >/dev/null 2>&1 || true
     die "setup failed; the managed source checkout was restored to $previous_revision"

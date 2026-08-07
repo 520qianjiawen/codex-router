@@ -61,6 +61,22 @@ function option(name) {
   return index === -1 ? undefined : args[index + 1];
 }
 
+// The installers update the managed checkout before running setup and roll it
+// back when setup fails, which protects the running service from half-applied
+// code. A declined prompt or an unconfigured provider says nothing about the
+// new code, so rolling back there strands the user on the old revision and
+// discards the very fix they were updating for. Exit 2 marks "the checkout is
+// healthy, configuration is unfinished" and the installers keep the update.
+// Any other non-zero exit still rolls back, so an unrecognized failure keeps
+// the conservative behaviour.
+// Not exported: importing this module runs setup, so the value is asserted
+// from the outside by spawning the script.
+const SETUP_INCOMPLETE_EXIT = 2;
+
+function incomplete(message) {
+  return Object.assign(new Error(message), { setupExitCode: SETUP_INCOMPLETE_EXIT });
+}
+
 if (args.includes("--help")) {
   process.stdout.write(`Usage: setup [options]
 
@@ -109,7 +125,7 @@ function promptLine(label, defaultValue = "") {
   try {
     descriptor = openSync("/dev/tty", "r+");
   } catch {
-    throw new Error("Interactive setup requires a terminal; use --providers for automatic setup.");
+    throw incomplete("Interactive setup requires a terminal; use --providers for automatic setup.");
   }
   try {
     writeSync(descriptor, `${label}${defaultValue ? ` [${defaultValue}]` : ""}: `);
@@ -198,13 +214,13 @@ function configureProvider(provider) {
       provider.kind === "oauth"
         ? "sign in with the provider's official CLI"
         : `run \`./bin/provider-key ${provider.id} set\``;
-    throw new Error(`${provider.displayName} is selected but not configured; ${setup} first.`);
+    throw incomplete(`${provider.displayName} is selected but not configured; ${setup} first.`);
   }
   if (provider.kind === "oauth") {
     let cli = oauthCliPath(provider.id);
     if (!cli) {
       if (!confirm(`Install the official ${provider.displayName} CLI with npm now?`)) {
-        throw new Error(
+        throw incomplete(
           `${provider.displayName} needs its official CLI; install it and run setup again.`,
         );
       }
@@ -212,15 +228,15 @@ function configureProvider(provider) {
       cli = oauthCliPath(provider.id);
     }
     if (!confirm(`Sign in to ${provider.displayName} now?`)) {
-      throw new Error(`${provider.displayName} sign-in was cancelled.`);
+      throw incomplete(`${provider.displayName} sign-in was cancelled.`);
     }
     run(cli, oauthLoginArgs(provider.id));
     if (!providerConfigured(provider)) {
-      throw new Error(`${provider.displayName} sign-in did not produce a usable credential.`);
+      throw incomplete(`${provider.displayName} sign-in did not produce a usable credential.`);
     }
   } else {
     if (!confirm(`Enter a ${provider.displayName} key securely now?`)) {
-      throw new Error(`${provider.displayName} setup was cancelled.`);
+      throw incomplete(`${provider.displayName} setup was cancelled.`);
     }
     run(process.execPath, [path.join(SOURCE_ROOT, "src", "provider-key.mjs"), provider.id, "set"]);
   }
@@ -259,10 +275,10 @@ function installTray() {
 }
 
 async function main() {
-  if (setupArgumentError) throw new Error(setupArgumentError);
+  if (setupArgumentError) throw incomplete(setupArgumentError);
   const legacy = detectLegacyInstallations();
   if (legacy.unknownConflict) {
-    throw new Error(
+    throw incomplete(
       `An unknown model router owns ${legacy.config.modelCatalogJson}; automatic setup will not replace it.`,
     );
   }
@@ -276,14 +292,40 @@ async function main() {
   };
 
   nextStep("Choose providers");
-  const providers = requestedSelection();
+  // A bad --providers value is a mistake in the invocation, not in the code
+  // that was just pulled.
+  let providers;
+  try {
+    providers = requestedSelection();
+  } catch (error) {
+    throw error?.setupExitCode
+      ? error
+      : incomplete(error instanceof Error ? error.message : String(error));
+  }
   if (providers.length === 0) {
-    throw new Error(
+    throw incomplete(
       "No configured provider was found. Run `./bin/setup --guided` or pass `--providers` after configuring credentials.",
     );
   }
   nextStep("Connect credentials");
-  for (const id of providers) configureProvider(PROVIDERS.get(id));
+  // Credentials are addable after the install, and the router already reports
+  // an unconfigured provider clearly at request time. A declined prompt -- or
+  // a prompt that is itself broken, which is how a Windows key-entry bug took
+  // whole installations down -- must not abort the install and hand the
+  // checkout back to the rollback. Guided runs collect the gaps and report
+  // them; scripted runs stay strict so automation still fails loudly.
+  const pendingCredentials = [];
+  for (const id of providers) {
+    const provider = PROVIDERS.get(id);
+    try {
+      configureProvider(provider);
+    } catch (error) {
+      if (!guided) throw error;
+      const reason = error instanceof Error ? error.message : String(error);
+      pendingCredentials.push({ provider, reason });
+      process.stderr.write(`\nWarning: ${provider.displayName} was not configured (${reason})\n`);
+    }
+  }
   writeProviderSelection(providers);
 
   let migration;
@@ -293,7 +335,7 @@ async function main() {
       `Safely migrate ${legacy.installations.map((item) => item.id).join(", ")} and keep a rollback snapshot?`,
     ));
     if (!approved) {
-      throw new Error("A recognized older router must be migrated before installation. Re-run with --migrate-known.");
+      throw incomplete("A recognized older router must be migrated before installation. Re-run with --migrate-known.");
     }
     migration = applyKnownMigrations();
   }
@@ -312,7 +354,7 @@ async function main() {
         `  Changes: per-user background service and the managed Codex config block\n`,
     );
     if (!confirm("Proceed?")) {
-      throw new Error("Setup was cancelled before installing the service.");
+      throw incomplete("Setup was cancelled before installing the service.");
     }
   }
 
@@ -349,9 +391,22 @@ async function main() {
   process.stdout.write(
     `\nCodex Router is ready with: ${providers.join(", ")}\nFully quit Codex, reopen it, and start a new task.\n`,
   );
+  if (pendingCredentials.length) {
+    process.stdout.write(
+      `\nStill needs a credential:\n` +
+        pendingCredentials
+          .map(({ provider }) =>
+            provider.kind === "oauth"
+              ? `  ${provider.displayName}: sign in with the provider's official CLI\n`
+              : `  ${provider.displayName}: ./bin/provider-key ${provider.id} set\n`,
+          )
+          .join("") +
+        `These providers stay selected and start working as soon as a key is stored.\n`,
+    );
+  }
 }
 
 main().catch((error) => {
   console.error(`codex-router setup: ${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
+  process.exit(error?.setupExitCode || 1);
 });
