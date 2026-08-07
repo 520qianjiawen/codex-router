@@ -7,11 +7,18 @@ import test from "node:test";
 
 // provider-key.mjs is a CLI entry that validates process.argv at module
 // evaluation time (and exits when the arguments are missing), so give it a
-// valid invocation before importing it.
+// valid invocation before importing it. The status command sets a non-zero
+// exit code when the key is absent, which would fail this whole test file on
+// machines without an opencode credential, so supply one via the environment.
 const savedArgv = [...process.argv];
+const savedEnvKey = process.env.OPENCODE_GO_API_KEY;
 process.argv = [process.argv[0], "provider-key.mjs", "opencode-go", "status"];
+process.env.OPENCODE_GO_API_KEY = "test-only-placeholder";
 const { WINDOWS_HIDDEN_PROMPT_SCRIPT } = await import("../src/provider-key.mjs");
 process.argv = savedArgv;
+if (savedEnvKey === undefined) delete process.env.OPENCODE_GO_API_KEY;
+else process.env.OPENCODE_GO_API_KEY = savedEnvKey;
+process.exitCode = 0;
 
 test("the Windows hidden-prompt script is structurally valid PowerShell", () => {
   // Joining the script pieces with "; " must not split `try { }` from
