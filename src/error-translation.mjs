@@ -67,9 +67,15 @@ const QUOTA_PATTERNS = [
   /insufficient (?:balance|credits?)/i,
   /credit balance is too low/i,
   /(?:no|any|out of) credits/i,
-  /usage limit reached/i,
+  // Both word orders occur in the wild: "usage limit reached" (zai) and
+  // "reached your usage limit" (Kimi).
+  /usage limit(?:s)? (?:reached|exceeded|hit)/i,
+  /reached your (?:usage|monthly|daily) limit/i,
+  /(?:monthly|daily|plan) usage limit/i,
+  /purchase extra usage/i,
+  /upgrade your plan/i,
   /quota\b[^.]*\bexhausted/i,
-  /quota (?:exceeded|exhausted)/i,
+  /quota (?:exceeded|exhausted|will be refreshed)/i,
   /\barrears\b/i,
   /balance (?:is )?(?:too low|not enough|insufficient)/i,
   // Chinese-market providers (Alibaba, SiliconFlow, zai, Moonshot) report
