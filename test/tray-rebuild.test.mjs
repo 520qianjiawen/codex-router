@@ -144,19 +144,41 @@ test("one companion location: the Node and shell sides name the same directory",
   assert.doesNotMatch(script, /\$repo_dir\/dist\/Model Router\.app"\}/);
 });
 
-test("the fingerprint covers every Swift source, not just one", () => {
-  const a = scratch();
-  try {
-    const sources = path.join(a, "apps", "macos", "ModelRouterTray", "Sources");
-    mkdirSync(sources, { recursive: true });
-    writeFileSync(path.join(sources, "One.swift"), "a\n", "utf8");
-    writeFileSync(path.join(sources, "Two.swift"), "b\n", "utf8");
-    const before = traySourceFingerprint(a);
-    // A second file changing must move the fingerprint, or a rebuild is missed
-    // whenever the edit lands outside the first source file.
-    writeFileSync(path.join(sources, "Two.swift"), "c\n", "utf8");
-    assert.notEqual(traySourceFingerprint(a), before);
-  } finally {
-    rmSync(a, { recursive: true, force: true });
+// Every case names its platform explicitly. Letting it default to
+// process.platform made this pass on macOS and fail on Linux and Windows,
+// where the default reads the Tauri paths and never sees the Swift file the
+// test just wrote.
+test("the fingerprint covers every source file, not just the first", () => {
+  for (const [platform, dir, name, other] of [
+    ["darwin", ["apps", "macos", "ModelRouterTray", "Sources"], "Two.swift", "One.swift"],
+    ["linux", ["apps", "desktop", "src-tauri", "src"], "two.rs", "main.rs"],
+  ]) {
+    const a = scratch();
+    try {
+      const sources = path.join(a, ...dir);
+      mkdirSync(sources, { recursive: true });
+      writeFileSync(path.join(sources, other), "a\n", "utf8");
+      writeFileSync(path.join(sources, name), "b\n", "utf8");
+      const before = traySourceFingerprint(a, platform);
+      // A change in any file must move the fingerprint, or a rebuild is
+      // missed whenever the edit lands outside the first source file.
+      writeFileSync(path.join(sources, name), "c\n", "utf8");
+      assert.notEqual(traySourceFingerprint(a, platform), before, `${platform}: ${name}`);
+    } finally {
+      rmSync(a, { recursive: true, force: true });
+    }
+  }
+});
+
+test("every tray assertion names its platform instead of inheriting the host", () => {
+  // This file's job is cross-platform behaviour, so a bare call that inherits
+  // process.platform makes the suite pass or fail depending on the runner --
+  // which is exactly how a green macOS run shipped a red Linux and Windows CI.
+  const self = readFileSync(fileURLToPath(import.meta.url), "utf8");
+  // A single-argument call inherits the runner's platform. Both helpers take
+  // the platform second, so every call site here must pass one.
+  assert.doesNotMatch(self, /traySourceFingerprint\([A-Za-z_$][\w$]*\s*\)/);
+  for (const call of self.match(/trayRebuildPlan\(\{[^}]*\}\)/g) ?? []) {
+    assert.match(call, /platform:/, `missing explicit platform: ${call}`);
   }
 });
