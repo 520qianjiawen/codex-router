@@ -1090,6 +1090,88 @@ test("router strips non-OpenAI reasoning encrypted_content before replaying to n
   }
 });
 
+test("router inlines an external parent's plaintext task before replaying to native", async () => {
+  const nativeRequests = [];
+  const native = await mockServer(async (request, response) => {
+    nativeRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { route: "native" });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const headers = {
+    Authorization: "Bearer CODEX_CALLER_SECRET",
+    "Content-Type": "application/json",
+  };
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    // A routed parent never reaches the native backend, so Codex stores the
+    // delegated task as plain text under encrypted_content. Replaying that to
+    // OpenAI fails the whole request with "Encrypted function output content
+    // could not be decrypted or decoded", killing the native subagent.
+    const externalParentTask = {
+      type: "agent_message",
+      id: "amsg_external",
+      author: "/root",
+      recipient: "/root/reviewer",
+      content: [
+        {
+          type: "input_text",
+          text: "Message Type: NEW_TASK\nTask name: /root/reviewer\nSender: /root\nPayload:\n",
+        },
+        { type: "encrypted_content", encrypted_content: "Inspect /tmp/capture.png harshly." },
+      ],
+    };
+    const nativeParentTask = {
+      type: "agent_message",
+      id: "amsg_native",
+      author: "/root",
+      recipient: "/root/other",
+      content: [
+        {
+          type: "input_text",
+          text: "Message Type: NEW_TASK\nTask name: /root/other\nSender: /root\nPayload:\n",
+        },
+        {
+          type: "encrypted_content",
+          encrypted_content: "gAAAAABkZmtM7cT9w_XY_zThisIsAnOpaqueBlobWithNoWhitespace==",
+        },
+      ],
+    };
+    const replay = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: "gpt-5.6-sol",
+        input: [externalParentTask, nativeParentTask],
+      }),
+    });
+    assert.equal(replay.status, 200);
+    const sent = nativeRequests[0].body.input;
+    const sentExternal = sent.find((item) => item?.id === "amsg_external");
+    const sentNative = sent.find((item) => item?.id === "amsg_native");
+    // The unreadable field is gone and the task survives as ordinary text.
+    assert.equal(
+      sentExternal.content.some((part) => part?.type === "encrypted_content"),
+      false,
+    );
+    assert.deepEqual(sentExternal.content.at(-1), {
+      type: "input_text",
+      text: "Inspect /tmp/capture.png harshly.",
+    });
+    assert.equal(sentExternal.recipient, "/root/reviewer");
+    // Genuine OpenAI ciphertext must reach the backend untouched.
+    assert.deepEqual(sentNative, nativeParentTask);
+  } finally {
+    await stopChild(router);
+    await closeServer(native.server);
+  }
+});
+
 // Gemini models reach the registry only through `bin/curate-models gemini-api`,
 // so the fixture registers one the same way curation does.
 function curatedGeminiModel() {

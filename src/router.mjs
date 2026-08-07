@@ -33,6 +33,7 @@ import { canonicalProviderId, readProviderSelection } from "./provider-selection
 import { ResponseUsageTransform } from "./response-usage.mjs";
 import {
   CollaborationToolCallTransform,
+  flattenCollaborationHistory,
   flattenCollaborationNamespaceTools,
 } from "./collaboration-namespace.mjs";
 import { activityMetadataFromHeaders } from "./codex-session-names.mjs";
@@ -675,11 +676,30 @@ function sanitizeReasoningForNative(item) {
   return rest;
 }
 
+// The mirror of normalizeRoutedAgentInput. When the parent agent is routed, its
+// turn never touches the native backend, so Codex has no opaque ciphertext to
+// put in a delegated task and stores the payload as plain text under
+// `encrypted_content`. A native child replays that item to OpenAI, which
+// rejects the whole request with "Encrypted function output content could not
+// be decrypted or decoded" and the subagent dies before returning an answer.
+// Inline the payload as ordinary text so the native child can read it.
+function sanitizeCollaborationForNative(item) {
+  const payload = encryptedAgentPayload(item);
+  if (!payload || payload.native) return item;
+  return {
+    ...item,
+    content: [
+      ...item.content.filter((part) => part?.type !== "encrypted_content"),
+      { type: "input_text", text: payload.content },
+    ],
+  };
+}
+
 function normalizeNativeInput(input) {
   if (!Array.isArray(input)) return input;
   return input.map((item) => {
     if (item?.type === "reasoning") return sanitizeReasoningForNative(item);
-    if (item?.type !== "compaction") return item;
+    if (item?.type !== "compaction") return sanitizeCollaborationForNative(item);
     const summary = decodeSummary(item.encrypted_content);
     return summary === undefined
       ? item
@@ -967,7 +987,9 @@ async function handleResponses(request, response, requestUrl) {
       const routed = {
         ...payload,
         model: route.gatewayModel,
-        input,
+        // The stored call history must use the same tool names as the tool
+        // list, or the model copies the bare names out of its own transcript.
+        input: collaborationFlattened ? flattenCollaborationHistory(input) : input,
       };
       // Native OpenAI traffic keeps client_metadata; routed providers do not
       // consume it and the strict ones reject the unknown field.
