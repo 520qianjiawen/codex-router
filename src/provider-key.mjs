@@ -7,8 +7,7 @@ import {
   primaryCredentialPath,
   writeProviderCredential,
 } from "./provider-credentials.mjs";
-import { MODELS } from "./model-registry.mjs";
-import { removeApiCredential } from "./provider-onboarding.mjs";
+import { providerNeedsCuration, removeApiCredential } from "./provider-onboarding.mjs";
 import { enableProvider } from "./provider-selection.mjs";
 import { secretEntryFeedback, secretEntryProblem } from "./secret-entry.mjs";
 import {
@@ -48,13 +47,6 @@ export function windowsHiddenPromptArgs(script = WINDOWS_HIDDEN_PROMPT_SCRIPT) {
     "-EncodedCommand",
     Buffer.from(script, "utf16le").toString("base64"),
   ];
-}
-
-// Catalog-only providers ship no preselected models, so storing a key leaves
-// the picker empty and the key looks like it did not work. Naming the curation
-// step is the difference between a working provider and a dead end.
-export function providerNeedsCuration(providerId, models = MODELS) {
-  return !models.some((model) => model.provider === providerId);
 }
 
 const WINDOWS_POWERSHELL_CANDIDATES = ["powershell.exe", "pwsh.exe"];

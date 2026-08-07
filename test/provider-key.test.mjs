@@ -14,12 +14,11 @@ const savedArgv = [...process.argv];
 const savedEnvKey = process.env.OPENCODE_GO_API_KEY;
 process.argv = [process.argv[0], "provider-key.mjs", "opencode-go", "status"];
 process.env.OPENCODE_GO_API_KEY = "test-only-placeholder";
-const {
-  WINDOWS_HIDDEN_PROMPT_SCRIPT,
-  powerShellStartupError,
-  providerNeedsCuration,
-  windowsHiddenPromptArgs,
-} = await import("../src/provider-key.mjs");
+const { WINDOWS_HIDDEN_PROMPT_SCRIPT, powerShellStartupError, windowsHiddenPromptArgs } =
+  await import("../src/provider-key.mjs");
+// Lives in provider-onboarding so doctor and the providers CLI can ask the
+// same question; provider-key.mjs exits on import when argv is not a command.
+const { providerNeedsCuration } = await import("../src/provider-onboarding.mjs");
 process.argv = savedArgv;
 if (savedEnvKey === undefined) delete process.env.OPENCODE_GO_API_KEY;
 else process.env.OPENCODE_GO_API_KEY = savedEnvKey;

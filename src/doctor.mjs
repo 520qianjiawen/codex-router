@@ -26,6 +26,7 @@ import {
   SOURCE_ROOT,
 } from "./paths.mjs";
 import { credentialStatus } from "./provider-credentials.mjs";
+import { providerNeedsCuration } from "./provider-onboarding.mjs";
 import { stateOwnershipStatus } from "./state-owner.mjs";
 import {
   providerSelectionStatus,
@@ -378,6 +379,17 @@ for (const provider of PROVIDERS.values()) {
     status.configured ? status.source : "not configured",
     `Run ./bin/provider-key ${provider.id} set.`,
   );
+  // A working key on a catalog-only provider still shows an empty picker until
+  // its models are curated, and nothing else says so after the key is stored.
+  // Anyone who set a key before that hint existed can only find out here.
+  if (status.configured && providerNeedsCuration(provider.id)) {
+    add(
+      "warn",
+      `${provider.displayName} models`,
+      "key stored but no models curated; the picker stays empty",
+      `Run ./bin/curate-models ${provider.id} in an interactive terminal.`,
+    );
+  }
 }
 
 try {

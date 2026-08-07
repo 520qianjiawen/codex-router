@@ -5,6 +5,7 @@ import { PROVIDERS } from "./model-registry.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
 import { credentialStatus } from "./provider-credentials.mjs";
+import { providerNeedsCuration } from "./provider-onboarding.mjs";
 import {
   canonicalProviderId,
   disableProvider,
@@ -77,9 +78,21 @@ function main() {
     ? enableProvider(providerId)
     : disableProvider(providerId);
   const refreshed = refreshTargetPickerIfInstalled();
+  // "shown in the model picker" is false for a catalog-only provider with no
+  // curated models: enabling it changes nothing the user can see. Say what
+  // actually happened, and name the step that makes it true.
+  const uncurated = command === "enable" && providerNeedsCuration(providerId);
+  const visibility = uncurated
+    ? `is enabled, but ships no preselected models so the ${targetPickerName()} model picker stays empty`
+    : `is now ${command === "enable" ? "shown" : "hidden"} in the ${targetPickerName()} model picker`;
   process.stdout.write(
-    `${provider.displayName} is now ${command === "enable" ? "shown" : "hidden"} in the ${targetPickerName()} model picker. Enabled providers: ${providers.join(", ") || "none"}.${refreshed ? ` Fully quit and reopen ${targetPickerName()}.` : ""}\n`,
+    `${provider.displayName} ${visibility}. Enabled providers: ${providers.join(", ") || "none"}.${refreshed ? ` Fully quit and reopen ${targetPickerName()}.` : ""}\n`,
   );
+  if (uncurated) {
+    process.stdout.write(
+      `Run ./bin/curate-models ${providerId} in an interactive terminal to choose its models.\n`,
+    );
+  }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

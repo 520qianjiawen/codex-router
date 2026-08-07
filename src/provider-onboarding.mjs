@@ -10,7 +10,7 @@ import {
 } from "./grok-cli.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { KIMI_CLI_NPM_PACKAGE } from "./kimi-oauth-onboarding.mjs";
-import { PROVIDERS } from "./model-registry.mjs";
+import { MODELS, PROVIDERS } from "./model-registry.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
 import {
   apiProvider,
@@ -189,4 +189,12 @@ export function removeApiCredential(providerId) {
     stillConfigured: remaining.configured === true,
     remainingSource: remaining.configured ? remaining.source : undefined,
   };
+}
+
+// Catalog-only providers (gemini-api, openrouter, groq, ...) ship no
+// preselected models, so a stored key still leaves the picker empty. Callers
+// use this to name the curation step instead of reporting a provider that
+// looks enabled but shows nothing.
+export function providerNeedsCuration(providerId, models = MODELS) {
+  return !models.some((model) => model.provider === providerId);
 }
