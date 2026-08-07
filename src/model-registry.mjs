@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { SOURCE_ROOT } from "./paths.mjs";
@@ -7,20 +7,82 @@ import { readUserModels } from "./user-models.mjs";
 export const REGISTRY_PATH =
   process.env.MODEL_ROUTER_REGISTRY ||
   process.env.CODEX_ROUTER_REGISTRY ||
-  path.join(SOURCE_ROOT, "config", "providers.json");
+  path.join(SOURCE_ROOT, "config");
 
 function fail(message) {
   throw new Error(`Invalid provider registry ${REGISTRY_PATH}: ${message}`);
 }
 
-function loadRegistry() {
+// Byte-order comparison keeps the walk identical on every machine; a
+// locale-aware sort could reorder fragments (and therefore the merged model
+// list) between hosts.
+function byName(a, b) {
+  return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+}
+
+function registryFragmentFiles(root) {
+  const files = [];
+  for (const entry of readdirSync(root, { withFileTypes: true }).sort(byName)) {
+    const full = path.join(root, entry.name);
+    if (entry.isDirectory()) files.push(...registryFragmentFiles(full));
+    else if (entry.isFile() && entry.name.endsWith(".json")) files.push(full);
+  }
+  return files;
+}
+
+function parseFragment(file) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync(REGISTRY_PATH, "utf8"));
+    parsed = JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    fail(`${file}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (parsed?.version !== 1) fail(`${file}: version must be 1`);
+  for (const field of ["providers", "models"]) {
+    if (parsed[field] !== undefined && !Array.isArray(parsed[field])) {
+      fail(`${file}: ${field} must be an array`);
+    }
+  }
+  return parsed;
+}
+
+// The checked-in registry is a directory tree — one vendor directory holding
+// a `<vendor>.json` provider file plus per-access-method `models.json`
+// fragments (config/kimi/kimi.json, config/kimi/oauth/models.json, ...).
+// Fragments merge in sorted-path order so the result is deterministic; a
+// model still names its provider explicitly, so the directory layout is
+// purely organizational. A single-file registry (the pre-split format, still
+// used by MODEL_ROUTER_REGISTRY overrides in tests and tooling) keeps
+// working unchanged.
+export function readRegistryDocument(root = REGISTRY_PATH) {
+  let isFile;
+  try {
+    isFile = statSync(root).isFile();
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }
-  if (parsed?.version !== 1) fail("version must be 1");
+  if (isFile) {
+    const parsed = parseFragment(root);
+    return {
+      version: 1,
+      providers: parsed.providers || [],
+      models: parsed.models || [],
+    };
+  }
+  const providers = [];
+  const models = [];
+  const files = registryFragmentFiles(root);
+  if (files.length === 0) fail("no registry fragments found");
+  for (const file of files) {
+    const parsed = parseFragment(file);
+    providers.push(...(parsed.providers || []));
+    models.push(...(parsed.models || []));
+  }
+  return { version: 1, providers, models };
+}
+
+function loadRegistry() {
+  const parsed = readRegistryDocument();
   if (!Array.isArray(parsed.providers) || !Array.isArray(parsed.models)) {
     fail("providers and models must be arrays");
   }

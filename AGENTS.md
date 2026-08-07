@@ -89,7 +89,10 @@ to ship tested support to every installer.
 2. If authentication is missing, use the provider's official OAuth CLI or run
    `./bin/model-router codex provider-key PROVIDER set` in a PTY. Keep secrets
    out of chat, arguments, logs, environment snippets, and tracked files.
-3. If the requested model is already in `config/providers.json`, run
+3. If the requested model is already checked into the registry tree under
+   `config/` (one vendor directory holding a `<vendor>.json` provider file
+   plus per-access-method `models.json` fragments, e.g.
+   `config/kimi/kimi.json` and `config/kimi/oauth/models.json`), run
    `./bin/model-router codex providers enable PROVIDER`. This preserves the
    other selected providers and refreshes the installed picker catalog.
 4. If the provider is registered but the model is not checked in, run
@@ -98,7 +101,8 @@ to ship tested support to every installer.
    `./bin/curate-models PROVIDER --models ID1,ID2 --apply`. On Windows use
    `node .\src\curate-models.mjs` with the same arguments.
 5. Local curation writes protected `user-models.json` state and survives router
-   updates. Never edit `config/providers.json` merely to satisfy one machine's
+   updates. Never edit the checked-in `config/` registry tree merely to
+   satisfy one machine's
    request. The provider's own `/v1/models` endpoint alone decides which
    models exist. Interactive curation asks for each new model's context
    window, image support, and reasoning efforts (so the user can switch
@@ -123,7 +127,10 @@ installation. It is repository development and requires the process below.
    model ID and capabilities against the provider's current official
    documentation. Never infer tools, images, context size, reasoning, or billing
    behavior from the model name.
-2. Add the model declaratively in `config/providers.json` with unique `slug`,
+2. Add the model declaratively to the vendor's registry fragment (the
+   `config/<vendor>/<method>/models.json` file for its provider; a new
+   provider also needs its definition in `config/<vendor>/<vendor>.json`)
+   with unique `slug`,
    `gatewayModel`, and provider/upstream IDs; complete picker metadata;
    supported reasoning levels; input modalities; context/compaction limits;
    and the correct request profile. Use `listed: false` for compatibility-only
