@@ -59,6 +59,28 @@ test("an unknown provider id leaves the checkout update in place", () => {
 // keep the cases in this file to argument and selection errors, which exit
 // before that point.
 
+// A stored credential would make this run succeed instead of reporting the
+// gap, so the case is skipped rather than asserted against whatever the
+// developer's machine happens to hold. Keychain entries are global and no
+// state-directory override hides them.
+const deepseekConfigured =
+  spawnSync(process.execPath, [path.join(root, "src", "provider-key.mjs"), "deepseek", "status"], {
+    cwd: root,
+    encoding: "utf8",
+  }).status === 0;
+
+test(
+  "a scripted run with an unconfigured provider stays strict but keeps the update",
+  { skip: deepseekConfigured },
+  () => {
+    // --selection-only returns before the install block, so this exercises the
+    // credential step without touching launchd or the Codex config.
+    const result = runSetup(["--providers", "deepseek", "--selection-only"]);
+    assert.equal(result.status, SETUP_INCOMPLETE_EXIT);
+    assert.match(result.stderr, /DeepSeek API is selected but not configured/);
+  },
+);
+
 test("--help still succeeds", () => {
   const result = runSetup(["--help"]);
   assert.equal(result.status, 0);
