@@ -25,6 +25,7 @@ import {
   PORTS,
   SOURCE_ROOT,
 } from "./paths.mjs";
+import { cliSessionDescriptor } from "./cli-session-credential.mjs";
 import { credentialStatus } from "./provider-credentials.mjs";
 import { providerNeedsCuration } from "./provider-onboarding.mjs";
 import { stateOwnershipStatus } from "./state-owner.mjs";
@@ -373,11 +374,14 @@ add(
 for (const provider of PROVIDERS.values()) {
   if (provider.kind !== "openai-compatible") continue;
   const status = credentialStatus(provider, { persistent: true });
+  const session = cliSessionDescriptor(provider);
   add(
     status.configured ? "ok" : selection.providers.includes(provider.id) ? "fail" : "warn",
     `${provider.displayName} key`,
     status.configured ? status.source : "not configured",
-    `Run ./bin/provider-key ${provider.id} set.`,
+    session
+      ? `Run ${session.loginCommand}, or ./bin/provider-key ${provider.id} set.`
+      : `Run ./bin/provider-key ${provider.id} set.`,
   );
   // A working key on a catalog-only provider still shows an empty picker until
   // its models are curated, and nothing else says so after the key is stored.

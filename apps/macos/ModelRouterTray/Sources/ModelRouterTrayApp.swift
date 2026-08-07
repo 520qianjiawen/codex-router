@@ -1665,6 +1665,13 @@ struct ProviderSetupState: Decodable, Identifiable, Equatable {
   let configured: Bool
   let cliInstalled: Bool?
   let action: String
+  // An API provider whose official CLI mints its key through a browser
+  // sign-in (Command Code) keeps `kind == "api"` and the key field, and adds
+  // these: `signIn` marks the second route, `signedIn` says the key in play
+  // came from that session, and `signInAction` is that route's next step.
+  let signIn: Bool?
+  let signedIn: Bool?
+  let signInAction: String?
 }
 
 private struct StatusItemLabel: View {
@@ -2550,14 +2557,24 @@ private struct ProviderSetupRow: View {
       return "Session expired · reconnect for account usage"
     }
     if setup.configured {
-      return provider.enabled ? "Ready · Available in Codex" : "Ready · Hidden from Codex"
+      let visibility = provider.enabled ? "Available in Codex" : "Hidden from Codex"
+      return setup.signedIn == true
+        ? "Signed in · \(visibility)"
+        : "Ready · \(visibility)"
     }
     switch setup.action {
     case "install": return "Official CLI required"
     case "login": return "Sign in with the official CLI"
-    case "add-key": return "API key required"
+    case "add-key":
+      return offersSignIn ? "Sign in or paste an API key" : "API key required"
     default: return "Setup required"
     }
+  }
+
+  private var offersSignIn: Bool { setup?.signIn == true }
+
+  private var signInTitle: String {
+    setup?.signInAction == "install" ? "Install CLI" : "Sign In"
   }
 
   @ViewBuilder
@@ -2588,6 +2605,21 @@ private struct ProviderSetupRow: View {
             .disabled(controlsDisabled)
           }
         }
+        // A key that came from the CLI sign-in can only be renewed by signing
+        // in again, so the row keeps that route reachable after connecting.
+        if offersSignIn {
+          Button(action: { signInAction() }) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+              .font(.system(size: 10, weight: .semibold))
+              .frame(width: 20, height: 20)
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(routerAccent)
+          .help(setup?.signInAction == "install"
+            ? "Install the official CLI"
+            : "Sign in again with the official CLI")
+          .disabled(controlsDisabled)
+        }
         if setup?.kind == "api" {
           Button(action: { toggleKeyField() }) {
             Image(systemName: showingKeyField ? "xmark" : "pencil")
@@ -2617,11 +2649,22 @@ private struct ProviderSetupRow: View {
           .disabled(controlsDisabled)
       }
     } else {
-      Button(actionTitle) { performAction() }
-        .buttonStyle(.plain)
-        .font(.system(size: 10, weight: .medium))
-        .foregroundStyle(routerAccent)
-        .disabled(controlsDisabled || setup == nil)
+      HStack(spacing: 10) {
+        // Two ways in, both first-class: the browser sign-in the CLI drives,
+        // and the Studio key someone may already hold.
+        if offersSignIn {
+          Button(signInTitle) { signInAction() }
+            .buttonStyle(.plain)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(routerAccent)
+            .disabled(controlsDisabled)
+        }
+        Button(actionTitle) { performAction() }
+          .buttonStyle(.plain)
+          .font(.system(size: 10, weight: .medium))
+          .foregroundStyle(offersSignIn ? routerMuted : routerAccent)
+          .disabled(controlsDisabled || setup == nil)
+      }
     }
   }
 
@@ -2646,6 +2689,14 @@ private struct ProviderSetupRow: View {
     case "add-key": toggleKeyField()
     default: break
     }
+  }
+
+  private func signInAction() {
+    if setup?.signInAction == "install" {
+      onInstall()
+      return
+    }
+    onLogin()
   }
 
   private func toggleKeyField() {

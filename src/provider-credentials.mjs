@@ -11,6 +11,10 @@ import {
 } from "node:fs";
 import path from "node:path";
 
+import {
+  cliSessionDescriptor,
+  readCliSessionCredential,
+} from "./cli-session-credential.mjs";
 import { protectPrivateFile } from "./file-security.mjs";
 import { LEGACY_STATE_DIRS, STATE_DIR, TARGET } from "./paths.mjs";
 import { targetCli } from "./target-integration.mjs";
@@ -71,7 +75,25 @@ export function resolveProviderCredential(providerOrId, options = {}) {
     }
   }
   const keychain = keyFromKeychain(provider);
-  return keychain ? { ...keychain, persistent: true } : undefined;
+  if (keychain) return { ...keychain, persistent: true };
+  // The provider CLI's own sign-in comes last: a key the user deliberately
+  // stored here, or exported into the environment, stays in charge, and the
+  // session only fills the gap for someone who never pasted one.
+  const session = readCliSessionCredential(provider);
+  return session
+    ? { value: session.value, source: session.label, persistent: true }
+    : undefined;
+}
+
+// Providers that support a CLI sign-in have two equally valid setup paths, and
+// naming only the key one would hide the OAuth flow from every surface that
+// prints this sentence (doctor, discovery errors, the enable gate).
+export function credentialSetupHint(provider) {
+  const keyCommand = targetCli(`provider-key ${provider.id} set`);
+  const session = cliSessionDescriptor(provider);
+  return session
+    ? `Run \`${session.loginCommand}\`, or run ${keyCommand}`
+    : `Run ${keyCommand}`;
 }
 
 export function credentialStatus(providerOrId, options = {}) {
@@ -80,10 +102,7 @@ export function credentialStatus(providerOrId, options = {}) {
   const credential = resolveProviderCredential(provider, options);
   return credential
     ? { configured: true, source: credential.source, persistent: credential.persistent }
-    : {
-        configured: false,
-        setup: `Run ${targetCli(`provider-key ${provider.id} set`)}`,
-      };
+    : { configured: false, setup: credentialSetupHint(provider) };
 }
 
 export function writeProviderCredential(providerOrId, value) {

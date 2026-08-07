@@ -37,7 +37,8 @@ user.
    with `bin/curate-models opencode-zen`), and/or `commandcode`
    (shown to users as "Command Code"; its `commandcode-messages` variant
    shares its stored key and is enabled and disabled with it automatically;
-   never select or toggle it separately). The
+   never select or toggle it separately. Command Code accepts either a stored
+   key or a `command-code login` browser sign-in — see step 5). The
    catalog-only providers `groq`, `openrouter`, `together`, `fireworks`,
    `cerebras`, `mistral`, `nvidia-nim`, `siliconflow`, `huggingface`, and
    `gemini-api` are also selectable, but they ship no preselected models: after
@@ -48,7 +49,11 @@ user.
 5. For Kimi OAuth, reuse a valid `kimi login` session. If login is needed, run
    the official CLI only in an interactive terminal. For API providers, invoke
    `bin/model-router codex provider-key PROVIDER set` in a PTY so the hidden
-   prompt receives the value directly; do not relay it through chat.
+   prompt receives the value directly; do not relay it through chat. Command
+   Code also accepts a browser sign-in: reuse a valid `command-code login`
+   session (`~/.commandcode/auth.json`), or run that CLI in an interactive
+   terminal. Read the session only through the router's credential resolver;
+   never open, copy, move, or delete another tool's credential file.
 6. Run read-only legacy detection. It is safe to pass `--migrate-known` when the
    detector identifies a repository-recognized older Codex Router: migration is
    scoped, snapshotted, and reversible. Never migrate, stop, delete, or replace
@@ -195,6 +200,13 @@ surfaces.
      session-refresh, and reconnect-on-expiry wiring in the provider's OAuth
      status/session modules (follow `kimi-oauth-*` / `grok-oauth-*` as the
      patterns).
+   - A provider whose official CLI finishes a browser sign-in by minting an
+     API key into its own home directory (Command Code) is not an `oauth`
+     provider: it stays `openai-compatible` and declares
+     `credential.cliSession` in the registry so the resolver reads that file
+     after the environment, the stored key, and the Keychain. Add its CLI to
+     `SIGN_IN_CLIS` in `src/provider-onboarding.mjs` so the tray's install and
+     sign-in buttons work, and keep the key field available alongside.
    - Add the provider icon under
      `apps/macos/ModelRouterTray/Resources/` and record its source in
      `PROVIDER-ICON-SOURCES.md`.

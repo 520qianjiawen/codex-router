@@ -218,18 +218,44 @@ endpoints.
 Command Code's official Provider API is an OpenAI-compatible chat completions
 surface plus an Anthropic Messages surface at `https://api.commandcode.ai/provider/v1`
 (`COMMAND_CODE_API_KEY` or `COMMANDCODE_API_KEY` in the environment, or store
-the key once). It requires the Provider plan or higher and uses the same key
-that authenticates the Command Code CLI. Everything appears as one
+the key once, or reuse a `command-code login` session). It requires the
+Provider plan or higher and uses the same key that authenticates the Command
+Code CLI. Everything appears as one
 "Command Code" provider; internally the catalog is split between
 `commandcode` for Chat Completions models and `commandcode-messages` for
-models that require the Messages protocol (Claude). Set the key once and
-enable the family:
+models that require the Messages protocol (Claude).
+
+There are two ways to authenticate, and either one is enough.
+
+**Sign in through the browser (OAuth).** `command-code login` opens the
+Command Code authorization page, receives the callback on a temporary local
+server, and writes the key it mints to `~/.commandcode/auth.json`. The router
+reads that file, so a signed-in machine needs no key of its own:
+
+```sh
+npm install -g command-code
+command-code login
+./bin/model-router codex providers enable commandcode
+./bin/model-router codex multi-agent on
+```
+
+The macOS tray offers the same flow: the Command Code row has a **Sign In**
+button (or **Install CLI** first) next to **Add Key**. The router only reads
+that file — it never rewrites, copies, or deletes it — so `command-code
+logout` also revokes the router's access.
+
+**Store a key instead.** Create one in Command Code Studio and save it here:
 
 ```sh
 ./bin/model-router codex provider-key commandcode set
 ./bin/model-router codex providers enable commandcode
 ./bin/model-router codex multi-agent on
 ```
+
+When both exist, the exported environment variable wins, then the key stored
+here, then the macOS Keychain, and the CLI sign-in last: a key you deliberately
+saved is never silently replaced by a session. `doctor` names whichever source
+is live.
 
 | Picker label | Model ID |
 | --- | --- |

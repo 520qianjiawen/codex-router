@@ -18,7 +18,15 @@
         "keychainServices": [
           "codex-router-commandcode"
         ],
-        "prompt": "Command Code API key"
+        "prompt": "Command Code API key",
+        "cliSession": {
+          "directory": ".commandcode",
+          "file": "auth.json",
+          "field": "apiKey",
+          "homeEnv": "COMMANDCODE_CLI_HOME",
+          "label": "Command Code CLI sign-in",
+          "loginCommand": "command-code login"
+        }
       }
     },
     {
@@ -40,7 +48,15 @@
         "keychainServices": [
           "codex-router-commandcode"
         ],
-        "prompt": "Command Code API key"
+        "prompt": "Command Code API key",
+        "cliSession": {
+          "directory": ".commandcode",
+          "file": "auth.json",
+          "field": "apiKey",
+          "homeEnv": "COMMANDCODE_CLI_HOME",
+          "label": "Command Code CLI sign-in",
+          "loginCommand": "command-code login"
+        }
       }
     }
   ]

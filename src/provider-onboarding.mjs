@@ -8,6 +8,7 @@ import {
   grokCliPath,
   grokCliPreflight,
 } from "./grok-cli.mjs";
+import { cliSessionStatus } from "./cli-session-credential.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { KIMI_CLI_NPM_PACKAGE } from "./kimi-oauth-onboarding.mjs";
 import { MODELS, PROVIDERS } from "./model-registry.mjs";
@@ -32,6 +33,15 @@ const SIGN_IN_CLIS = Object.freeze({
     npmPackage: "@xai-official/grok",
     loginArgs: ["login", "--oauth"],
   },
+  // Command Code ships `cmd`, `cmdc`, `commandcode`, and `command-code` from
+  // one package. Only `command-code` is unambiguous everywhere — `cmd` is the
+  // Windows shell — so the tray always drives that name.
+  commandcode: {
+    executable: "command-code",
+    npmPackage: "command-code",
+    loginArgs: ["login"],
+    candidates: [path.join(os.homedir(), ".npm-global", "bin", "command-code")],
+  },
 });
 
 function commandPath(name) {
@@ -48,13 +58,20 @@ function commandPath(name) {
   }
 }
 
+// A registry entry can declare a CLI session before anyone teaches this module
+// how to install and run that CLI. Callers check first so the missing half
+// degrades to "key only" instead of throwing mid-install.
+export function hasSignInCli(providerId) {
+  return Object.hasOwn(SIGN_IN_CLIS, providerId);
+}
+
 export function oauthCliPath(providerId) {
   const cli = SIGN_IN_CLIS[providerId];
   if (!cli) throw new Error(`Unknown OAuth provider: ${providerId}`);
   if (providerId === "grok-oauth") return grokCliPath();
   const discovered = commandPath(cli.executable);
   if (discovered) return discovered;
-  return cli.candidates.find((candidate) => existsSync(candidate));
+  return (cli.candidates || []).find((candidate) => existsSync(candidate));
 }
 
 export function oauthLoginArgs(providerId) {
@@ -66,7 +83,8 @@ export function oauthLoginArgs(providerId) {
 function oauthConfigured(providerId) {
   if (providerId === "kimi-oauth") return kimiOAuthStatus().configured;
   if (providerId === "grok-oauth") return grokOAuthStatus().configured;
-  return false;
+  const provider = PROVIDERS.get(providerId);
+  return provider ? cliSessionStatus(provider).configured : false;
 }
 
 export function providerOnboardingSnapshot() {
@@ -99,12 +117,26 @@ export function providerOnboardingSnapshot() {
         };
       }
       const configured = credentialStatus(provider, { persistent: true }).configured;
-      return {
+      const entry = {
         id: provider.id,
         displayName: provider.displayName,
         kind: "api",
         configured,
         action: configured ? "ready" : "add-key",
+      };
+      // A provider whose CLI mints its key through a browser sign-in keeps the
+      // key field (people with a Studio key still paste it) and gains a second
+      // route. The tray needs both states to label the row honestly: whether
+      // the CLI is present, and whether the key in play came from the session.
+      const session = cliSessionStatus(provider);
+      if (!session.supported || !hasSignInCli(provider.id)) return entry;
+      const cliInstalled = Boolean(oauthCliPath(provider.id));
+      return {
+        ...entry,
+        signIn: true,
+        signedIn: session.configured,
+        cliInstalled,
+        signInAction: !cliInstalled ? "install" : session.configured ? "ready" : "login",
       };
     }),
   };
