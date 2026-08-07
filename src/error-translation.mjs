@@ -85,6 +85,24 @@ const QUOTA_PATTERNS = [
   /额度(?:不足|已用完)/,
 ];
 
+// A plan that never included this API is not a rejected credential and not an
+// exhausted balance: nothing the operator does with keys or top-ups changes it.
+// Command Code answers a Go-plan key with "Your Go plan doesn't include API
+// access. Upgrade to Provider or higher", which read as bad credentials and
+// sent people back through setup.
+const ENTITLEMENT_PATTERNS = [
+  /plan does(?:n't| not) include/i,
+  /not included (?:in|with) your .{0,40}plan/i,
+  /upgrade to [\w\s]{1,30}(?:or higher|plan)/i,
+  /requires? (?:the |a |an )?[\w\s]{1,30}plan/i,
+  /plan does(?:n't| not) support/i,
+  /no api access/i,
+];
+
+function isPlanEntitlement(detail) {
+  return ENTITLEMENT_PATTERNS.some((pattern) => pattern.test(detail));
+}
+
 function isOutOfUsage(detail, errorType) {
   if (typeof errorType === "string" && /quota|billing|resource_exhausted/i.test(errorType)) {
     return true;
@@ -101,6 +119,15 @@ function describeFailure({
   providerKind,
   retryAfterSeconds,
 }) {
+  // Ahead of both the quota and the credential branches: an entitlement
+  // failure is the only one of the three that neither a top-up nor a new key
+  // can resolve, and its wording overlaps with both.
+  if (status < 500 && isPlanEntitlement(detail)) {
+    return {
+      type: "billing_error",
+      message: `${providerName} accepted the credential, but this plan does not include the API that serves ${modelName}. Upgrade the plan on your ${providerName} account; re-entering or refreshing the credential will not help.`,
+    };
+  }
   if (status < 500 && isOutOfUsage(detail, errorType)) {
     return {
       type: "billing_error",

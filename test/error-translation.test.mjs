@@ -377,3 +377,39 @@ test("an unclassified 4xx still names the provider", () => {
   );
   assert.equal(payload.error.type, "invalid_request_error");
 });
+
+test("a plan without API access is not reported as a bad credential", () => {
+  // Command Code's verbatim answer to a valid Go-plan key on /provider/v1.
+  const translated = translateGatewayError({
+    status: 403,
+    bodyText: JSON.stringify({
+      error: {
+        message:
+          "Your Go plan doesn't include API access. Upgrade to Provider or higher at https://commandcode.ai/billing to use these endpoints.",
+      },
+    }),
+    modelName: "DeepSeek V4 Flash (Command Code)",
+    providerName: "commandcode",
+    providerKind: "openai-compatible",
+  });
+  assert.equal(translated.error.type, "billing_error");
+  assert.match(translated.error.message, /plan does not include the API/);
+  // The two fixes that would waste the operator's time must not be suggested.
+  assert.doesNotMatch(translated.error.message, /rejected the stored credentials/);
+  assert.doesNotMatch(translated.error.message, /Re-run codex-router setup/);
+  assert.doesNotMatch(translated.error.message, /run out of usage/);
+  // The provider's own wording still rides along.
+  assert.match(translated.error.message, /Upgrade to Provider or higher/);
+});
+
+test("a genuine 403 credential rejection still says so", () => {
+  const translated = translateGatewayError({
+    status: 403,
+    bodyText: JSON.stringify({ error: { message: "Invalid API key provided" } }),
+    modelName: "Kimi K3 (Command Code)",
+    providerName: "commandcode",
+    providerKind: "openai-compatible",
+  });
+  assert.equal(translated.error.type, "authentication_error");
+  assert.match(translated.error.message, /rejected the stored credentials/);
+});

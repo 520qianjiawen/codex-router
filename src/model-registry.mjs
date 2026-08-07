@@ -81,6 +81,32 @@ export function readRegistryDocument(root = REGISTRY_PATH) {
   return { version: 1, providers, models };
 }
 
+// An optional `credential.cliSession` lets a provider reuse the API key its
+// own CLI stores after a browser sign-in. The descriptor names one file inside
+// one directory of the user's home, so a stray separator or `..` would let the
+// registry point the reader at an arbitrary path; reject those at load time.
+function cliSessionProblem(provider) {
+  const session = provider.credential.cliSession;
+  if (session === undefined) return undefined;
+  if (!session || typeof session !== "object" || Array.isArray(session)) {
+    return `provider ${provider.id} has an invalid credential.cliSession`;
+  }
+  for (const field of ["directory", "file", "field", "label", "loginCommand"]) {
+    if (typeof session[field] !== "string" || !session[field].trim()) {
+      return `provider ${provider.id} cliSession requires ${field}`;
+    }
+  }
+  for (const field of ["directory", "file"]) {
+    if (session[field].includes("/") || session[field].includes("\\") || session[field] === "..") {
+      return `provider ${provider.id} cliSession ${field} must be a single path segment`;
+    }
+  }
+  if (session.homeEnv !== undefined && (typeof session.homeEnv !== "string" || !session.homeEnv)) {
+    return `provider ${provider.id} cliSession has an invalid homeEnv`;
+  }
+  return undefined;
+}
+
 function loadRegistry() {
   const parsed = readRegistryDocument();
   if (!Array.isArray(parsed.providers) || !Array.isArray(parsed.models)) {
@@ -114,6 +140,17 @@ function loadRegistry() {
       if (!provider.credential?.file || !Array.isArray(provider.credential.environment)) {
         fail(`provider ${provider.id} requires credential metadata`);
       }
+      const sessionProblem = cliSessionProblem(provider);
+      if (sessionProblem) fail(sessionProblem);
+      // Some providers authenticate a credential their plan may still not
+      // entitle to the API. The note says so everywhere a user connects, so
+      // the first sign of it is not a 403 inside Codex.
+      if (
+        provider.planNote !== undefined &&
+        (typeof provider.planNote !== "string" || !provider.planNote.trim())
+      ) {
+        fail(`provider ${provider.id} has an invalid planNote`);
+      }
       if (
         provider.protocol !== undefined &&
         !["openai", "anthropic", "openai-responses"].includes(provider.protocol)
@@ -141,6 +178,15 @@ function loadRegistry() {
     }
     if (provider.credential?.file !== parent.credential?.file) {
       fail(`variant provider ${provider.id} must share ${parent.id}'s credential file`);
+    }
+    // A variant that resolved a different CLI sign-in than its parent would
+    // authenticate one protocol surface and not the other from the same
+    // "connected" state, so the descriptors must match exactly.
+    if (
+      JSON.stringify(provider.credential?.cliSession ?? null) !==
+      JSON.stringify(parent.credential?.cliSession ?? null)
+    ) {
+      fail(`variant provider ${provider.id} must share ${parent.id}'s credential CLI session`);
     }
   }
 
