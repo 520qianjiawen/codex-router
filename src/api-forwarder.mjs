@@ -194,9 +194,51 @@ function ensureToolResultsForCalls(messages) {
   return repaired;
 }
 
-function sanitizeChatToolHistory(messages) {
+// LiteLLM and the Gemini OpenAI-compatible endpoint accept this sentinel in
+// place of a real reasoning signature to skip thought-signature validation.
+const GEMINI_THOUGHT_SIGNATURE_SENTINEL = "skip_thought_signature_validator";
+
+function isGeminiProvider(provider) {
+  return provider?.id === "gemini-api" || provider?.ownedBy === "google";
+}
+
+// Gemini 3.x thinking models reject assistant tool calls whose reasoning
+// signature is missing, which is the normal state after compaction or after a
+// history translated from another provider. The sentinel below is the
+// documented opt-out for that validation. Only fill the gap: a genuine
+// signature returned by Gemini must survive untouched or the model loses the
+// reasoning it is being asked to continue from.
+function ensureGeminiThoughtSignatures(messages) {
+  return messages.map((message) => {
+    if (message?.role !== "assistant" || !Array.isArray(message.tool_calls)) return message;
+    let changed = false;
+    const toolCalls = message.tool_calls.map((call) => {
+      if (!call || typeof call !== "object") return call;
+      const google = call.extra_content?.google;
+      if (call.thought_signature || google?.thought_signature) return call;
+      changed = true;
+      return {
+        ...call,
+        thought_signature: GEMINI_THOUGHT_SIGNATURE_SENTINEL,
+        extra_content: {
+          ...(call.extra_content && typeof call.extra_content === "object"
+            ? call.extra_content
+            : {}),
+          google: {
+            ...(google && typeof google === "object" ? google : {}),
+            thought_signature: GEMINI_THOUGHT_SIGNATURE_SENTINEL,
+          },
+        },
+      };
+    });
+    return changed ? { ...message, tool_calls: toolCalls } : message;
+  });
+}
+
+function sanitizeChatToolHistory(messages, provider) {
   if (!Array.isArray(messages)) return messages;
-  return ensureToolResultsForCalls(coalesceAssistantMessages(messages));
+  const repaired = ensureToolResultsForCalls(coalesceAssistantMessages(messages));
+  return isGeminiProvider(provider) ? ensureGeminiThoughtSignatures(repaired) : repaired;
 }
 
 function normalizeBody(buffer, contentType, route) {
@@ -211,6 +253,9 @@ function normalizeBody(buffer, contentType, route) {
     error.status = 400;
     throw error;
   }
+  // Codex tags outbound payloads with caller identity that no upstream
+  // provider consumes; strict providers reject the unknown field outright.
+  delete payload.client_metadata;
   const requestedModel = String(payload.model || "");
   // LiteLLM's Responses bridge prefixes the gateway id with `responses/` on
   // the upstream wire format; the forwarder still owns the id translation.
@@ -236,8 +281,10 @@ function normalizeBody(buffer, contentType, route) {
   }
 
   payload.model = model.upstreamModel;
+  // Gemini has no OpenAI-shaped web search parameter and 400s on the field.
+  if (isGeminiProvider(provider)) delete payload.web_search_options;
   if (Array.isArray(payload.messages)) {
-    payload.messages = sanitizeChatToolHistory(payload.messages);
+    payload.messages = sanitizeChatToolHistory(payload.messages, provider);
   }
   if (model.requestProfile === "kimi-k3") {
     const effort = kimiK3Effort(payload.reasoning_effort);

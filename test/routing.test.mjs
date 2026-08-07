@@ -550,6 +550,7 @@ test("router preserves native auth and isolates every external route", async () 
           model: "gpt-5.6-sol",
           input: "native test",
           previous_response_id: "remove-me",
+          client_metadata: { workspace: "caller-owned" },
         }),
       ),
     );
@@ -571,7 +572,11 @@ test("router preserves native auth and isolates every external route", async () 
       const response = await fetch(`${routerBase(routerPort)}/responses`, {
         method: "POST",
         headers: callerHeaders,
-        body: JSON.stringify({ model, input: "external test" }),
+        body: JSON.stringify({
+          model,
+          input: "external test",
+          client_metadata: { workspace: "caller-owned" },
+        }),
       });
       assert.equal(response.status, 200);
       assert.equal(routedRequests.at(-1).body.model, gatewayModel);
@@ -581,11 +586,14 @@ test("router preserves native auth and isolates every external route", async () 
     assert.equal(nativeRequests[0].headers["chatgpt-account-id"], "account-secret");
     assert.equal(nativeRequests[0].headers["x-private-header"], undefined);
     assert.equal(nativeRequests[0].body.previous_response_id, undefined);
+    // Native OpenAI traffic owns client_metadata; only routed traffic drops it.
+    assert.deepEqual(nativeRequests[0].body.client_metadata, { workspace: "caller-owned" });
     for (const request of routedRequests) {
       assert.equal(request.headers.authorization, `Bearer ${INTERNAL_KEY}`);
       assert.equal(request.headers["chatgpt-account-id"], undefined);
       assert.equal(request.headers["x-codex-installation-id"], undefined);
       assert.equal(request.headers["x-private-header"], undefined);
+      assert.equal(request.body.client_metadata, undefined);
     }
   } finally {
     await stopChild(router);
@@ -1082,6 +1090,159 @@ test("router strips non-OpenAI reasoning encrypted_content before replaying to n
   }
 });
 
+// Gemini models reach the registry only through `bin/curate-models gemini-api`,
+// so the fixture registers one the same way curation does.
+function curatedGeminiModel() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "routing-user-models-"));
+  const file = path.join(dir, "user-models.json");
+  writeFileSync(
+    file,
+    JSON.stringify({
+      version: 1,
+      models: [
+        {
+          slug: "gemini-api/gemini-3.5-flash",
+          gatewayModel: "gemini-api-gemini-3-5-flash",
+          upstreamModel: "gemini-3.5-flash",
+          provider: "gemini-api",
+          listed: true,
+          displayName: "Gemini 3.5 Flash (curated)",
+          description: "Test fixture.",
+          priority: 500,
+          defaultEffort: "high",
+          reasoningLevels: [{ effort: "high", description: "Adaptive reasoning" }],
+          contextWindow: 131072,
+          autoCompact: 110000,
+          inputModalities: ["text"],
+          compHash: "gemini-api-gemini-3-5-flash-user-v1",
+        },
+      ],
+    }),
+    "utf8",
+  );
+  return { dir, file, gatewayModel: "gemini-api-gemini-3-5-flash" };
+}
+
+test("API forwarder fills only missing Gemini thought signatures", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push(await bodyJson(request));
+    json(response, 200, { choices: [] });
+  });
+  const curated = curatedGeminiModel();
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    GEMINI_API_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    GEMINI_API_KEY: "TEST_GEMINI_API_KEY",
+    KIMI_PROXY_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const response = await fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: curated.gatewayModel,
+        web_search_options: { search_context_size: "medium" },
+        messages: [
+          { role: "user", content: "test" },
+          {
+            role: "assistant",
+            tool_calls: [
+              {
+                id: "call-signed",
+                type: "function",
+                thought_signature: "real-upstream-signature",
+                function: { name: "a", arguments: "{}" },
+              },
+              { id: "call-bare", type: "function", function: { name: "b", arguments: "{}" } },
+            ],
+          },
+          { role: "tool", tool_call_id: "call-signed", content: "ok" },
+          { role: "tool", tool_call_id: "call-bare", content: "ok" },
+        ],
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = upstreamRequests[0];
+    assert.equal(body.model, "gemini-3.5-flash");
+    // Gemini rejects the OpenAI-shaped web search parameter outright.
+    assert.equal(body.web_search_options, undefined);
+    const [signed, bare] = body.messages.find((message) => message.role === "assistant").tool_calls;
+    // A signature Gemini already returned must survive untouched.
+    assert.equal(signed.thought_signature, "real-upstream-signature");
+    assert.equal(signed.extra_content, undefined);
+    // A call with no signature gets the documented validation bypass.
+    assert.equal(bare.thought_signature, "skip_thought_signature_validator");
+    assert.equal(
+      bare.extra_content.google.thought_signature,
+      "skip_thought_signature_validator",
+    );
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+    rmSync(curated.dir, { recursive: true, force: true });
+  }
+});
+
+test("API forwarder leaves non-Gemini tool calls unsigned", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push(await bodyJson(request));
+    json(response, 200, { choices: [] });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    KIMI_API_FORWARD_PORT: String(forwarderPort),
+    KIMI_API_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    KIMI_API_KEY: "TEST_KIMI_API_KEY",
+    KIMI_PROXY_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const response = await fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "kimi-api-k3",
+        messages: [
+          { role: "user", content: "test" },
+          {
+            role: "assistant",
+            tool_calls: [
+              { id: "call-1", type: "function", function: { name: "a", arguments: "{}" } },
+            ],
+          },
+          { role: "tool", tool_call_id: "call-1", content: "ok" },
+        ],
+      }),
+    });
+    assert.equal(response.status, 200);
+    const [call] = upstreamRequests[0].messages.find(
+      (message) => message.role === "assistant",
+    ).tool_calls;
+    assert.equal(call.thought_signature, undefined);
+    assert.equal(call.extra_content, undefined);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
 test("API forwarder replaces caller auth and enforces Kimi K3 API parameters", async () => {
   const upstreamRequests = [];
   const upstream = await mockServer(async (request, response) => {
@@ -1128,6 +1289,7 @@ test("API forwarder replaces caller auth and enforces Kimi K3 API parameters", a
           model: "kimi-api-k3",
           reasoning_effort: "low",
           messages: [{ role: "user", content: "test" }],
+          client_metadata: { workspace: "caller-owned" },
         }),
       },
     );
@@ -1139,6 +1301,7 @@ test("API forwarder replaces caller auth and enforces Kimi K3 API parameters", a
     assert.equal(request.body.model, "kimi-k3");
     // K3 documents low/high/max; the requested low passes through unchanged.
     assert.equal(request.body.reasoning_effort, "low");
+    assert.equal(request.body.client_metadata, undefined);
   } finally {
     await stopChild(forwarder);
     await closeServer(upstream.server);

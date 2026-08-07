@@ -755,6 +755,7 @@ async function summarize(payload, route, signal) {
     ],
   };
   delete body.previous_response_id;
+  delete body.client_metadata;
   const upstream = await fetch(`${GATEWAY_BASE}/responses`, {
     method: "POST",
     headers: routedHeaders(),
@@ -959,6 +960,9 @@ async function handleResponses(request, response, requestUrl) {
         model: route.gatewayModel,
         input,
       };
+      // Native OpenAI traffic keeps client_metadata; routed providers do not
+      // consume it and the strict ones reject the unknown field.
+      delete routed.client_metadata;
       target = `${GATEWAY_BASE}/responses`;
       headers = routedHeaders();
       routedBody = Buffer.from(JSON.stringify(routed), "utf8");
