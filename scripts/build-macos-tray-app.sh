@@ -3,7 +3,12 @@ set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 tray_dir="$repo_dir/apps/macos/ModelRouterTray"
-bundle_dir=${1:-"$repo_dir/dist/Model Router.app"}
+# One companion per user, not one per checkout. A default inside the
+# repository built a separate bundle for every clone and left launchd pointing
+# at whichever one installed last; ~/Applications is also a LaunchServices
+# location, so the app resolves by name and can be found and quit normally.
+# src/tray-install.mjs trayBundleDir() holds the same path for the Node side.
+bundle_dir=${1:-"$HOME/Applications/Model Router.app"}
 configuration=${MODEL_ROUTER_TRAY_CONFIGURATION:-release}
 binary_dir="$tray_dir/.build/$configuration"
 

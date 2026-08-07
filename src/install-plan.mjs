@@ -8,8 +8,11 @@
 // no state directory has to stay in sync with the checkout.
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { trayBundleDir } from "./tray-install.mjs";
 
 export const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -87,6 +90,36 @@ function venvPythonVersion(root) {
   return match ? match[1] : "unknown";
 }
 
+// The companion is one bundle per user, not one per checkout: a `dist/` target
+// inside the repository produces a separate tray for every clone and leaves
+// launchd pointing at whichever one installed last.
+const TRAY_SOURCE_DIR = path.join("apps", "macos", "ModelRouterTray");
+
+function traySourceFiles(root) {
+  const base = path.join(root, TRAY_SOURCE_DIR);
+  const sourcesDir = path.join(base, "Sources");
+  const files = [
+    path.join(base, "Package.swift"),
+    path.join(base, "Resources", "Info.plist"),
+  ];
+  try {
+    for (const entry of readdirSync(sourcesDir).sort()) {
+      if (entry.endsWith(".swift")) files.push(path.join(sourcesDir, entry));
+    }
+  } catch {
+    // A checkout without the macOS app still answers "no sources".
+  }
+  return files;
+}
+
+export function traySourceFingerprint(root = SOURCE_ROOT) {
+  return sha256(
+    traySourceFiles(root)
+      .map((file) => `${path.relative(root, file)}\0${readFile(file) ?? ""}`)
+      .join("\0"),
+  );
+}
+
 export const STEPS = {
   "node-deps": {
     stamp: (root) => path.join(root, "node_modules", STAMP_NAME),
@@ -116,6 +149,52 @@ export const STEPS = {
     skipMessage: "LiteLLM already matches the pinned versions; skipping the Python install.",
   },
 };
+
+// Deliberately not a STEPS entry: those treat "artifact missing" as "run", and
+// a missing tray means the user never asked for one. An update keeps whatever
+// companion the user chose in sync; it never installs a new one.
+//   unsupported - not macOS
+//   absent      - no companion installed, leave it that way
+//   skip        - installed and already matches its sources
+//   rebuild     - installed but built from different sources
+export function trayRebuildPlan({
+  root = SOURCE_ROOT,
+  platform = process.platform,
+  home = os.homedir(),
+} = {}) {
+  const bundle = trayBundleDir(platform, home);
+  if (!bundle) return "unsupported";
+  if (!existsSync(path.join(bundle, "Contents", "MacOS", "ModelRouterTray"))) {
+    // A companion built before the per-user move lives inside the checkout.
+    // It still counts as installed, so the update rebuilds it at the shared
+    // location rather than reading as "absent" and abandoning it unmanaged.
+    const legacy = path.join(root, "dist", "Model Router.app", "Contents", "MacOS", "ModelRouterTray");
+    return existsSync(legacy) ? "rebuild" : "absent";
+  }
+  const stamp = readFile(path.join(bundle, "Contents", STAMP_NAME));
+  if (!stamp) return "rebuild";
+  try {
+    return JSON.parse(stamp)?.fingerprint === traySourceFingerprint(root) ? "skip" : "rebuild";
+  } catch {
+    return "rebuild";
+  }
+}
+
+export function recordTrayBuild({
+  root = SOURCE_ROOT,
+  platform = process.platform,
+  home = os.homedir(),
+} = {}) {
+  const bundle = trayBundleDir(platform, home);
+  if (!bundle) throw new Error("The menu-bar companion is macOS-only.");
+  const target = path.join(bundle, "Contents", STAMP_NAME);
+  writeFileSync(
+    target,
+    `${JSON.stringify({ version: 1, step: "tray", fingerprint: traySourceFingerprint(root) }, null, 2)}\n`,
+    { encoding: "utf8" },
+  );
+  return target;
+}
 
 export function stepStatus(step, { root = SOURCE_ROOT, platform = process.platform } = {}) {
   const definition = STEPS[step];
@@ -169,11 +248,29 @@ function main(argv) {
     recordStep(step);
     return 0;
   }
+  if (command === "tray-plan") {
+    // Fail closed, unlike `status`: an unexpected error must leave the
+    // companion alone rather than trigger a Swift build during an update.
+    let plan = "absent";
+    try {
+      plan = trayRebuildPlan();
+    } catch {
+      plan = "absent";
+    }
+    process.stdout.write(`${plan}\n`);
+    return 0;
+  }
+  if (command === "record-tray") {
+    recordTrayBuild();
+    return 0;
+  }
   if (command === "requirements") {
     process.stdout.write(`${PYTHON_REQUIREMENTS.join("\n")}\n`);
     return 0;
   }
-  console.error("Usage: install-plan.mjs status|record <node-deps|python-deps> | requirements");
+  console.error(
+    "Usage: install-plan.mjs status|record <node-deps|python-deps> | tray-plan | record-tray | requirements",
+  );
   return 2;
 }
 

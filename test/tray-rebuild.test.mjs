@@ -1,0 +1,124 @@
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import {
+  recordTrayBuild,
+  traySourceFingerprint,
+  trayRebuildPlan,
+} from "../src/install-plan.mjs";
+import { trayBundleDir } from "../src/tray-install.mjs";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function scratch() {
+  return mkdtempSync(path.join(os.tmpdir(), "tray-rebuild-"));
+}
+
+function installTrayAt(home) {
+  const bundle = trayBundleDir("darwin", home);
+  mkdirSync(path.join(bundle, "Contents", "MacOS"), { recursive: true });
+  writeFileSync(path.join(bundle, "Contents", "MacOS", "ModelRouterTray"), "binary", "utf8");
+  return bundle;
+}
+
+test("a machine without a companion is left without one", () => {
+  const home = scratch();
+  // A clean root, not the repository: a developer checkout may still hold a
+  // pre-migration dist/ bundle, which legitimately reads as "rebuild".
+  const fakeRoot = scratch();
+  try {
+    // An update keeps whatever the user chose in sync. It must never install a
+    // menu-bar app for someone who never asked for one.
+    assert.equal(trayRebuildPlan({ root: fakeRoot, platform: "darwin", home }), "absent");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(fakeRoot, { recursive: true, force: true });
+  }
+});
+
+test("an installed companion matching its sources is not rebuilt", () => {
+  const home = scratch();
+  try {
+    installTrayAt(home);
+    recordTrayBuild({ root, platform: "darwin", home });
+    assert.equal(trayRebuildPlan({ root, platform: "darwin", home }), "skip");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("changed Swift sources make an installed companion stale", () => {
+  const home = scratch();
+  const fakeRoot = scratch();
+  const sources = path.join(fakeRoot, "apps", "macos", "ModelRouterTray", "Sources");
+  try {
+    mkdirSync(sources, { recursive: true });
+    writeFileSync(path.join(sources, "App.swift"), "let version = 1\n", "utf8");
+    installTrayAt(home);
+    recordTrayBuild({ root: fakeRoot, platform: "darwin", home });
+    assert.equal(trayRebuildPlan({ root: fakeRoot, platform: "darwin", home }), "skip");
+
+    writeFileSync(path.join(sources, "App.swift"), "let version = 2\n", "utf8");
+    assert.equal(trayRebuildPlan({ root: fakeRoot, platform: "darwin", home }), "rebuild");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(fakeRoot, { recursive: true, force: true });
+  }
+});
+
+test("a companion left inside a checkout is migrated, not abandoned", () => {
+  const home = scratch();
+  const fakeRoot = scratch();
+  try {
+    // Builds from before the per-user move live at <checkout>/dist. Reading
+    // those as "absent" would leave an unmanaged copy running forever.
+    const legacy = path.join(fakeRoot, "dist", "Model Router.app", "Contents", "MacOS");
+    mkdirSync(legacy, { recursive: true });
+    writeFileSync(path.join(legacy, "ModelRouterTray"), "old binary", "utf8");
+    assert.equal(trayRebuildPlan({ root: fakeRoot, platform: "darwin", home }), "rebuild");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(fakeRoot, { recursive: true, force: true });
+  }
+});
+
+test("a companion is never built off macOS", () => {
+  const home = scratch();
+  try {
+    assert.equal(trayRebuildPlan({ root, platform: "linux", home }), "unsupported");
+    assert.equal(trayRebuildPlan({ root, platform: "win32", home }), "unsupported");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("one companion location: the Node and shell sides name the same directory", () => {
+  // Three copies of this path drifted apart before -- paths.mjs, the build
+  // script default, and trayBundleDir -- which is how a machine ends up with a
+  // separate tray per checkout and launchd pointing at whichever built last.
+  const script = readFileSync(path.join(root, "scripts", "build-macos-tray-app.sh"), "utf8");
+  assert.match(script, /bundle_dir=\$\{1:-"\$HOME\/Applications\/Model Router\.app"\}/);
+  assert.equal(trayBundleDir("darwin", "/Users/example"), "/Users/example/Applications/Model Router.app");
+  assert.doesNotMatch(script, /\$repo_dir\/dist\/Model Router\.app"\}/);
+});
+
+test("the fingerprint covers every Swift source, not just one", () => {
+  const a = scratch();
+  try {
+    const sources = path.join(a, "apps", "macos", "ModelRouterTray", "Sources");
+    mkdirSync(sources, { recursive: true });
+    writeFileSync(path.join(sources, "One.swift"), "a\n", "utf8");
+    writeFileSync(path.join(sources, "Two.swift"), "b\n", "utf8");
+    const before = traySourceFingerprint(a);
+    // A second file changing must move the fingerprint, or a rebuild is missed
+    // whenever the edit lands outside the first source file.
+    writeFileSync(path.join(sources, "Two.swift"), "c\n", "utf8");
+    assert.notEqual(traySourceFingerprint(a), before);
+  } finally {
+    rmSync(a, { recursive: true, force: true });
+  }
+});

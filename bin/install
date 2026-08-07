@@ -138,6 +138,26 @@ node src/install-manifest.mjs record >/dev/null
 # added the tray skip this; the point is that anyone who has one ends up
 # supervised without having to know the agent exists.
 node src/tray-service.mjs install >/dev/null 2>&1 || true
+# A companion that is never rebuilt drifts behind the router on every update
+# and keeps running its old binary. Rebuild only when one is already installed
+# -- an update must not add a tray the user never asked for -- and only when
+# the Swift sources actually changed, so a code-only update stays cheap.
+# Best effort throughout: a missing Xcode toolchain must never cost someone
+# their router update, and a non-zero exit here would roll the checkout back.
+tray_plan=$(node src/install-plan.mjs tray-plan 2>/dev/null || echo absent)
+case "$tray_plan" in
+  rebuild)
+    if "$repo_dir/bin/model-router-tray" >/dev/null 2>&1; then
+      node src/install-plan.mjs record-tray >/dev/null 2>&1 || true
+      echo "Menu-bar companion rebuilt from the updated sources."
+    else
+      echo "Menu-bar companion could not be rebuilt; the router is installed. Retry with ./bin/model-router-tray." >&2
+    fi
+    ;;
+  skip)
+    echo "Menu-bar companion already matches its sources; skipping the tray build."
+    ;;
+esac
 config_enabled=false
 service_installed=false
 trap - EXIT HUP INT TERM

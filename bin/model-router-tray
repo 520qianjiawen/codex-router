@@ -19,6 +19,15 @@ case $(uname -s) in
     # a login item alone only covers the login case, which left a crashed tray
     # gone until the next one.
     node "$repo_dir/src/tray-service.mjs" install >/dev/null
+    node "$repo_dir/src/install-plan.mjs" record-tray >/dev/null 2>&1 || true
+    # Companions built before the per-user move sit inside the checkout. The
+    # agent now points at the shared bundle, so the old copy is dead weight
+    # that a stray `open` could still launch alongside the real one.
+    legacy_bundle="$repo_dir/dist/Model Router.app"
+    if [ -d "$legacy_bundle" ] && [ "$legacy_bundle" != "$bundle_dir" ]; then
+      rm -rf "$legacy_bundle"
+      printf 'Removed the superseded in-checkout companion: %s\n' "$legacy_bundle"
+    fi
     printf 'Tray installed and supervised by launchd: %s\n' "$bundle_dir"
     ;;
   Linux)
