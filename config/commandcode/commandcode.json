@@ -3,7 +3,7 @@
   "providers": [
     {
       "id": "commandcode",
-      "displayName": "Command Code",
+      "displayName": "Command Code API",
       "kind": "openai-compatible",
       "ownedBy": "commandcode",
       "baseUrl": "https://api.commandcode.ai/provider/v1",
@@ -18,20 +18,12 @@
         "keychainServices": [
           "codex-router-commandcode"
         ],
-        "prompt": "Command Code API key",
-        "cliSession": {
-          "directory": ".commandcode",
-          "file": "auth.json",
-          "field": "apiKey",
-          "homeEnv": "COMMANDCODE_CLI_HOME",
-          "label": "Command Code CLI sign-in",
-          "loginCommand": "command-code login"
-        }
+        "prompt": "Command Code API key"
       }
     },
     {
       "id": "commandcode-messages",
-      "displayName": "Command Code Messages",
+      "displayName": "Command Code API Messages",
       "kind": "openai-compatible",
       "ownedBy": "commandcode",
       "variantOf": "commandcode",
@@ -48,7 +40,39 @@
         "keychainServices": [
           "codex-router-commandcode"
         ],
-        "prompt": "Command Code API key",
+        "prompt": "Command Code API key"
+      }
+    },
+    {
+      "id": "commandcode-oauth",
+      "displayName": "Command Code OAuth",
+      "kind": "openai-compatible",
+      "ownedBy": "commandcode",
+      "authVariantOf": "commandcode",
+      "baseUrl": "https://api.commandcode.ai/provider/v1",
+      "baseUrlEnv": "COMMANDCODE_BASE_URL",
+      "credential": {
+        "cliSession": {
+          "directory": ".commandcode",
+          "file": "auth.json",
+          "field": "apiKey",
+          "homeEnv": "COMMANDCODE_CLI_HOME",
+          "label": "Command Code CLI sign-in",
+          "loginCommand": "command-code login"
+        }
+      }
+    },
+    {
+      "id": "commandcode-oauth-messages",
+      "displayName": "Command Code OAuth Messages",
+      "kind": "openai-compatible",
+      "ownedBy": "commandcode",
+      "variantOf": "commandcode-oauth",
+      "authVariantOf": "commandcode-messages",
+      "protocol": "anthropic",
+      "baseUrl": "https://api.commandcode.ai/provider/v1",
+      "baseUrlEnv": "COMMANDCODE_BASE_URL",
+      "credential": {
         "cliSession": {
           "directory": ".commandcode",
           "file": "auth.json",

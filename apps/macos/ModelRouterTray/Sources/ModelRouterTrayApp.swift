@@ -385,7 +385,10 @@ final class RouterStore: ObservableObject {
     "zai-coding": "GLM",
     "qwen-plan": "Qwen",
     "ollama-cloud": "Ollama",
-    "commandcode": "Command Code",
+    // Same convention as Grok and Kimi: the sign-in route carries the plain
+    // product name and the stored-key route is marked as the API one.
+    "commandcode-oauth": "Command Code",
+    "commandcode": "CmdCode API",
   ]
 
   static func shortName(forRegistryProvider provider: RouterProviderInfo) -> String {
@@ -1681,13 +1684,6 @@ struct ProviderSetupState: Decodable, Identifiable, Equatable {
   let configured: Bool
   let cliInstalled: Bool?
   let action: String
-  // An API provider whose official CLI mints its key through a browser
-  // sign-in (Command Code) keeps `kind == "api"` and the key field, and adds
-  // these: `signIn` marks the second route, `signedIn` says the key in play
-  // came from that session, and `signInAction` is that route's next step.
-  let signIn: Bool?
-  let signedIn: Bool?
-  let signInAction: String?
 }
 
 private struct StatusItemLabel: View {
@@ -2573,26 +2569,14 @@ private struct ProviderSetupRow: View {
       return "Session expired · reconnect for account usage"
     }
     if setup.configured {
-      let visibility = provider.enabled ? "Available in Codex" : "Hidden from Codex"
-      return setup.signedIn == true
-        ? "Signed in · \(visibility)"
-        : "Ready · \(visibility)"
+      return provider.enabled ? "Ready · Available in Codex" : "Ready · Hidden from Codex"
     }
     switch setup.action {
     case "install": return "Official CLI required"
     case "login": return "Sign in with the official CLI"
-    case "add-key":
-      return offersSignIn ? "Sign in or paste an API key" : "API key required"
+    case "add-key": return "API key required"
     default: return "Setup required"
     }
-  }
-
-  private var offersSignIn: Bool { setup?.signIn == true }
-
-  // Names both halves when both will run, so one click never does more than
-  // the label promised.
-  private var signInTitle: String {
-    setup?.signInAction == "install" ? "Install & Sign In" : "Sign In"
   }
 
   @ViewBuilder
@@ -2623,21 +2607,6 @@ private struct ProviderSetupRow: View {
             .disabled(controlsDisabled)
           }
         }
-        // A key that came from the CLI sign-in can only be renewed by signing
-        // in again, so the row keeps that route reachable after connecting.
-        if offersSignIn {
-          Button(action: { onConnect() }) {
-            Image(systemName: "arrow.triangle.2.circlepath")
-              .font(.system(size: 10, weight: .semibold))
-              .frame(width: 20, height: 20)
-          }
-          .buttonStyle(.plain)
-          .foregroundStyle(routerAccent)
-          .help(setup?.signInAction == "install"
-            ? "Install the official CLI and sign in"
-            : "Sign in again with the official CLI")
-          .disabled(controlsDisabled)
-        }
         if setup?.kind == "api" {
           Button(action: { toggleKeyField() }) {
             Image(systemName: showingKeyField ? "xmark" : "pencil")
@@ -2667,22 +2636,11 @@ private struct ProviderSetupRow: View {
           .disabled(controlsDisabled)
       }
     } else {
-      HStack(spacing: 10) {
-        // Two ways in, both first-class: the browser sign-in the CLI drives,
-        // and the Studio key someone may already hold.
-        if offersSignIn {
-          Button(signInTitle) { onConnect() }
-            .buttonStyle(.plain)
-            .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(routerAccent)
-            .disabled(controlsDisabled)
-        }
-        Button(actionTitle) { performAction() }
-          .buttonStyle(.plain)
-          .font(.system(size: 10, weight: .medium))
-          .foregroundStyle(offersSignIn ? routerMuted : routerAccent)
-          .disabled(controlsDisabled || setup == nil)
-      }
+      Button(actionTitle) { performAction() }
+        .buttonStyle(.plain)
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(routerAccent)
+        .disabled(controlsDisabled || setup == nil)
     }
   }
 

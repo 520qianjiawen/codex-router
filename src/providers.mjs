@@ -10,6 +10,7 @@ import { providerNeedsCuration } from "./provider-onboarding.mjs";
 import {
   canonicalProviderId,
   disableProvider,
+  displacedAuthRoutes,
   enableProvider,
   readProviderSelection,
 } from "./provider-selection.mjs";
@@ -71,14 +72,16 @@ function main() {
   }
   if (command === "enable" && !configured(provider)) {
     const session = cliSessionDescriptor(provider);
-    const keySetup = `run \`${targetCli(`provider-key ${provider.id} set`)}\``;
     const setup = provider.kind === "oauth"
       ? SIGN_IN_STATUS[provider.id]?.setup || "sign in with the provider CLI"
       : session
-        ? `run \`${session.loginCommand}\` or ${keySetup}`
-        : keySetup;
+        ? `run \`${session.loginCommand}\``
+        : `run \`${targetCli(`provider-key ${provider.id} set`)}\``;
     throw new Error(`${provider.displayName} is not configured; ${setup} first.`);
   }
+  // Enabling one route into an account retires the other, so name the row that
+  // just disappeared instead of leaving it to be discovered in the picker.
+  const displaced = command === "enable" ? displacedAuthRoutes(providerId) : [];
   const providers = command === "enable"
     ? enableProvider(providerId)
     : disableProvider(providerId);
@@ -93,6 +96,13 @@ function main() {
   process.stdout.write(
     `${provider.displayName} ${visibility}. Enabled providers: ${providers.join(", ") || "none"}.${refreshed ? ` Fully quit and reopen ${targetPickerName()}.` : ""}\n`,
   );
+  if (displaced.length) {
+    process.stdout.write(
+      `${displaced
+        .map((id) => PROVIDERS.get(id)?.displayName || id)
+        .join(", ")} reaches the same account, so it was hidden to keep one copy of each model in the picker.\n`,
+    );
+  }
   if (uncurated) {
     process.stdout.write(
       `Run ./bin/curate-models ${providerId} in an interactive terminal to choose its models.\n`,

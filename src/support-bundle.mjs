@@ -88,7 +88,7 @@ function knownLocalSecrets() {
   for (const provider of PROVIDERS.values()) {
     if (provider.kind !== "openai-compatible") continue;
     files.push(...credentialPaths(provider));
-    for (const name of provider.credential.environment) {
+    for (const name of provider.credential.environment || []) {
       const value = process.env[name]?.trim();
       if (value) values.add(value);
     }

@@ -34,11 +34,14 @@ user.
    `opencode-go-responses`, and `opencode-zen` variants share its stored key
    and are enabled and disabled with it automatically; never select or toggle
    them separately. Zen ships no preselected models — curate them per user
-   with `bin/curate-models opencode-zen`), and/or `commandcode`
-   (shown to users as "Command Code"; its `commandcode-messages` variant
-   shares its stored key and is enabled and disabled with it automatically;
-   never select or toggle it separately. Command Code accepts either a stored
-   key or a `command-code login` browser sign-in — see step 5). The
+   with `bin/curate-models opencode-zen`), and/or exactly one Command Code
+   route: `commandcode-oauth` (shown as "Command Code", authenticated by a
+   `command-code login` browser sign-in — see step 5) or `commandcode`
+   (shown as "Command Code API", authenticated by a stored key). Both reach
+   the same endpoint and serve the same models, so enabling one hides the
+   other; ask which the user wants rather than enabling both. Their
+   `commandcode-messages` and `commandcode-oauth-messages` variants follow
+   their own route automatically; never select or toggle them separately. The
    catalog-only providers `groq`, `openrouter`, `together`, `fireworks`,
    `cerebras`, `mistral`, `nvidia-nim`, `siliconflow`, `huggingface`, and
    `gemini-api` are also selectable, but they ship no preselected models: after
@@ -208,12 +211,20 @@ surfaces.
      is the house rule for every provider, OAuth or CLI-session: implement it
      without asking.
    - A provider whose official CLI finishes a browser sign-in by minting an
-     API key into its own home directory (Command Code) is not an `oauth`
-     provider: it stays `openai-compatible` and declares
-     `credential.cliSession` in the registry so the resolver reads that file
-     after the environment, the stored key, and the Keychain. Add its CLI to
-     `SIGN_IN_CLIS` in `src/provider-onboarding.mjs` so the tray's install and
-     sign-in buttons work, and keep the key field available alongside.
+     API key into its own home directory (Command Code) is still
+     `openai-compatible` in the registry — there is no forwarder — but it
+     ships as its own provider id declaring `credential.cliSession` and no
+     `credential.file`. Every surface then treats it as an OAuth row: the tray
+     offers only the sign-in, and `provider-key ID set` refuses. Add its CLI to
+     `SIGN_IN_CLIS` in `src/provider-onboarding.mjs` so the install and sign-in
+     buttons work.
+   - Split a provider by credential only when the split is real. Two routes
+     into the same account get two provider ids joined by `authVariantOf`:
+     the variant declares no models of its own, the registry clones the
+     source's catalog into its namespace at load, and `provider-selection`
+     keeps exactly one route enabled so the picker never lists a model twice.
+     One model file therefore stays the single description of a model, and a
+     future model is added once. Never hand-write a second copy of a catalog.
    - Add the provider icon under
      `apps/macos/ModelRouterTray/Resources/` and record its source in
      `PROVIDER-ICON-SOURCES.md`.

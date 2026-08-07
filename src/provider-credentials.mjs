@@ -28,11 +28,25 @@ export function apiProvider(providerId) {
   return provider;
 }
 
+// A sign-in-only provider (Command Code OAuth) has no key of its own to store:
+// its credential comes from the CLI session file, which this router only ever
+// reads. Callers that write, delete, or locate a stored key ask this first.
+export function storesKey(provider) {
+  return Boolean(provider.credential?.file);
+}
+
 export function primaryCredentialPath(provider) {
+  if (!storesKey(provider)) {
+    const session = cliSessionDescriptor(provider);
+    throw new Error(
+      `${provider.displayName} does not store a key here; run \`${session.loginCommand}\` instead.`,
+    );
+  }
   return path.join(STATE_DIR, provider.credential.file);
 }
 
 export function credentialPaths(provider) {
+  if (!storesKey(provider)) return [];
   const names = [provider.credential.file, ...(provider.credential.legacyFiles || [])];
   const candidates = names.flatMap((name) => [
     path.join(STATE_DIR, name),
@@ -62,7 +76,7 @@ export function resolveProviderCredential(providerOrId, options = {}) {
   const provider =
     typeof providerOrId === "string" ? apiProvider(providerOrId) : providerOrId;
   if (!options.persistent) {
-    for (const name of provider.credential.environment) {
+    for (const name of provider.credential.environment || []) {
       const value = process.env[name]?.trim();
       if (value) return { value, source: `environment (${name})`, persistent: false };
     }
@@ -89,11 +103,9 @@ export function resolveProviderCredential(providerOrId, options = {}) {
 // naming only the key one would hide the OAuth flow from every surface that
 // prints this sentence (doctor, discovery errors, the enable gate).
 export function credentialSetupHint(provider) {
-  const keyCommand = targetCli(`provider-key ${provider.id} set`);
   const session = cliSessionDescriptor(provider);
-  return session
-    ? `Run \`${session.loginCommand}\`, or run ${keyCommand}`
-    : `Run ${keyCommand}`;
+  if (!storesKey(provider)) return `Run \`${session.loginCommand}\``;
+  return `Run ${targetCli(`provider-key ${provider.id} set`)}`;
 }
 
 export function credentialStatus(providerOrId, options = {}) {
@@ -108,6 +120,9 @@ export function credentialStatus(providerOrId, options = {}) {
 export function writeProviderCredential(providerOrId, value) {
   const provider =
     typeof providerOrId === "string" ? apiProvider(providerOrId) : providerOrId;
+  // Throws before touching the filesystem for a sign-in-only provider, so a
+  // mistyped provider id cannot write a key nothing would ever read.
+  primaryCredentialPath(provider);
   const key = String(value || "").trim();
   if (!key) throw new Error("No API key was entered; nothing changed.");
   mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });

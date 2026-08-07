@@ -58,7 +58,7 @@ const REPORT_SOURCE = `
   const { credentialStatus, resolveProviderCredential } =
     await import("./src/provider-credentials.mjs");
   const report = {};
-  for (const id of ["commandcode", "commandcode-messages"]) {
+  for (const id of ["commandcode", "commandcode-oauth", "commandcode-oauth-messages"]) {
     const provider = PROVIDERS.get(id);
     report[id] = {
       ...credentialStatus(provider, { persistent: true }),
@@ -68,110 +68,149 @@ const REPORT_SOURCE = `
   process.stdout.write(JSON.stringify(report));
 `;
 
-test("a Command Code CLI sign-in authenticates the provider and its Messages variant", () => {
+test("a Command Code sign-in authenticates the OAuth route and its Messages variant", () => {
   const { testRoot, sessionDirectory } = sessionRoot(SESSION_KEY);
   try {
     const report = inspect(environment(testRoot, sessionDirectory), REPORT_SOURCE);
-    for (const id of ["commandcode", "commandcode-messages"]) {
+    for (const id of ["commandcode-oauth", "commandcode-oauth-messages"]) {
       assert.equal(report[id].configured, true);
       assert.equal(report[id].source, "Command Code CLI sign-in");
       assert.equal(report[id].persistent, true);
       assert.equal(report[id].value, SESSION_KEY);
     }
+    // The stored-key route is a separate provider: a session never configures it.
+    assert.equal(report.commandcode.configured, false);
+    assert.equal(report.commandcode.setup, "Run ./bin/provider-key commandcode set");
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }
 });
 
-test("a stored key and an exported key both outrank the CLI sign-in", () => {
-  const { testRoot, sessionDirectory } = sessionRoot(SESSION_KEY);
+test("the sign-in route refuses to store a key of its own", () => {
+  const { testRoot, sessionDirectory } = sessionRoot();
   try {
-    const stored = spawnSync(
+    const result = spawnSync(
       process.execPath,
-      [path.join(root, "src", "control.mjs"), "credential", "commandcode"],
+      [path.join(root, "src", "control.mjs"), "credential", "commandcode-oauth"],
       {
         cwd: root,
         encoding: "utf8",
         env: environment(testRoot, sessionDirectory),
-        input: "TEST_COMMANDCODE_STORED_KEY\n",
+        input: "TEST_SHOULD_NOT_BE_STORED\n",
       },
     );
-    assert.equal(stored.status, 0, stored.stderr);
-
-    const withStoredKey = inspect(environment(testRoot, sessionDirectory), REPORT_SOURCE);
-    assert.equal(withStoredKey.commandcode.value, "TEST_COMMANDCODE_STORED_KEY");
-    assert.match(withStoredKey.commandcode.source, /protected file/);
-
-    const withEnvironmentKey = inspect(
-      environment(testRoot, sessionDirectory, {
-        COMMAND_CODE_API_KEY: "TEST_COMMANDCODE_ENV_KEY",
-      }),
-      REPORT_SOURCE,
-    );
-    assert.equal(withEnvironmentKey.commandcode.value, "TEST_COMMANDCODE_ENV_KEY");
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /does not store a key here; run `command-code login`/);
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }
 });
 
-test("an unusable session file leaves the provider unconfigured instead of failing", () => {
+test("an unusable session file leaves the route unconfigured instead of failing", () => {
   for (const contents of [{ raw: "{ not json" }, { raw: "{}" }, { raw: '{"apiKey":"  "}' }]) {
     const { testRoot, sessionDirectory } = sessionRoot(contents);
     try {
       const report = inspect(environment(testRoot, sessionDirectory), REPORT_SOURCE);
-      assert.equal(report.commandcode.configured, false);
-      assert.equal(
-        report.commandcode.setup,
-        "Run `command-code login`, or run ./bin/provider-key commandcode set",
-      );
+      assert.equal(report["commandcode-oauth"].configured, false);
+      assert.equal(report["commandcode-oauth"].setup, "Run `command-code login`");
     } finally {
       rmSync(testRoot, { recursive: true, force: true });
     }
   }
 });
 
-test("onboarding offers sign-in beside the key field and reports which one is live", () => {
+test("the sign-in route is an OAuth row in onboarding, with no key field", () => {
   const source = `
     const { providerOnboardingSnapshot } = await import("./src/provider-onboarding.mjs");
-    const entry = providerOnboardingSnapshot().providers
-      .find((provider) => provider.id === "commandcode");
-    process.stdout.write(JSON.stringify(entry));
+    const rows = providerOnboardingSnapshot().providers
+      .filter((provider) => provider.id.startsWith("commandcode"));
+    process.stdout.write(JSON.stringify(rows));
   `;
   const isolatedPath = process.platform === "win32"
-    ? [
-        path.join(process.env.SystemRoot ?? process.env.WINDIR ?? "C:\\Windows", "System32"),
-      ].join(path.delimiter)
+    ? path.join(process.env.SystemRoot ?? process.env.WINDIR ?? "C:\\Windows", "System32")
     : "/usr/bin:/bin";
 
-  const empty = sessionRoot();
+  const { testRoot, sessionDirectory } = sessionRoot(SESSION_KEY);
   try {
-    const entry = inspect(
-      environment(empty.testRoot, empty.sessionDirectory, { PATH: isolatedPath }),
+    const rows = inspect(
+      environment(testRoot, sessionDirectory, { PATH: isolatedPath }),
       source,
     );
-    assert.equal(entry.kind, "api");
-    assert.equal(entry.signIn, true);
-    assert.equal(entry.signedIn, false);
-    assert.equal(entry.configured, false);
-    assert.equal(entry.action, "add-key");
-    // Without the official CLI on PATH the sign-in route starts by installing it.
-    assert.equal(entry.cliInstalled, false);
-    assert.equal(entry.signInAction, "install");
+    // Protocol variants stay folded into their route, so there are exactly two.
+    assert.deepEqual(rows.map((row) => row.id), ["commandcode", "commandcode-oauth"]);
+    const [key, signIn] = rows;
+    assert.equal(key.kind, "api");
+    assert.equal(key.configured, false);
+    assert.equal(key.action, "add-key");
+    assert.equal(signIn.kind, "oauth");
+    assert.equal(signIn.configured, true);
+    assert.equal(signIn.action, "ready");
+    assert.equal("signIn" in signIn, false);
   } finally {
-    rmSync(empty.testRoot, { recursive: true, force: true });
+    rmSync(testRoot, { recursive: true, force: true });
   }
+});
 
-  const signedIn = sessionRoot(SESSION_KEY);
+test("enabling one Command Code route hides the other", () => {
+  const { testRoot, sessionDirectory } = sessionRoot(SESSION_KEY);
+  const environmentValues = environment(testRoot, sessionDirectory);
   try {
-    const entry = inspect(
-      environment(signedIn.testRoot, signedIn.sessionDirectory, { PATH: isolatedPath }),
-      source,
+    const stored = spawnSync(
+      process.execPath,
+      [path.join(root, "src", "control.mjs"), "credential", "commandcode"],
+      { cwd: root, encoding: "utf8", env: environmentValues, input: "TEST_COMMANDCODE_KEY\n" },
     );
-    assert.equal(entry.configured, true);
-    assert.equal(entry.signedIn, true);
-    assert.equal(entry.action, "ready");
+    assert.equal(stored.status, 0, stored.stderr);
+
+    const selection = (providerId) => {
+      const result = spawnSync(
+        process.execPath,
+        [path.join(root, "src", "providers.mjs"), "enable", providerId],
+        { cwd: root, encoding: "utf8", env: environmentValues },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      return { stdout: result.stdout, providers: readSelection() };
+    };
+    const readSelection = () =>
+      JSON.parse(
+        spawnSync(
+          process.execPath,
+          [path.join(root, "src", "provider-selection.mjs"), "status"],
+          { cwd: root, encoding: "utf8", env: environmentValues },
+        ).stdout,
+      ).providers;
+
+    const afterKey = selection("commandcode");
+    assert.ok(afterKey.providers.includes("commandcode"));
+    assert.ok(!afterKey.providers.includes("commandcode-oauth"));
+
+    const afterSignIn = selection("commandcode-oauth");
+    assert.ok(afterSignIn.providers.includes("commandcode-oauth"));
+    assert.ok(!afterSignIn.providers.includes("commandcode"));
+    // The displaced row is named rather than left to be noticed in the picker.
+    assert.match(afterSignIn.stdout, /Command Code API reaches the same account/);
   } finally {
-    rmSync(signedIn.testRoot, { recursive: true, force: true });
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("a selection may never name two routes into the same account", () => {
+  const { testRoot, sessionDirectory } = sessionRoot(SESSION_KEY);
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(root, "src", "provider-selection.mjs"),
+        "set",
+        "commandcode-oauth,commandcode,deepseek",
+      ],
+      { cwd: root, encoding: "utf8", env: environment(testRoot, sessionDirectory) },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    // The stored-key route wins the tie because setting it up was deliberate.
+    assert.deepEqual(JSON.parse(result.stdout).providers, ["commandcode", "deepseek"]);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
   }
 });
 
@@ -179,18 +218,16 @@ test("a support bundle redacts a key that came from the CLI sign-in", () => {
   const { testRoot, sessionDirectory } = sessionRoot(SESSION_KEY);
   try {
     // Plant the session key somewhere the bundle genuinely copies from, so the
-    // assertion proves redaction rather than mere absence.
+    // assertion proves redaction rather than mere absence. Bare, so the generic
+    // log scrubber cannot catch it: only knowing the session key removes it.
     const stateDirectory = path.join(testRoot, "state");
     mkdirSync(stateDirectory, { recursive: true, mode: 0o700 });
     writeFileSync(
       path.join(stateDirectory, "router.log"),
-      // Bare, so the generic log scrubber cannot catch it: only knowing the
-      // session key itself removes this line's secret.
       `upstream rejected the credential ${SESSION_KEY} for commandcode\n`,
       { mode: 0o600 },
     );
     const source = `
-      const { PROVIDERS } = await import("./src/model-registry.mjs");
       const { createSupportBundle } = await import("./src/support-bundle.mjs");
       const { readFileSync } = await import("node:fs");
       createSupportBundle({ output: process.env.BUNDLE_PATH, includeLogs: true });
@@ -198,8 +235,7 @@ test("a support bundle redacts a key that came from the CLI sign-in", () => {
       process.stdout.write(JSON.stringify({
         leaked: contents.includes(${JSON.stringify(SESSION_KEY)}),
         redacted: contents.includes("[REDACTED]"),
-        source: JSON.parse(contents).credentialSources?.commandcode?.source,
-        provider: PROVIDERS.get("commandcode").id,
+        source: JSON.parse(contents).credentialSources?.["commandcode-oauth"]?.source,
       }));
     `;
     const report = inspect(
@@ -214,6 +250,28 @@ test("a support bundle redacts a key that came from the CLI sign-in", () => {
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }
+});
+
+test("the sign-in route mirrors the stored-key catalog exactly", () => {
+  const source = `
+    const { MODELS } = await import("./src/model-registry.mjs");
+    const shape = (provider) => MODELS
+      .filter((model) => model.provider === provider)
+      .map((model) => [model.slug.slice(provider.length + 1), model.displayName, model.priority]);
+    process.stdout.write(JSON.stringify({
+      key: shape("commandcode"),
+      signIn: shape("commandcode-oauth"),
+      keyMessages: shape("commandcode-messages"),
+      signInMessages: shape("commandcode-oauth-messages"),
+      gateways: MODELS.filter((m) => m.provider === "commandcode-oauth").map((m) => m.gatewayModel),
+    }));
+  `;
+  const catalog = inspect(process.env, source);
+  assert.ok(catalog.key.length > 0);
+  assert.deepEqual(catalog.signIn, catalog.key);
+  assert.deepEqual(catalog.signInMessages, catalog.keyMessages);
+  // Distinct gateway ids keep the two routes addressable apart on the wire.
+  assert.ok(catalog.gateways.every((id) => id.startsWith("commandcode-oauth-")));
 });
 
 test("a CLI session descriptor may not escape its own home directory", () => {
@@ -232,11 +290,10 @@ test("a CLI session descriptor may not escape its own home directory", () => {
       ).stdout,
     );
     registry.providers = registry.providers.map((provider) =>
-      provider.id === "commandcode"
+      provider.id === "commandcode-oauth"
         ? {
             ...provider,
             credential: {
-              ...provider.credential,
               cliSession: { ...provider.credential.cliSession, directory: "../secrets" },
             },
           }
@@ -254,6 +311,48 @@ test("a CLI session descriptor may not escape its own home directory", () => {
     );
     assert.equal(result.status, 1);
     assert.match(result.stderr, /cliSession directory must be a single path segment/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an auth variant may not declare its own models", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "auth-variant-registry-"));
+  try {
+    const registry = JSON.parse(
+      spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `const { readRegistryDocument } = await import("./src/model-registry.mjs");
+           process.stdout.write(JSON.stringify(readRegistryDocument("config")));`,
+        ],
+        { cwd: root, encoding: "utf8", env: process.env },
+      ).stdout,
+    );
+    const donor = registry.models.find((model) => model.provider === "commandcode");
+    registry.models = [
+      ...registry.models,
+      {
+        ...donor,
+        provider: "commandcode-oauth",
+        slug: "commandcode-oauth/hand-written",
+        gatewayModel: "commandcode-oauth-hand-written",
+      },
+    ];
+    const registryPath = path.join(dir, "providers.json");
+    writeFileSync(registryPath, JSON.stringify(registry));
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        "import('./src/model-registry.mjs').catch((e)=>{console.error(e.message);process.exit(1);})",
+      ],
+      { cwd: root, encoding: "utf8", env: { ...process.env, MODEL_ROUTER_REGISTRY: registryPath } },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /must not declare models; they are cloned from commandcode/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
