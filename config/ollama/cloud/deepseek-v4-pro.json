@@ -15,6 +15,10 @@
         {
           "effort": "high",
           "description": "Adaptive deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
         }
       ],
       "contextWindow": 524288,
@@ -23,7 +27,7 @@
         "text"
       ],
       "requestProfile": "ollama-cloud",
-      "compHash": "ollama-cloud-deepseek-v4-pro-v1"
+      "compHash": "ollama-cloud-deepseek-v4-pro-v2"
     }
   ]
 }

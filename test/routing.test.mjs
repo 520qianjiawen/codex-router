@@ -1446,9 +1446,15 @@ test("API forwarder routes Ollama Cloud models without unsupported parameters", 
     await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
       Authorization: `Bearer ${INTERNAL_KEY}`,
     });
-    for (const [gatewayModel, upstreamModel] of [
-      ["ollama-cloud-glm-5-2", "glm-5.2"],
-      ["ollama-cloud-kimi-k2-7-code", "kimi-k2.7-code"],
+    // Ollama accepts high/medium/low/max/none and errors on anything else, so
+    // Codex-only rungs must be mapped rather than forwarded verbatim.
+    for (const [gatewayModel, upstreamModel, sentEffort, expectedEffort] of [
+      ["ollama-cloud-glm-5-2", "glm-5.2", "high", "high"],
+      ["ollama-cloud-glm-5-2", "glm-5.2", "max", "max"],
+      ["ollama-cloud-glm-5-2", "glm-5.2", "xhigh", "max"],
+      ["ollama-cloud-glm-5-2", "glm-5.2", "minimal", "low"],
+      ["ollama-cloud-glm-5-2", "glm-5.2", "bogus", "high"],
+      ["ollama-cloud-kimi-k2-7-code", "kimi-k2.7-code", "high", "high"],
     ]) {
       const response = await fetch(
         `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
@@ -1462,7 +1468,7 @@ test("API forwarder routes Ollama Cloud models without unsupported parameters", 
           },
           body: JSON.stringify({
             model: gatewayModel,
-            reasoning_effort: "high",
+            reasoning_effort: sentEffort,
             messages: [{ role: "user", content: "test" }],
           }),
         },
@@ -1473,8 +1479,23 @@ test("API forwarder routes Ollama Cloud models without unsupported parameters", 
       assert.equal(request.headers["chatgpt-account-id"], undefined);
       assert.equal(request.headers["x-codex-installation-id"], undefined);
       assert.equal(request.body.model, upstreamModel);
-      assert.equal(request.body.reasoning_effort, undefined);
+      assert.equal(request.body.reasoning_effort, expectedEffort);
+      assert.equal(request.body.think, undefined);
     }
+
+    // An absent effort stays absent so Ollama applies the model's own default.
+    await fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "ollama-cloud-glm-5-2",
+        messages: [{ role: "user", content: "test" }],
+      }),
+    });
+    assert.equal(upstreamRequests.at(-1).body.reasoning_effort, undefined);
   } finally {
     await stopChild(forwarder);
     await closeServer(upstream.server);

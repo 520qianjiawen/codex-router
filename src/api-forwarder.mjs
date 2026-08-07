@@ -69,6 +69,19 @@ function kimiK3Effort(value) {
   return undefined;
 }
 
+// Ollama's OpenAI-compatible surface documents reasoning_effort as of v0.18.0
+// and validates it against high/medium/low/max/none, erroring on anything else
+// -- so Codex-only rungs must be mapped instead of forwarded verbatim. "none"
+// is never produced here: it disables thinking, which no advertised level asks
+// for. An unrecognized value falls back to the documented default rather than
+// failing the turn.
+function ollamaCloudEffort(value) {
+  if (["low", "minimal"].includes(value)) return "low";
+  if (value === "medium") return "medium";
+  if (["xhigh", "max", "ultra"].includes(value)) return "max";
+  return "high";
+}
+
 // Strict chat-completions providers (e.g. MiniMax) reject a turn whose tool
 // result messages do not immediately follow the assistant message carrying the
 // matching tool_calls. When the upstream Responses-API history is translated to
@@ -243,9 +256,13 @@ function normalizeBody(buffer, contentType, route) {
     payload.thinking = { type: "disabled" };
     delete payload.reasoning_effort;
   } else if (model.requestProfile === "ollama-cloud") {
-    // Ollama's OpenAI-compatible surface does not document reasoning_effort;
-    // hosted models reason by default, so drop the parameter.
-    delete payload.reasoning_effort;
+    // Absent means the model's own default; Ollama enables thinking on capable
+    // models when the parameter is omitted.
+    if (payload.reasoning_effort !== undefined) {
+      payload.reasoning_effort = ollamaCloudEffort(payload.reasoning_effort);
+    }
+    // The native think parameter is ignored on this endpoint.
+    delete payload.think;
   } else if (model.requestProfile === "qwen-plan") {
     // DashScope documents reasoning_effort only for the cross-vendor
     // DeepSeek/GLM models it resells (high/max; low/medium collapse to high,

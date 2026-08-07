@@ -289,17 +289,19 @@ test("resellers of one upstream model share a default effort when their ladders 
   }
 });
 
-// Ollama's OpenAI-compatible surface has no reasoning_effort parameter, so the
-// forwarder drops it. Advertising a second tier would put a level in the picker
-// that cannot reach the upstream at all.
-test("Ollama Cloud models advertise the single tier their forwarder can honor", () => {
+// Ollama validates reasoning_effort against high/medium/low/max/none and
+// rejects anything else outright, so a level the forwarder cannot map into that
+// set would 400 the moment a user picked it.
+test("Ollama Cloud models advertise only levels Ollama accepts", () => {
+  const accepted = new Set(["low", "medium", "high", "max"]);
   for (const model of MODELS) {
     if (model.requestProfile !== "ollama-cloud") continue;
-    assert.deepEqual(
-      (model.reasoningLevels || []).map((level) => level.effort),
-      ["high"],
-      `${model.slug} advertises a level the ollama-cloud profile discards`,
-    );
+    for (const level of model.reasoningLevels || []) {
+      assert.ok(
+        accepted.has(level.effort),
+        `${model.slug} advertises ${level.effort}, which Ollama would reject`,
+      );
+    }
   }
 });
 
