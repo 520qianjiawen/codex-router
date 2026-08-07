@@ -19,7 +19,11 @@ case $(uname -s) in
     # a login item alone only covers the login case, which left a crashed tray
     # gone until the next one.
     node "$repo_dir/src/tray-service.mjs" install >/dev/null
-    node "$repo_dir/src/install-plan.mjs" record-tray >/dev/null 2>&1 || true
+    # Not silenced: without the stamp every later update rebuilds the companion
+    # from scratch, which is the cost this step exists to avoid. Losing it is
+    # wasteful rather than dangerous, so say so and carry on.
+    node "$repo_dir/src/install-plan.mjs" record-tray >/dev/null \
+      || printf 'codex-router: could not stamp the companion build; the next update will rebuild it.\n' >&2
     # Companions built before the per-user move sit inside the checkout. The
     # agent now points at the shared bundle, so the old copy is dead weight
     # that a stray `open` could still launch alongside the real one.

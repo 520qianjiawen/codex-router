@@ -147,12 +147,17 @@ node src/tray-service.mjs install >/dev/null 2>&1 || true
 tray_plan=$(node src/install-plan.mjs tray-plan 2>/dev/null || echo absent)
 case "$tray_plan" in
   rebuild)
-    if "$repo_dir/bin/model-router-tray" >/dev/null 2>&1; then
-      node src/install-plan.mjs record-tray >/dev/null 2>&1 || true
+    # Keep the build output instead of discarding it: a swallowed failure here
+    # is indistinguishable from success, and the companion would silently stay
+    # on its old binary exactly as it did before this step existed.
+    tray_log=$(mktemp)
+    if "$repo_dir/bin/model-router-tray" >"$tray_log" 2>&1; then
       echo "Menu-bar companion rebuilt from the updated sources."
     else
       echo "Menu-bar companion could not be rebuilt; the router is installed. Retry with ./bin/model-router-tray." >&2
+      sed 's/^/  /' "$tray_log" >&2
     fi
+    rm -f "$tray_log"
     ;;
   skip)
     echo "Menu-bar companion already matches its sources; skipping the tray build."
