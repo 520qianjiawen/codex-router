@@ -1,0 +1,72 @@
+import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import { DEFAULT_MAX_LOG_BYTES, logRotationPlan, rotateLog } from "../src/log-rotation.mjs";
+
+function scratch() {
+  return mkdtempSync(path.join(os.tmpdir(), "log-rotation-"));
+}
+
+test("a log under the cap is left alone", () => {
+  assert.equal(logRotationPlan(0), "keep");
+  assert.equal(logRotationPlan(DEFAULT_MAX_LOG_BYTES), "keep");
+  assert.equal(logRotationPlan(DEFAULT_MAX_LOG_BYTES + 1), "rotate");
+});
+
+test("an unreadable size never triggers rotation", () => {
+  // Housekeeping must not act on a number it does not trust; the service has
+  // to start either way.
+  assert.equal(logRotationPlan(Number.NaN), "keep");
+  assert.equal(logRotationPlan(-1), "keep");
+});
+
+test("an oversized log is moved aside and the content is preserved", () => {
+  const dir = scratch();
+  const log = path.join(dir, "router.log");
+  try {
+    writeFileSync(log, "x".repeat(DEFAULT_MAX_LOG_BYTES + 10), "utf8");
+    const result = rotateLog(log);
+    assert.equal(result.rotated, true);
+    // Rotated, not deleted: the tail before a restart is often the only
+    // record of why the service died.
+    assert.equal(existsSync(log), false);
+    assert.equal(existsSync(`${log}.1`), true);
+    assert.equal(readFileSync(`${log}.1`, "utf8").length, DEFAULT_MAX_LOG_BYTES + 10);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("only one previous generation is kept", () => {
+  const dir = scratch();
+  const log = path.join(dir, "router.log");
+  try {
+    writeFileSync(`${log}.1`, "oldest", "utf8");
+    writeFileSync(log, "y".repeat(DEFAULT_MAX_LOG_BYTES + 10), "utf8");
+    assert.equal(rotateLog(log).rotated, true);
+    // Two files bound the worst case at 2x the cap; without replacing the
+    // previous generation the directory would grow without limit instead.
+    assert.equal(existsSync(`${log}.2`), false);
+    assert.notEqual(readFileSync(`${log}.1`, "utf8"), "oldest");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a small log and a missing log both leave the service startable", () => {
+  const dir = scratch();
+  const log = path.join(dir, "router.log");
+  try {
+    assert.deepEqual(rotateLog(log), { rotated: false, reason: "absent" });
+    writeFileSync(log, "small", "utf8");
+    const result = rotateLog(log);
+    assert.equal(result.rotated, false);
+    assert.equal(result.reason, "under-cap");
+    assert.equal(readFileSync(log, "utf8"), "small");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

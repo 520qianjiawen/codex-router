@@ -86,14 +86,52 @@ test("a companion left inside a checkout is migrated, not abandoned", () => {
   }
 });
 
-test("a companion is never built off macOS", () => {
+test("Windows has no companion to keep in sync", () => {
   const home = scratch();
   try {
-    assert.equal(trayRebuildPlan({ root, platform: "linux", home }), "unsupported");
     assert.equal(trayRebuildPlan({ root, platform: "win32", home }), "unsupported");
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+// trayDecision offers the companion on Linux too. Answering "unsupported"
+// there left Linux users with the drift this gating exists to prevent.
+test("a Linux companion is kept in sync like the macOS one", () => {
+  const home = scratch();
+  const fakeRoot = scratch();
+  const release = path.join(fakeRoot, "apps", "desktop", "src-tauri", "target", "release");
+  const rust = path.join(fakeRoot, "apps", "desktop", "src-tauri", "src");
+  try {
+    mkdirSync(rust, { recursive: true });
+    writeFileSync(path.join(rust, "main.rs"), "fn main() {}\n", "utf8");
+
+    // Nothing built yet: an update must not install one unasked, same as macOS.
+    assert.equal(trayRebuildPlan({ root: fakeRoot, platform: "linux", home }), "absent");
+
+    mkdirSync(release, { recursive: true });
+    writeFileSync(path.join(release, "codex-router-desktop"), "binary", "utf8");
+    assert.equal(trayRebuildPlan({ root: fakeRoot, platform: "linux", home }), "rebuild");
+
+    recordTrayBuild({ root: fakeRoot, platform: "linux", home });
+    assert.equal(trayRebuildPlan({ root: fakeRoot, platform: "linux", home }), "skip");
+
+    writeFileSync(path.join(rust, "main.rs"), "fn main() { /* changed */ }\n", "utf8");
+    assert.equal(trayRebuildPlan({ root: fakeRoot, platform: "linux", home }), "rebuild");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(fakeRoot, { recursive: true, force: true });
+  }
+});
+
+test("each platform fingerprints its own sources", () => {
+  // A shared fingerprint would make a Swift edit look like a reason to rebuild
+  // the Tauri app, and vice versa.
+  assert.notEqual(
+    traySourceFingerprint(root, "darwin"),
+    traySourceFingerprint(root, "linux"),
+  );
+  assert.equal(traySourceFingerprint(root, "win32"), "");
 });
 
 test("one companion location: the Node and shell sides name the same directory", () => {
