@@ -10,7 +10,7 @@ import { readUserModels, userModelEntry, writeUserModels } from "./user-models.m
 
 // Interactive curation: list the provider's live models that are not part of
 // the checked-in registry, let the user toggle the ones they want, and persist
-// them as user models. Discovery never edits config/providers.json.
+// them as user models. Discovery never edits the checked-in config/ registry tree.
 
 const providerId = process.argv[2];
 const modelsOption = (() => {

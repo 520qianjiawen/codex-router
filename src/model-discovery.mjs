@@ -63,7 +63,7 @@ async function main() {
     process.stdout.write(`Usage: discover-models PROVIDER [--fixture FILE] [--json]
 
 Queries an API-key provider's official /models endpoint and compares it with
-config/providers.json. Credential values are never printed or written.
+the checked-in config/ registry tree. Credential values are never printed or written.
 `);
     return;
   }

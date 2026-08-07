@@ -8,78 +8,81 @@ import {
   MODEL_BY_SLUG,
   MODELS,
   PROVIDERS,
+  readRegistryDocument,
 } from "../src/model-registry.mjs";
 
 test("provider registry exposes configured API and OAuth model families", () => {
+  // Order follows the deterministic sorted walk of the config/ vendor tree;
+  // picker placement comes from each model's priority field, not this list.
   assert.deepEqual(
     LISTED_MODELS.map((model) => model.slug),
     [
-      "kimi-oauth/kimi-for-coding",
-      "kimi-oauth/kimi-for-coding-highspeed",
-      "kimi-oauth/k3",
-      "kimi-api/kimi-k3",
+      "anthropic-api/claude-opus-4.8",
+      "commandcode/deepseek-v4-flash",
+      "commandcode/deepseek-v4-pro",
+      "commandcode/gemini-3.5-flash",
+      "commandcode/glm-5.2",
+      "commandcode/gpt-5.5",
+      "commandcode/gpt-5.6-luna",
+      "commandcode/grok-4.5",
+      "commandcode/hy3-paid",
+      "commandcode/kimi-k2.7-code",
+      "commandcode/kimi-k3",
+      "commandcode-messages/claude-fable-5",
+      "commandcode-messages/claude-haiku-4.5",
+      "commandcode-messages/claude-opus-4.8",
+      "commandcode-messages/claude-sonnet-5",
+      "commandcode/mimo-v2.5-pro",
+      "commandcode/minimax-m2.7",
+      "commandcode/minimax-m3",
+      "commandcode/qwen3.7-max",
+      "commandcode/qwen3.7-plus",
+      "commandcode/qwen3.8-max",
+      "commandcode/step-3.7-flash",
       "deepseek/deepseek-v4-flash",
       "deepseek/deepseek-v4-pro",
-      "grok-oauth/grok-4.5",
       "grok-api/grok-4.5",
-      "anthropic-api/claude-opus-4.8",
-      "zai-coding/glm-5.2",
-      "zai-coding/glm-5-turbo",
-      "qwen-plan/qwen3.7-max",
-      "qwen-plan/qwen3.7-plus",
-      "qwen-plan/qwen3.8-max",
-      "qwen-plan/qwen3.8-max-preview",
-      "qwen-plan/qwen3.6-flash",
-      "qwen-plan/deepseek-v4-pro",
-      "qwen-plan/deepseek-v4-flash-0731",
-      "qwen-plan/glm-5.2",
+      "grok-oauth/grok-4.5",
+      "kimi-api/kimi-k3",
+      "kimi-oauth/k3",
+      "kimi-oauth/kimi-for-coding-highspeed",
+      "kimi-oauth/kimi-for-coding",
+      "meta/muse-spark-1.1",
+      "meta/muse-spark-1.2-contributor",
+      "meta/muse-spark-1.2",
+      "minimax-token-plan/minimax-m3",
+      "ollama-cloud/deepseek-v4-pro",
       "ollama-cloud/glm-5.2",
       "ollama-cloud/kimi-k2.7-code",
       "ollama-cloud/minimax-m3",
-      "ollama-cloud/deepseek-v4-pro",
-      "minimax-token-plan/minimax-m3",
-      "opencode-go/grok-4.5",
-      "opencode-go/glm-5.2",
-      "opencode-go/glm-5.1",
-      "opencode-go/kimi-k3",
-      "opencode-go/kimi-k2.7-code",
-      "opencode-go/kimi-k2.6",
-      "opencode-go/deepseek-v4-pro",
       "opencode-go/deepseek-v4-flash",
-      "opencode-go/mimo-v2.5",
+      "opencode-go/deepseek-v4-pro",
+      "opencode-go/glm-5.1",
+      "opencode-go/glm-5.2",
+      "opencode-go/grok-4.5",
+      "opencode-go/hy3",
+      "opencode-go/kimi-k2.6",
+      "opencode-go/kimi-k2.7-code",
+      "opencode-go/kimi-k3",
       "opencode-go/mimo-v2.5-pro",
-      "opencode-go-messages/minimax-m3",
+      "opencode-go/mimo-v2.5",
       "opencode-go-messages/minimax-m2.7",
-      "opencode-go-messages/qwen3.8-max",
+      "opencode-go-messages/minimax-m3",
+      "opencode-go-messages/qwen3.6-plus",
       "opencode-go-messages/qwen3.7-max",
       "opencode-go-messages/qwen3.7-plus",
-      "opencode-go-messages/qwen3.6-plus",
-      "opencode-go/hy3",
+      "opencode-go-messages/qwen3.8-max",
       "opencode-go-responses/gpt-5.6-luna",
-      "commandcode/deepseek-v4-flash",
-      "commandcode/deepseek-v4-pro",
-      "commandcode/glm-5.2",
-      "commandcode/kimi-k3",
-      "commandcode/kimi-k2.7-code",
-      "commandcode/qwen3.8-max",
-      "commandcode/qwen3.7-max",
-      "commandcode/qwen3.7-plus",
-      "commandcode/minimax-m3",
-      "commandcode/minimax-m2.7",
-      "commandcode/mimo-v2.5-pro",
-      "commandcode/grok-4.5",
-      "commandcode/gpt-5.6-luna",
-      "commandcode/gpt-5.5",
-      "commandcode/gemini-3.5-flash",
-      "commandcode/hy3-paid",
-      "commandcode/step-3.7-flash",
-      "commandcode-messages/claude-sonnet-5",
-      "commandcode-messages/claude-opus-4.8",
-      "commandcode-messages/claude-fable-5",
-      "commandcode-messages/claude-haiku-4.5",
-      "meta/muse-spark-1.2",
-      "meta/muse-spark-1.2-contributor",
-      "meta/muse-spark-1.1",
+      "qwen-plan/deepseek-v4-flash-0731",
+      "qwen-plan/deepseek-v4-pro",
+      "qwen-plan/glm-5.2",
+      "qwen-plan/qwen3.6-flash",
+      "qwen-plan/qwen3.7-max",
+      "qwen-plan/qwen3.7-plus",
+      "qwen-plan/qwen3.8-max-preview",
+      "qwen-plan/qwen3.8-max",
+      "zai-coding/glm-5-turbo",
+      "zai-coding/glm-5.2",
     ],
   );
   assert.equal(PROVIDERS.get("deepseek").baseUrl, "https://api.deepseek.com");
@@ -260,6 +263,48 @@ test("deprecated DeepSeek aliases remain routable but stay out of the picker", (
   }
 });
 
+// Providers that resell the same upstream model and expose the same effort
+// ladder must agree on the default. Profiles like qwen-plan always send an
+// explicit reasoning_effort, so a divergent default silently gives users a
+// weaker tier on one provider than the same model offers on another.
+test("resellers of one upstream model share a default effort when their ladders match", () => {
+  const groups = new Map();
+  for (const model of MODELS) {
+    const ladder = (model.reasoningLevels || []).map((level) => level.effort).join(",");
+    if (!ladder) continue;
+    const key = `${model.upstreamModel || model.slug.split("/").at(-1)}|${ladder}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(model);
+  }
+  for (const [key, models] of groups) {
+    if (models.length < 2) continue;
+    const defaults = new Set(models.map((model) => model.defaultEffort));
+    assert.equal(
+      defaults.size,
+      1,
+      `${key} disagrees on defaultEffort: ${models
+        .map((model) => `${model.slug}=${model.defaultEffort}`)
+        .join(", ")}`,
+    );
+  }
+});
+
+// Ollama validates reasoning_effort against high/medium/low/max/none and
+// rejects anything else outright, so a level the forwarder cannot map into that
+// set would 400 the moment a user picked it.
+test("Ollama Cloud models advertise only levels Ollama accepts", () => {
+  const accepted = new Set(["low", "medium", "high", "max"]);
+  for (const model of MODELS) {
+    if (model.requestProfile !== "ollama-cloud") continue;
+    for (const level of model.reasoningLevels || []) {
+      assert.ok(
+        accepted.has(level.effort),
+        `${model.slug} advertises ${level.effort}, which Ollama would reject`,
+      );
+    }
+  }
+});
+
 test("LiteLLM configuration is generated from every registry route", () => {
   const rendered = renderLiteLlmConfig();
   for (const model of MODELS) {
@@ -321,13 +366,13 @@ test("a checked-in upgrade prompt with an unresolvable target fails the registry
   const { spawnSync } = await import("node:child_process");
   const dir = mkdtempSync(path.join(tmpdir(), "registry-upgrade-test-"));
   try {
-    const registry = JSON.parse(
-      (await import("node:fs")).readFileSync("config/providers.json", "utf8"),
-    );
-    registry.models[0] = {
-      ...registry.models[0],
-      upgradeTo: { model: "no-such/model", markdown: "Upgrade now" },
-    };
+    // The merged document round-trips into the single-file registry format
+    // that MODEL_ROUTER_REGISTRY overrides still accept.
+    const registry = readRegistryDocument("config");
+    registry.models = [
+      { ...registry.models[0], upgradeTo: { model: "no-such/model", markdown: "Upgrade now" } },
+      ...registry.models.slice(1),
+    ];
     const registryPath = path.join(dir, "providers.json");
     writeFileSync(registryPath, JSON.stringify(registry));
     const result = spawnSync(

@@ -587,7 +587,7 @@ provider does not implement.
 
 ## Add future providers and models
 
-[`config/providers.json`](config/providers.json) is the validated registry for
+The [`config/`](config/) registry tree is the validated registry for
 provider metadata, picker entries, upstream IDs, API protocols, context limits, request
 profiles, modalities, and credential sources. Tested OpenAI-compatible and
 Anthropic API providers share one credential-isolating forwarder and appear

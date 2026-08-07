@@ -4,7 +4,7 @@ import path from "node:path";
 import { protectPrivateFile } from "./file-security.mjs";
 import { STATE_DIR } from "./paths.mjs";
 
-// User-curated models live outside config/providers.json so a checkout update
+// User-curated models live outside the checked-in config/ registry tree so a checkout update
 // never discards them. Entries carry the same shape as registry models;
 // metadata uses conservative defaults the user can adjust at curation time
 // (bin/curate-models asks for context, modalities, and reasoning efforts) or

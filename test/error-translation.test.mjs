@@ -117,6 +117,43 @@ test("a 401 from an OAuth provider says sign in again, not re-run setup", () => 
   assert.ok(!payload.error.message.includes("codex-router setup"));
 });
 
+// Captured from a live Kimi OAuth 403: an exhausted plan arrives on the same
+// status as a rejected session, so the body has to win. Telling the user to
+// sign in again would send them through a login that cannot fix anything.
+test("an OAuth 403 whose body reports an exhausted plan is out-of-usage, not a sign-in prompt", () => {
+  const payload = translateGatewayError({
+    status: 403,
+    bodyText: JSON.stringify({
+      error: {
+        message:
+          "You've reached your usage limit for this billing cycle. Your quota will be refreshed in the next cycle. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/code/#pricing",
+      },
+    }),
+    modelName: "Kimi K3 (OAuth)",
+    providerName: "kimi",
+    providerKind: "oauth",
+  });
+  assert.equal(payload.error.type, "billing_error");
+  assert.ok(payload.error.message.startsWith("You have run out of usage at kimi"));
+  assert.ok(!payload.error.message.includes("Sign in"));
+});
+
+test("a usage-limit body in either word order is out-of-usage", () => {
+  for (const message of [
+    "Usage limit reached for this billing period.",
+    "You have reached your usage limit.",
+    "Monthly usage limit exceeded.",
+  ]) {
+    const payload = translateGatewayError({
+      status: 429,
+      bodyText: JSON.stringify({ error: { message } }),
+      modelName: "Test Model",
+      providerName: "testprovider",
+    });
+    assert.equal(payload.error.type, "billing_error", `not classified: ${message}`);
+  }
+});
+
 test("a 403 from an OAuth provider also asks for a fresh sign-in", () => {
   const payload = translateGatewayError({
     status: 403,
