@@ -52,7 +52,10 @@ user.
    prompt receives the value directly; do not relay it through chat. Command
    Code also accepts a browser sign-in: reuse a valid `command-code login`
    session (`~/.commandcode/auth.json`), or run that CLI in an interactive
-   terminal. Read the session only through the router's credential resolver;
+   terminal. A successful sign-in does not mean the account may use the
+   Provider API: that needs the Provider plan, and a Go-plan key is refused
+   with "Your Go plan doesn't include API access". Say so rather than
+   re-running setup, which cannot change an entitlement. Read the session only through the router's credential resolver;
    never open, copy, move, or delete another tool's credential file.
 6. Run read-only legacy detection. It is safe to pass `--migrate-known` when the
    detector identifies a repository-recognized older Codex Router: migration is

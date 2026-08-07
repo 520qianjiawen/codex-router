@@ -225,7 +225,15 @@ Code CLI. Everything appears as one
 `commandcode` for Chat Completions models and `commandcode-messages` for
 models that require the Messages protocol (Claude).
 
-There are two ways to authenticate, and either one is enough.
+**The Provider plan is required, and signing in does not grant it.** A Go-plan
+account can run the Command Code CLI but is refused by `/provider/v1` with
+`Your Go plan doesn't include API access`. That is an entitlement, not a
+credential problem: no sign-in, key, or reinstall changes it. Check the plan
+at [commandcode.ai/billing](https://commandcode.ai/billing) before enabling
+this provider.
+
+Given the Provider plan, there are two ways to authenticate, and either one is
+enough.
 
 **Sign in through the browser (OAuth).** `command-code login` opens the
 Command Code authorization page, receives the callback on a temporary local

@@ -30,6 +30,9 @@ test("automatic selection-only setup exposes only configured providers", () => {
           CODEX_ROUTER_STATE_DIR: stateDir,
           KIMI_CODE_HOME: path.join(testRoot, "kimi-code"),
           GROK_AUTH_PATH: path.join(testRoot, "grok", "auth.json"),
+          // A real `command-code login` on the developer's machine would
+          // otherwise count as a configured provider here.
+          COMMANDCODE_CLI_HOME: path.join(testRoot, "commandcode"),
           CODEX_ROUTER_LAUNCH_AGENTS_DIR: path.join(testRoot, "LaunchAgents"),
           CODEX_ROUTER_SKIP_LAUNCHCTL: "1",
           DEEPSEEK_API_KEY: "",
