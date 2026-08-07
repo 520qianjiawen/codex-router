@@ -263,6 +263,46 @@ test("deprecated DeepSeek aliases remain routable but stay out of the picker", (
   }
 });
 
+// Providers that resell the same upstream model and expose the same effort
+// ladder must agree on the default. Profiles like qwen-plan always send an
+// explicit reasoning_effort, so a divergent default silently gives users a
+// weaker tier on one provider than the same model offers on another.
+test("resellers of one upstream model share a default effort when their ladders match", () => {
+  const groups = new Map();
+  for (const model of MODELS) {
+    const ladder = (model.reasoningLevels || []).map((level) => level.effort).join(",");
+    if (!ladder) continue;
+    const key = `${model.upstreamModel || model.slug.split("/").at(-1)}|${ladder}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(model);
+  }
+  for (const [key, models] of groups) {
+    if (models.length < 2) continue;
+    const defaults = new Set(models.map((model) => model.defaultEffort));
+    assert.equal(
+      defaults.size,
+      1,
+      `${key} disagrees on defaultEffort: ${models
+        .map((model) => `${model.slug}=${model.defaultEffort}`)
+        .join(", ")}`,
+    );
+  }
+});
+
+// Ollama's OpenAI-compatible surface has no reasoning_effort parameter, so the
+// forwarder drops it. Advertising a second tier would put a level in the picker
+// that cannot reach the upstream at all.
+test("Ollama Cloud models advertise the single tier their forwarder can honor", () => {
+  for (const model of MODELS) {
+    if (model.requestProfile !== "ollama-cloud") continue;
+    assert.deepEqual(
+      (model.reasoningLevels || []).map((level) => level.effort),
+      ["high"],
+      `${model.slug} advertises a level the ollama-cloud profile discards`,
+    );
+  }
+});
+
 test("LiteLLM configuration is generated from every registry route", () => {
   const rendered = renderLiteLlmConfig();
   for (const model of MODELS) {
