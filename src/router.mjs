@@ -30,6 +30,10 @@ import { readNativeAliases } from "./native-alias.mjs";
 import { readNativeRedirect } from "./native-redirect.mjs";
 import { canonicalProviderId, readProviderSelection } from "./provider-selection.mjs";
 import { ResponseUsageTransform } from "./response-usage.mjs";
+import {
+  CollaborationToolCallTransform,
+  flattenCollaborationNamespaceTools,
+} from "./collaboration-namespace.mjs";
 import { activityMetadataFromHeaders } from "./codex-session-names.mjs";
 import { recordUsageEvent } from "./usage-events.mjs";
 import { VERSION } from "./version.mjs";
@@ -933,12 +937,22 @@ async function handleResponses(request, response, requestUrl) {
     let target;
     let headers;
     let routedBody;
+    let collaborationFlattened = false;
     if (route) {
       const input = await normalizeRoutedAgentInput(
         request,
         payload.input,
         controller.signal,
       );
+      const provider = providerForModel(route);
+      // LiteLLM's Responses -> Chat Completions bridge drops namespace tools.
+      // Chat-completions providers need the collaboration namespace flattened
+      // into ordinary functions; the response transform maps calls back.
+      if (provider?.protocol !== "openai-responses") {
+        const flattened = flattenCollaborationNamespaceTools(payload.tools);
+        collaborationFlattened = flattened.flattened;
+        if (collaborationFlattened) payload.tools = flattened.tools;
+      }
       const routed = {
         ...payload,
         model: route.gatewayModel,
@@ -969,7 +983,11 @@ async function handleResponses(request, response, requestUrl) {
     const usageTransform = new ResponseUsageTransform(
       upstream.headers.get("content-type") || "",
     );
-    await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, usageTransform);
+    const transforms = [usageTransform];
+    if (collaborationFlattened) {
+      transforms.push(new CollaborationToolCallTransform());
+    }
+    await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, transforms);
     const usage = usageTransform?.tokenUsage();
     recordUsageEvent({
       model: route?.slug || requestedModel,

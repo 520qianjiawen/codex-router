@@ -64,6 +64,11 @@ export function copyResponseHeaders(upstream, response, denylist = HOP_BY_HOP_HE
 }
 
 export async function pipeResponse(upstream, response, denylist, transform) {
+  const transforms = transform === undefined
+    ? []
+    : Array.isArray(transform)
+      ? transform
+      : [transform];
   response.statusCode = upstream.status;
   copyResponseHeaders(upstream, response, denylist);
   if (!upstream.body) {
@@ -80,7 +85,7 @@ export async function pipeResponse(upstream, response, denylist, transform) {
       else resolve();
     };
     stream.once("error", settle);
-    if (transform) transform.once("error", settle);
+    for (const entry of transforms) entry.once("error", settle);
     response.once("finish", () => settle());
     response.once("error", settle);
     // A client that disconnects mid-stream emits "close" without "finish" or
@@ -90,8 +95,9 @@ export async function pipeResponse(upstream, response, denylist, transform) {
       if (!settled) stream.destroy();
       settle();
     });
-    if (transform) stream.pipe(transform).pipe(response);
-    else stream.pipe(response);
+    let target = stream;
+    for (const entry of transforms) target = target.pipe(entry);
+    target.pipe(response);
   });
 }
 
