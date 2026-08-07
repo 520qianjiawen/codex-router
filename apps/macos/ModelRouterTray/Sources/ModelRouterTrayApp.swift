@@ -802,12 +802,28 @@ final class RouterStore: ObservableObject {
     focusUsageProvider(providerID)
   }
 
-  func installProviderCLI(_ provider: String) async {
+  // One click covers the whole route into a provider: install the official CLI
+  // when it is missing, then go straight into its browser sign-in. Stopping
+  // after the install left a row that looked finished but still had no
+  // credential, and made connecting a two-click ritual for no reason.
+  // install-cli is a no-op when the CLI is already present, so an unknown
+  // state costs a lookup rather than a wrong branch.
+  func connectProvider(_ provider: String) async {
+    let reconnecting = providerSetup[provider]?.configured == true
+    let needsInstall = providerSetup[provider]?.cliInstalled != true
     await performProviderOperation(
       provider,
-      successMessage: "Official provider CLI installed. Sign in to continue."
+      successMessage: reconnecting
+        ? "Provider reconnected."
+        : "Provider connected. Restart Codex to refresh its model picker."
     ) {
-      _ = try await runControl(arguments: ["install-cli", provider])
+      if needsInstall {
+        _ = try await runControl(arguments: ["install-cli", provider])
+      }
+      _ = try await runControl(arguments: ["login", provider])
+      if !reconnecting {
+        try await updateProviderSelection(provider, enabled: true)
+      }
     }
   }
 
@@ -2000,7 +2016,7 @@ private struct TrayView: View {
             onToggle: { enabled in
               Task { await store.setProvider(provider.id, enabled: enabled) }
             },
-            onInstall: { Task { await store.installProviderCLI(provider.id) } },
+            onConnect: { Task { await store.connectProvider(provider.id) } },
             onLogin: { Task { await store.loginProvider(provider.id) } },
             onSaveKey: { key in Task { await store.saveProviderKey(provider.id, key: key) } },
             onRemoveKey: { Task { await store.removeProviderKey(provider.id) } }
@@ -2482,7 +2498,7 @@ private struct ProviderSetupRow: View {
   let isBusy: Bool
   let controlsDisabled: Bool
   let onToggle: (Bool) -> Void
-  let onInstall: () -> Void
+  let onConnect: () -> Void
   let onLogin: () -> Void
   let onSaveKey: (String) -> Void
   let onRemoveKey: () -> Void
@@ -2573,8 +2589,10 @@ private struct ProviderSetupRow: View {
 
   private var offersSignIn: Bool { setup?.signIn == true }
 
+  // Names both halves when both will run, so one click never does more than
+  // the label promised.
   private var signInTitle: String {
-    setup?.signInAction == "install" ? "Install CLI" : "Sign In"
+    setup?.signInAction == "install" ? "Install & Sign In" : "Sign In"
   }
 
   @ViewBuilder
@@ -2608,7 +2626,7 @@ private struct ProviderSetupRow: View {
         // A key that came from the CLI sign-in can only be renewed by signing
         // in again, so the row keeps that route reachable after connecting.
         if offersSignIn {
-          Button(action: { signInAction() }) {
+          Button(action: { onConnect() }) {
             Image(systemName: "arrow.triangle.2.circlepath")
               .font(.system(size: 10, weight: .semibold))
               .frame(width: 20, height: 20)
@@ -2616,7 +2634,7 @@ private struct ProviderSetupRow: View {
           .buttonStyle(.plain)
           .foregroundStyle(routerAccent)
           .help(setup?.signInAction == "install"
-            ? "Install the official CLI"
+            ? "Install the official CLI and sign in"
             : "Sign in again with the official CLI")
           .disabled(controlsDisabled)
         }
@@ -2653,7 +2671,7 @@ private struct ProviderSetupRow: View {
         // Two ways in, both first-class: the browser sign-in the CLI drives,
         // and the Studio key someone may already hold.
         if offersSignIn {
-          Button(signInTitle) { signInAction() }
+          Button(signInTitle) { onConnect() }
             .buttonStyle(.plain)
             .font(.system(size: 10, weight: .medium))
             .foregroundStyle(routerAccent)
@@ -2670,7 +2688,7 @@ private struct ProviderSetupRow: View {
 
   private var actionTitle: String {
     switch setup?.action {
-    case "install": return "Install"
+    case "install": return "Install & Sign In"
     case "login": return "Sign In"
     case "add-key": return showingKeyField ? "Cancel" : "Add Key"
     default: return "Checking…"
@@ -2684,19 +2702,10 @@ private struct ProviderSetupRow: View {
 
   private func performAction() {
     switch setup?.action {
-    case "install": onInstall()
-    case "login": onLogin()
+    case "install", "login": onConnect()
     case "add-key": toggleKeyField()
     default: break
     }
-  }
-
-  private func signInAction() {
-    if setup?.signInAction == "install" {
-      onInstall()
-      return
-    }
-    onLogin()
   }
 
   private func toggleKeyField() {

@@ -200,6 +200,13 @@ surfaces.
      session-refresh, and reconnect-on-expiry wiring in the provider's OAuth
      status/session modules (follow `kimi-oauth-*` / `grok-oauth-*` as the
      patterns).
+   - Connecting is always one click. Any tray sign-in button installs the
+     official CLI when it is missing and then runs the login in the same
+     operation (`connectProvider` in the tray), rather than stopping after the
+     install and waiting for a second click. Label the button for everything
+     it will do (`Install & Sign In`) so the single click stays honest. This
+     is the house rule for every provider, OAuth or CLI-session: implement it
+     without asking.
    - A provider whose official CLI finishes a browser sign-in by minting an
      API key into its own home directory (Command Code) is not an `oauth`
      provider: it stays `openai-compatible` and declares
