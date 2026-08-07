@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
+import { privateFileIsProtected } from "../src/file-security.mjs";
+
 const stateDir = mkdtempSync(path.join(os.tmpdir(), "presence-state-test-"));
 process.env.CODEX_ROUTER_STATE_DIR = stateDir;
 
@@ -30,7 +32,11 @@ test("presence round-trips through protected state", () => {
   });
   assert.equal(readPresenceMode(), PRESENCE_FOLLOW_CODEX);
   assert.equal(serviceFollowsHostApps(), true);
-  assert.equal(statSync(PRESENCE_STATE_PATH).mode & 0o777, 0o600);
+  assert.equal(privateFileIsProtected(PRESENCE_STATE_PATH), true);
+  // Windows protects private files with ACLs, not POSIX modes.
+  if (process.platform !== "win32") {
+    assert.equal(statSync(PRESENCE_STATE_PATH).mode & 0o777, 0o600);
+  }
 
   setPresenceMode(PRESENCE_ALWAYS);
   assert.equal(serviceFollowsHostApps(), false);

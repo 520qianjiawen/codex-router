@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
+import { privateFileIsProtected } from "../src/file-security.mjs";
+
 const stateDir = mkdtempSync(path.join(os.tmpdir(), "native-redirect-test-"));
 process.env.CODEX_ROUTER_STATE_DIR = stateDir;
 
@@ -26,7 +28,11 @@ test("native redirect round-trips through protected state", () => {
     path: NATIVE_REDIRECT_PATH,
   });
   assert.equal(readNativeRedirect(), "grok-oauth/grok-4.5");
-  assert.equal(statSync(NATIVE_REDIRECT_PATH).mode & 0o777, 0o600);
+  assert.equal(privateFileIsProtected(NATIVE_REDIRECT_PATH), true);
+  // Windows protects private files with ACLs, not POSIX modes.
+  if (process.platform !== "win32") {
+    assert.equal(statSync(NATIVE_REDIRECT_PATH).mode & 0o777, 0o600);
+  }
 
   clearNativeRedirect();
   assert.equal(readNativeRedirect(), undefined);
