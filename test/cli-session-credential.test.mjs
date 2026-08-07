@@ -35,6 +35,9 @@ function environment(testRoot, sessionDirectory, overrides = {}) {
     MODEL_ROUTER_TARGET: "codex",
     MODEL_ROUTER_STATE_DIR: path.join(testRoot, "state"),
     COMMANDCODE_CLI_HOME: sessionDirectory,
+    // Onboarding asks npm where global binaries live, so a developer machine
+    // with the real command-code CLI installed must not leak into these runs.
+    npm_config_prefix: path.join(testRoot, "npm-global"),
     COMMAND_CODE_API_KEY: "",
     COMMANDCODE_API_KEY: "",
     ...overrides,

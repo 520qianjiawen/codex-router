@@ -30,6 +30,10 @@ function isolatedEnvironment(testRoot) {
     ...process.env,
     HOME: testRoot,
     PATH: isolatedPath(),
+    // Onboarding falls back to npm's own global bin directory when PATH and
+    // the guessed locations come up empty, so an isolated home is not enough
+    // on a machine that really does have these CLIs installed.
+    npm_config_prefix: path.join(testRoot, "npm-global"),
     MODEL_ROUTER_TARGET: "codex",
     MODEL_ROUTER_STATE_DIR: path.join(testRoot, "state"),
     KIMI_CODE_HOME: path.join(testRoot, "kimi"),

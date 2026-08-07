@@ -45,6 +45,38 @@ const SIGN_IN_CLIS = Object.freeze({
   },
 });
 
+// Resolved at most once per process: the tray refreshes its provider snapshot
+// on a timer, and an npm spawn per unconfigured provider per refresh would be
+// felt. `undefined` is a real answer here, so the miss is cached too.
+let npmGlobalBinDir;
+function npmGlobalBinary(executable) {
+  if (npmGlobalBinDir === undefined) {
+    npmGlobalBinDir = readNpmGlobalBinDir() ?? "";
+  }
+  if (!npmGlobalBinDir) return undefined;
+  const candidate = path.join(npmGlobalBinDir, executable);
+  return existsSync(candidate) ? candidate : undefined;
+}
+
+function readNpmGlobalBinDir() {
+  const npm = npmPath();
+  if (!npm) return undefined;
+  try {
+    const prefix = execFileSync(npm, ["prefix", "-g"], {
+      encoding: "utf8",
+      env: spawnEnvironment(),
+      timeout: 15_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (!prefix) return undefined;
+    // npm drops binaries straight into the prefix on Windows and into
+    // prefix/bin everywhere else.
+    return process.platform === "win32" ? prefix : path.join(prefix, "bin");
+  } catch {
+    return undefined;
+  }
+}
+
 function commandPath(name) {
   const finder = process.platform === "win32" ? "where.exe" : "which";
   try {
@@ -72,7 +104,12 @@ export function oauthCliPath(providerId) {
   if (providerId === "grok-oauth") return grokCliPath();
   const discovered = commandPath(cli.executable);
   if (discovered) return discovered;
-  return (cli.candidates || []).find((candidate) => existsSync(candidate));
+  const candidate = (cli.candidates || []).find((path) => existsSync(path));
+  if (candidate) return candidate;
+  // Last resort, because it costs an npm spawn: ask npm where it actually
+  // installs global binaries. A custom prefix is invisible to both PATH (the
+  // tray's is the bare system one) and to any list of guessed directories.
+  return npmGlobalBinary(cli.executable);
 }
 
 export function oauthLoginArgs(providerId) {
@@ -140,6 +177,19 @@ export function providerOnboardingSnapshot() {
   };
 }
 
+// npm and every CLI it installs globally start with `#!/usr/bin/env node`, so
+// they die instantly unless node is on PATH. The tray is launched by launchd
+// with the bare system PATH, which has no node on it — the failure there was
+// `env: node: No such file or directory` behind a generic "could not install".
+// Whatever node is running this file is by definition a working one, so put
+// its directory in front for the child.
+function spawnEnvironment() {
+  const nodeDir = path.dirname(process.execPath);
+  const existing = process.env.PATH || "";
+  if (existing.split(path.delimiter).includes(nodeDir)) return process.env;
+  return { ...process.env, PATH: existing ? `${nodeDir}${path.delimiter}${existing}` : nodeDir };
+}
+
 function npmPath() {
   const discovered = commandPath("npm");
   if (discovered) return discovered;
@@ -150,6 +200,18 @@ function npmPath() {
     "/usr/local/bin/npm",
   ];
   return candidates.find((candidate) => existsSync(candidate));
+}
+
+// npm prints its diagnosis over several lines and ends with log-file paths
+// that mean nothing in a tray dialog; the last real line is the useful one.
+function installFailureDetail(result) {
+  if (result.error) return result.error.message;
+  const lines = `${result.stderr || ""}`
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^npm (error|ERR!)\s*/i, "").trim())
+    .filter((line) => line && !/^[A-Za-z]?:?[\\/].*\.log$/.test(line));
+  const detail = lines[lines.length - 1];
+  return detail ? `npm said: ${detail}` : `npm exited with status ${result.status}.`;
 }
 
 export function installOauthCli(providerId) {
@@ -168,18 +230,32 @@ export function installOauthCli(providerId) {
   if (!npm) throw new Error("Node.js and npm are required to install this provider CLI.");
   const result = spawnSync(npm, ["install", "-g", cli.npmPackage], {
     encoding: "utf8",
-    env: process.env,
+    env: spawnEnvironment(),
   });
   if (result.error || result.status !== 0) {
-    throw new Error(`Could not install the official ${cli.executable} CLI.`);
+    // The reason matters more than the fact: "EACCES on /usr/local/lib" and
+    // "network unreachable" need opposite fixes, and a bare "could not
+    // install" sent the last one of these into a debugging session.
+    throw new Error(
+      `Could not install the official ${cli.executable} CLI. ${installFailureDetail(result)}`.trim(),
+    );
   }
   if (providerId === "grok-oauth") {
     const preflight = grokCliPreflight();
     if (!preflight.runnable) throw new Error(grokCliFailureMessage(preflight));
   } else if (!oauthCliPath(providerId)) {
-    throw new Error(`The official ${cli.executable} CLI was installed but could not be located.`);
+    // The install reported success, so the binary exists somewhere npm knows
+    // about and this router does not. Name the search so it is fixable.
+    throw new Error(
+      `npm installed ${cli.npmPackage}, but no \`${cli.executable}\` was found on PATH or in npm's global bin directory.`,
+    );
   }
 }
+
+// A browser sign-in is slow by nature — the operator has to switch apps, log
+// in, and authorize — but it must not be able to wedge the tray forever if the
+// CLI waits on a terminal it will never get.
+const LOGIN_TIMEOUT_MS = 10 * 60_000;
 
 export function loginOauthProvider(providerId) {
   const executable = oauthCliPath(providerId);
@@ -188,10 +264,20 @@ export function loginOauthProvider(providerId) {
     const preflight = grokCliPreflight({ executable });
     if (!preflight.runnable) throw new Error(grokCliFailureMessage(preflight));
   }
+  // The CLI itself is another `#!/usr/bin/env node` script, so signing in needs
+  // the same PATH repair the install did.
   const result = spawnSync(executable, oauthLoginArgs(providerId), {
     encoding: "utf8",
-    env: process.env,
+    env: spawnEnvironment(),
+    timeout: LOGIN_TIMEOUT_MS,
   });
+  // A sign-in the operator never finished and one the CLI could not run look
+  // the same from here, so say both are possible rather than blaming them.
+  if (result.signal === "SIGTERM") {
+    throw new Error(
+      `${executable} did not finish signing in within 10 minutes. Run it in a terminal to see what it is waiting for.`,
+    );
+  }
   if (result.error || result.status !== 0) {
     throw new Error("Provider sign-in was cancelled or did not complete.");
   }
