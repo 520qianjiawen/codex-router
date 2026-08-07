@@ -14,7 +14,8 @@ const savedArgv = [...process.argv];
 const savedEnvKey = process.env.OPENCODE_GO_API_KEY;
 process.argv = [process.argv[0], "provider-key.mjs", "opencode-go", "status"];
 process.env.OPENCODE_GO_API_KEY = "test-only-placeholder";
-const { WINDOWS_HIDDEN_PROMPT_SCRIPT } = await import("../src/provider-key.mjs");
+const { WINDOWS_HIDDEN_PROMPT_SCRIPT, powerShellStartupError, windowsHiddenPromptArgs } =
+  await import("../src/provider-key.mjs");
 process.argv = savedArgv;
 if (savedEnvKey === undefined) delete process.env.OPENCODE_GO_API_KEY;
 else process.env.OPENCODE_GO_API_KEY = savedEnvKey;
@@ -32,6 +33,40 @@ test("the Windows hidden-prompt script is structurally valid PowerShell", () => 
   const opens = (WINDOWS_HIDDEN_PROMPT_SCRIPT.match(/\{/g) || []).length;
   const closes = (WINDOWS_HIDDEN_PROMPT_SCRIPT.match(/\}/g) || []).length;
   assert.equal(opens, closes);
+});
+
+test("a missing PowerShell candidate never masks the real prompt failure", () => {
+  const real = Object.assign(new Error("Command failed: powershell.exe"), { status: 1 });
+  const missing = Object.assign(new Error("spawnSync pwsh.exe ENOENT"), { code: "ENOENT" });
+
+  // The reported case: powershell.exe fails for a real reason, pwsh.exe is
+  // simply not installed, and the user is shown "pwsh.exe ENOENT" instead of
+  // the failure that actually stopped them entering a key.
+  assert.equal(powerShellStartupError([real, missing]), real);
+  assert.equal(powerShellStartupError([missing, real]), real);
+
+  // Every candidate absent is the one case where ENOENT is the whole story,
+  // and it deserves a message that names the missing dependency.
+  const noneInstalled = powerShellStartupError([missing, missing]);
+  assert.equal(noneInstalled.code, undefined);
+  assert.match(noneInstalled.message, /PowerShell is required/);
+});
+
+test("the Windows hidden prompt is passed as an encoded command", () => {
+  const args = windowsHiddenPromptArgs();
+  // -Command hands the script to the Windows command-line parser before
+  // PowerShell sees it; the prompt must not depend on surviving that.
+  assert.equal(args.includes("-Command"), false);
+  const encodedIndex = args.indexOf("-EncodedCommand");
+  assert.ok(encodedIndex >= 0);
+  const encoded = args[encodedIndex + 1];
+  assert.match(encoded, /^[A-Za-z0-9+/]+={0,2}$/);
+  // PowerShell decodes -EncodedCommand as UTF-16LE; any other encoding
+  // produces a script that parses as garbage.
+  assert.equal(
+    Buffer.from(encoded, "base64").toString("utf16le"),
+    WINDOWS_HIDDEN_PROMPT_SCRIPT,
+  );
 });
 
 test(

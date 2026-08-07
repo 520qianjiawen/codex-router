@@ -70,6 +70,33 @@ model_reasoning_effort = "xhigh"
   }
 });
 
+test("a foreign catalog is an unknown conflict at any TOML spacing", () => {
+  mkdirSync(codexHome, { recursive: true });
+  const configPath = path.join(codexHome, "config.toml");
+  const foreign = path.join(testRoot, "some-other-router", "merged-models.json");
+  try {
+    // `key = "value"` is the conventional TOML spacing, and indented keys are
+    // ordinary too. Detection has to see the foreign catalog in every one of
+    // these forms: a miss here reports no conflict, which is what clears the
+    // router to migrate over an installation it does not own.
+    const spacings = [
+      `model_catalog_json="${foreign}"`,
+      `model_catalog_json = "${foreign}"`,
+      `model_catalog_json   =   "${foreign}"`,
+      `  model_catalog_json = "${foreign}"`,
+      `\tmodel_catalog_json = "${foreign}"`,
+    ];
+    for (const line of spacings) {
+      writeFileSync(configPath, `model = "gpt-5.6-sol"\n${line}\n`, { mode: 0o644 });
+      const detected = detectLegacyInstallations();
+      assert.equal(detected.unknownConflict, true, `spacing: ${JSON.stringify(line)}`);
+      assert.equal(detected.config.modelCatalogJson, foreign);
+    }
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
 test("Windows-style escaped catalog paths are not unknown conflicts", () => {
   mkdirSync(codexHome, { recursive: true });
   const configPath = path.join(codexHome, "config.toml");

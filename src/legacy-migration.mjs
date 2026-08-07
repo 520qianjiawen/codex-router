@@ -65,7 +65,11 @@ function serviceLoaded(label) {
 function rootValues(contents, key) {
   const firstTable = contents.search(/^\s*\[/m);
   const root = firstTable === -1 ? contents : contents.slice(0, firstTable);
-  return [...root.matchAll(new RegExp(`^\s*${key}\s*=\s*["']([^"']+)["']`, "gm"))]
+  // The pattern is built in a template literal, so every backslash meant for
+  // the regex has to survive JavaScript's own escaping first: a bare `\s`
+  // collapses to a literal "s" and the pattern silently stops matching any
+  // entry that is indented or spaced around the "=".
+  return [...root.matchAll(new RegExp(`^\\s*${key}\\s*=\\s*["']([^"']+)["']`, "gm"))]
     .map((match) => match[1]);
 }
 
