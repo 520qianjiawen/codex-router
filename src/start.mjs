@@ -79,6 +79,10 @@ const commonEnv = {
   LITELLM_LOG: "ERROR",
   LITELLM_TELEMETRY: "False",
   NO_COLOR: "1",
+  // LiteLLM prints Unicode banners at startup; on a non-UTF-8 Windows code page
+  // (e.g. cp1252) that raises UnicodeEncodeError and the child never comes up.
+  PYTHONIOENCODING: "utf-8",
+  PYTHONUTF8: "1",
 };
 
 const children = [];
