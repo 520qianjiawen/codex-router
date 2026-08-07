@@ -107,41 +107,6 @@ function cliSessionProblem(provider) {
   return undefined;
 }
 
-// Rewrites one source model into an auth variant's namespace. Only the three
-// identity fields move: everything the picker shows (name, priority, context,
-// efforts) is deliberately identical, so switching routes changes how you
-// authenticate and nothing else.
-function cloneModelForAuthVariant(model, variantId) {
-  const suffix = model.slug.slice(model.provider.length + 1);
-  const clone = {
-    ...model,
-    provider: variantId,
-    slug: `${variantId}/${suffix}`,
-    gatewayModel: `${variantId}-${suffix}`,
-  };
-  // An upgrade prompt has to point inside the route the operator is running,
-  // or accepting it would silently move them onto the other credential.
-  if (model.upgradeTo?.model?.startsWith(`${model.provider}/`)) {
-    clone.upgradeTo = {
-      ...model.upgradeTo,
-      model: `${variantId}/${model.upgradeTo.model.slice(model.provider.length + 1)}`,
-    };
-  }
-  return clone;
-}
-
-function clonedAuthVariantModels(providers, models) {
-  const cloned = [];
-  for (const provider of providers.values()) {
-    if (provider.authVariantOf === undefined) continue;
-    for (const model of models) {
-      if (model.provider !== provider.authVariantOf) continue;
-      cloned.push(cloneModelForAuthVariant(model, provider.id));
-    }
-  }
-  return cloned;
-}
-
 function loadRegistry() {
   const parsed = readRegistryDocument();
   if (!Array.isArray(parsed.providers) || !Array.isArray(parsed.models)) {
@@ -172,16 +137,11 @@ function loadRegistry() {
       if (!/^https?:\/\//.test(provider.baseUrl || "")) {
         fail(`provider ${provider.id} requires an HTTP(S) baseUrl`);
       }
-      const sessionProblem = cliSessionProblem(provider);
-      if (sessionProblem) fail(sessionProblem);
-      // A provider authenticates by a key this router stores, or by a session
-      // its own CLI signs in — one or the other must be declared, or nothing
-      // can ever authenticate it.
-      const storesKey =
-        Boolean(provider.credential?.file) && Array.isArray(provider.credential.environment);
-      if (!storesKey && !provider.credential?.cliSession) {
+      if (!provider.credential?.file || !Array.isArray(provider.credential.environment)) {
         fail(`provider ${provider.id} requires credential metadata`);
       }
+      const sessionProblem = cliSessionProblem(provider);
+      if (sessionProblem) fail(sessionProblem);
       if (
         provider.protocol !== undefined &&
         !["openai", "anthropic", "openai-responses"].includes(provider.protocol)
@@ -221,57 +181,15 @@ function loadRegistry() {
     }
   }
 
-  // An auth variant is the same upstream product reached with a different
-  // credential (Command Code by stored key vs by `command-code login`). It
-  // declares no models of its own: the catalog is cloned from its source below
-  // so one model file stays the single place a Command Code model is described.
-  for (const provider of providers.values()) {
-    if (provider.authVariantOf === undefined) continue;
-    const source = providers.get(provider.authVariantOf);
-    if (!source) {
-      fail(
-        `provider ${provider.id} is an auth variant of unknown provider ${provider.authVariantOf}`,
-      );
-    }
-    if (source.authVariantOf !== undefined) {
-      fail(`provider ${provider.id} may not be an auth variant of auth variant ${source.id}`);
-    }
-    if (provider.kind !== "openai-compatible" || source.kind !== "openai-compatible") {
-      fail(`auth variant ${provider.id} and its source must be openai-compatible`);
-    }
-    // Routing must be identical, or the two "routes" would quietly be two
-    // different products wearing one catalog.
-    if (provider.baseUrl !== source.baseUrl || provider.protocol !== source.protocol) {
-      fail(`auth variant ${provider.id} must reach ${source.id}'s endpoint and protocol`);
-    }
-    if (provider.credential?.file !== undefined) {
-      fail(`auth variant ${provider.id} must not share ${source.id}'s stored key`);
-    }
-    if (parsed.models.some((model) => model.provider === provider.id)) {
-      fail(`auth variant ${provider.id} must not declare models; they are cloned from ${source.id}`);
-    }
-    // A protocol variant of an auth variant has to descend from the matching
-    // protocol variant on the other route, or the clone would land in the
-    // wrong namespace.
-    if (provider.variantOf !== undefined) {
-      const parentSource = providers.get(provider.variantOf)?.authVariantOf;
-      if (parentSource !== source.variantOf) {
-        fail(`auth variant ${provider.id} must mirror ${source.id}'s variant relationship`);
-      }
-    }
-  }
-
   const slugs = new Set();
   const gatewayModels = new Set();
-  const models = [...parsed.models, ...clonedAuthVariantModels(providers, parsed.models)].map(
-    (model) => {
-      const problem = modelProblem(model, providers, slugs, gatewayModels);
-      if (problem) fail(problem);
-      slugs.add(model.slug);
-      gatewayModels.add(model.gatewayModel);
-      return Object.freeze(model);
-    },
-  );
+  const models = parsed.models.map((model) => {
+    const problem = modelProblem(model, providers, slugs, gatewayModels);
+    if (problem) fail(problem);
+    slugs.add(model.slug);
+    gatewayModels.add(model.gatewayModel);
+    return Object.freeze(model);
+  });
 
   const modelBySlug = new Map(models.map((model) => [model.slug, model]));
   for (const model of models) {

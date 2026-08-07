@@ -454,10 +454,8 @@ async function accountUsageFor(providerId, fetchImpl) {
           }
         : { status: "not-configured", source: "official-api", metrics: [] };
     }
-    // Both Command Code routes are the same account with the same credits, so
-    // whichever one the operator enabled points at the same Studio dashboard.
-    if (providerId === "commandcode" || providerId === "commandcode-oauth") {
-      return resolveProviderCredential(providerId)
+    if (providerId === "commandcode") {
+      return resolveProviderCredential("commandcode")
         ? {
             ...withHeaderQuota(
               providerId,

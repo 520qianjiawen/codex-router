@@ -18,7 +18,6 @@ import {
   apiProvider,
   credentialStatus,
   removeProviderCredential,
-  storesKey,
   writeProviderCredential,
 } from "./provider-credentials.mjs";
 import { disableProvider } from "./provider-selection.mjs";
@@ -38,7 +37,7 @@ const SIGN_IN_CLIS = Object.freeze({
   // Command Code ships `cmd`, `cmdc`, `commandcode`, and `command-code` from
   // one package. Only `command-code` is unambiguous everywhere — `cmd` is the
   // Windows shell — so the tray always drives that name.
-  "commandcode-oauth": {
+  commandcode: {
     executable: "command-code",
     npmPackage: "command-code",
     loginArgs: ["login"],
@@ -137,22 +136,13 @@ export function providerOnboardingSnapshot() {
   const selectable = [...PROVIDERS.values()].filter((provider) => !provider.variantOf);
   return {
     providers: selectable.map((provider) => {
-      // A provider the router can only reach through its CLI's sign-in is an
-      // OAuth row to everyone downstream, even though the router still speaks
-      // plain HTTP to it: there is no key to paste, so the tray must offer the
-      // sign-in and nothing else.
-      if (provider.kind === "oauth" || !storesKey(provider)) {
+      if (provider.kind === "oauth") {
         const cliPath = oauthCliPath(provider.id);
         const cli = provider.id === "grok-oauth"
           ? grokCliPreflight({ executable: cliPath })
           : { installed: Boolean(cliPath), runnable: Boolean(cliPath) };
         const cliInstalled = cli.installed;
         const configured = oauthConfigured(provider.id);
-        // A CLI-session provider routes from the file its CLI wrote, so a
-        // signed-in machine is ready whether or not that CLI is still on PATH.
-        // The token-refreshing CLIs (Kimi, Grok) do have to be present, so they
-        // keep reporting the install first.
-        const sessionOnly = provider.kind !== "oauth";
         return {
           id: provider.id,
           displayName: provider.displayName,
@@ -160,24 +150,36 @@ export function providerOnboardingSnapshot() {
           configured,
           cliInstalled,
           cliRunnable: cli.runnable,
-          action: sessionOnly && configured
-            ? "ready"
-            : !cliInstalled
-              ? "install"
-              : !cli.runnable
-                ? "blocked"
-                : configured
-                  ? "ready"
-                  : "login",
+          action: !cliInstalled
+            ? "install"
+            : !cli.runnable
+              ? "blocked"
+              : configured
+                ? "ready"
+                : "login",
         };
       }
       const configured = credentialStatus(provider, { persistent: true }).configured;
-      return {
+      const entry = {
         id: provider.id,
         displayName: provider.displayName,
         kind: "api",
         configured,
         action: configured ? "ready" : "add-key",
+      };
+      // A provider whose CLI mints its key through a browser sign-in keeps the
+      // key field (people with a Studio key still paste it) and gains a second
+      // route. The tray needs both states to label the row honestly: whether
+      // the CLI is present, and whether the key in play came from the session.
+      const session = cliSessionStatus(provider);
+      if (!session.supported || !hasSignInCli(provider.id)) return entry;
+      const cliInstalled = Boolean(oauthCliPath(provider.id));
+      return {
+        ...entry,
+        signIn: true,
+        signedIn: session.configured,
+        cliInstalled,
+        signInAction: !cliInstalled ? "install" : session.configured ? "ready" : "login",
       };
     }),
   };

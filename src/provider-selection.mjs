@@ -91,26 +91,8 @@ export function readProviderSelection() {
   }
 }
 
-// The last line of defence for the one-route rule: whoever assembled the list
-// (the tray, `providers enable`, an installer flag, ensure-configured), a
-// selection that reaches disk never names two routes into the same account.
-// The stored-key route wins a tie because it is the one an operator had to set
-// up deliberately.
-function singleRoutePerAccount(ids) {
-  const winnerByFamily = new Map();
-  for (const id of ids) {
-    const family = PROVIDERS.get(id)?.authVariantOf ?? id;
-    const winner = winnerByFamily.get(family);
-    // The source id equals its own family key, so it takes the slot whenever
-    // it appears; otherwise the first auth variant named wins.
-    if (winner === undefined || id === family) winnerByFamily.set(family, id);
-  }
-  const kept = new Set(winnerByFamily.values());
-  return ids.filter((id) => kept.has(id));
-}
-
 export function writeProviderSelection(values) {
-  const providers = singleRoutePerAccount(validateProviderIds(values));
+  const providers = validateProviderIds(values);
   mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
   chmodSync(STATE_DIR, 0o700);
   const temporary = `${PROVIDER_SELECTION_PATH}.tmp.${process.pid}`;
@@ -127,41 +109,11 @@ export function writeProviderSelection(values) {
 
 // Enable/disable act on the whole variant family: toggling opencode-go (or any
 // of its protocol variants) shows or hides every model that key can serve.
-// Auth variants are the same account and the same catalog reached with a
-// different credential, so showing both would list every model twice in the
-// picker with no way to tell the copies apart. Enabling one route retires the
-// other rather than leaving that to the operator to notice.
-function competingAuthRoutes(providerId) {
-  const target = canonicalProviderId(providerId);
-  const provider = PROVIDERS.get(target);
-  if (!provider) return [];
-  const family = provider.authVariantOf || target;
-  return [...PROVIDERS.values()]
-    .filter((candidate) => candidate.variantOf === undefined)
-    .map((candidate) => candidate.id)
-    .filter((id) => id !== target)
-    .filter((id) => id === family || PROVIDERS.get(id)?.authVariantOf === family);
-}
-
 export function enableProvider(providerId) {
   const current = existsSync(PROVIDER_SELECTION_PATH)
     ? readProviderSelection()
     : configuredProviderIds();
-  const retired = new Set(competingAuthRoutes(providerId));
-  return writeProviderSelection([
-    ...current.filter((id) => !retired.has(canonicalProviderId(id))),
-    providerId,
-  ]);
-}
-
-// Names the routes enableProvider would retire, so the CLI and the tray can
-// say what happened instead of silently changing a second row.
-export function displacedAuthRoutes(providerId) {
-  const current = existsSync(PROVIDER_SELECTION_PATH)
-    ? readProviderSelection()
-    : configuredProviderIds();
-  const selected = new Set(current.map((id) => canonicalProviderId(id)));
-  return competingAuthRoutes(providerId).filter((id) => selected.has(id));
+  return writeProviderSelection([...current, providerId]);
 }
 
 export function disableProvider(providerId) {

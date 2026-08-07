@@ -90,21 +90,14 @@ test("codex probe folds protocol variants into one provider family", () => {
   assert.ok(!providerIds.some((id) => id.startsWith("opencode-go-")));
 });
 
-test("codex probe folds Command Code protocol variants into one row per auth route", () => {
+test("codex probe folds Command Code protocol variants into one provider family", () => {
   const slice = probe("codex", ["commandcode"]);
   const family = slice.models.filter((m) => m.provider === "commandcode");
   assert.ok(family.length > 0 && family.every((m) => m.enabled));
-  // Protocol variants still collapse into the route that owns their key...
-  assert.ok(!slice.models.some((m) => m.provider === "commandcode-messages"));
-  assert.ok(!slice.models.some((m) => m.provider === "commandcode-oauth-messages"));
-  // ...but the sign-in route is its own row, and stays unselected because two
-  // routes into one account may never both show their models.
-  const signIn = slice.models.filter((m) => m.provider === "commandcode-oauth");
-  assert.ok(signIn.length > 0 && signIn.every((m) => !m.enabled));
-  assert.deepEqual(
-    slice.providers.map((p) => p.id).filter((id) => id.startsWith("commandcode")),
-    ["commandcode", "commandcode-oauth"],
-  );
+  assert.ok(!slice.models.some((m) => m.provider.startsWith("commandcode-")));
+  const providerIds = slice.providers.map((p) => p.id);
+  assert.ok(providerIds.includes("commandcode"));
+  assert.ok(!providerIds.some((id) => id.startsWith("commandcode-")));
 });
 
 test("codex probe exposes only privacy-safe recent usage events", () => {

@@ -377,12 +377,10 @@ for (const provider of PROVIDERS.values()) {
   const session = cliSessionDescriptor(provider);
   add(
     status.configured ? "ok" : selection.providers.includes(provider.id) ? "fail" : "warn",
-    // A sign-in-only provider has no key of its own, so calling the row one
-    // would send people looking for a key to paste.
-    `${provider.displayName} ${session ? "sign-in" : "key"}`,
+    `${provider.displayName} key`,
     status.configured ? status.source : "not configured",
     session
-      ? `Run ${session.loginCommand}.`
+      ? `Run ${session.loginCommand}, or ./bin/provider-key ${provider.id} set.`
       : `Run ./bin/provider-key ${provider.id} set.`,
   );
   // A working key on a catalog-only provider still shows an empty picker until

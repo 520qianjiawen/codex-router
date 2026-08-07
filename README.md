@@ -216,36 +216,37 @@ endpoints.
 ### Command Code Provider API
 
 Command Code's official Provider API is an OpenAI-compatible chat completions
-surface plus an Anthropic Messages surface at
-`https://api.commandcode.ai/provider/v1`. It requires the Provider plan or
-higher and uses the same key that authenticates the Command Code CLI.
+surface plus an Anthropic Messages surface at `https://api.commandcode.ai/provider/v1`
+(`COMMAND_CODE_API_KEY` or `COMMANDCODE_API_KEY` in the environment, or store
+the key once, or reuse a `command-code login` session). It requires the
+Provider plan or higher and uses the same key that authenticates the Command
+Code CLI. Everything appears as one
+"Command Code" provider; internally the catalog is split between
+`commandcode` for Chat Completions models and `commandcode-messages` for
+models that require the Messages protocol (Claude).
 
-Like Kimi and Grok, Command Code is two selectable providers — one per way of
-authenticating. Both reach the same endpoint and serve the same models, so
-enable exactly one; enabling either hides the other automatically.
+There are two ways to authenticate, and either one is enough.
 
-**`commandcode-oauth` — sign in through the browser.** `command-code login`
-opens the Command Code authorization page, receives the callback on a
-temporary local server, and writes the key it mints to
-`~/.commandcode/auth.json`. The router reads that file, so a signed-in machine
-stores no key of its own:
+**Sign in through the browser (OAuth).** `command-code login` opens the
+Command Code authorization page, receives the callback on a temporary local
+server, and writes the key it mints to `~/.commandcode/auth.json`. The router
+reads that file, so a signed-in machine needs no key of its own:
 
 ```sh
 npm install -g command-code
 command-code login
-./bin/model-router codex providers enable commandcode-oauth
+./bin/model-router codex providers enable commandcode
 ./bin/model-router codex multi-agent on
 ```
 
-In the macOS tray this is the **Command Code** row, with the same
-**Install & Sign In** button Kimi and Grok use. The router only reads that
-file — it never rewrites, copies, or deletes it — so `command-code logout`
-also revokes the router's access. There is no key to paste on this route, and
-`provider-key commandcode-oauth set` refuses rather than storing one nothing
-would read.
+The macOS tray offers the same flow: the Command Code row has an
+**Install & Sign In** button (**Sign In** once the CLI is present) next to
+**Add Key**. `command-code login` draws a full-screen terminal interface, so
+the tray opens a Terminal window to run it and waits for the credential rather
+than piping it. The router only reads that file — it never rewrites, copies,
+or deletes it — so `command-code logout` also revokes the router's access.
 
-**`commandcode` — store a key.** Create one in Command Code Studio, or export
-`COMMAND_CODE_API_KEY` / `COMMANDCODE_API_KEY`:
+**Store a key instead.** Create one in Command Code Studio and save it here:
 
 ```sh
 ./bin/model-router codex provider-key commandcode set
@@ -253,46 +254,43 @@ would read.
 ./bin/model-router codex multi-agent on
 ```
 
-In the tray this is the **Command Code API** row. `doctor` reports each route
-separately and names the source that is live.
+When both exist, the exported environment variable wins, then the key stored
+here, then the macOS Keychain, and the CLI sign-in last: a key you deliberately
+saved is never silently replaced by a session. `doctor` names whichever source
+is live.
 
-Each route splits its catalog by protocol: `commandcode` / `commandcode-oauth`
-carry the Chat Completions models and `commandcode-messages` /
-`commandcode-oauth-messages` carry the models that require the Messages
-protocol (Claude). Those protocol variants are not separately selectable —
-enabling a route enables its whole family.
+| Picker label | Model ID |
+| --- | --- |
+| DeepSeek V4 Flash (Command Code) | `commandcode/deepseek-v4-flash` |
+| DeepSeek V4 Pro (Command Code) | `commandcode/deepseek-v4-pro` |
+| GLM-5.2 (Command Code) | `commandcode/glm-5.2` |
+| Kimi K3 (Command Code) | `commandcode/kimi-k3` |
+| Kimi K2.7 Code (Command Code) | `commandcode/kimi-k2.7-code` |
+| Qwen3.8 Max (Command Code) | `commandcode/qwen3.8-max` |
+| Qwen3.7 Max (Command Code) | `commandcode/qwen3.7-max` |
+| Qwen3.7 Plus (Command Code) | `commandcode/qwen3.7-plus` |
+| MiniMax M3 (Command Code) | `commandcode/minimax-m3` |
+| MiniMax M2.7 (Command Code) | `commandcode/minimax-m2.7` |
+| MiMo-V2.5-Pro (Command Code) | `commandcode/mimo-v2.5-pro` |
+| Grok 4.5 (Command Code) | `commandcode/grok-4.5` |
+| GPT 5.6 Luna (Command Code) | `commandcode/gpt-5.6-luna` |
+| GPT 5.5 (Command Code) | `commandcode/gpt-5.5` |
+| Gemini 3.5 Flash (Command Code) | `commandcode/gemini-3.5-flash` |
+| Hy3 (Command Code) | `commandcode/hy3-paid` |
+| Step 3.7 Flash (Command Code) | `commandcode/step-3.7-flash` |
+| Claude Sonnet 5 (Command Code) | `commandcode-messages/claude-sonnet-5` |
+| Claude Opus 4.8 (Command Code) | `commandcode-messages/claude-opus-4.8` |
+| Claude Fable 5 (Command Code) | `commandcode-messages/claude-fable-5` |
+| Claude Haiku 4.5 (Command Code) | `commandcode-messages/claude-haiku-4.5` |
 
-| Picker label | Stored key | Browser sign-in |
-| --- | --- | --- |
-| DeepSeek V4 Flash (Command Code) | `commandcode/deepseek-v4-flash` | `commandcode-oauth/deepseek-v4-flash` |
-| DeepSeek V4 Pro (Command Code) | `commandcode/deepseek-v4-pro` | `commandcode-oauth/deepseek-v4-pro` |
-| GLM-5.2 (Command Code) | `commandcode/glm-5.2` | `commandcode-oauth/glm-5.2` |
-| Kimi K3 (Command Code) | `commandcode/kimi-k3` | `commandcode-oauth/kimi-k3` |
-| Kimi K2.7 Code (Command Code) | `commandcode/kimi-k2.7-code` | `commandcode-oauth/kimi-k2.7-code` |
-| Qwen3.8 Max (Command Code) | `commandcode/qwen3.8-max` | `commandcode-oauth/qwen3.8-max` |
-| Qwen3.7 Max (Command Code) | `commandcode/qwen3.7-max` | `commandcode-oauth/qwen3.7-max` |
-| Qwen3.7 Plus (Command Code) | `commandcode/qwen3.7-plus` | `commandcode-oauth/qwen3.7-plus` |
-| MiniMax M3 (Command Code) | `commandcode/minimax-m3` | `commandcode-oauth/minimax-m3` |
-| MiniMax M2.7 (Command Code) | `commandcode/minimax-m2.7` | `commandcode-oauth/minimax-m2.7` |
-| MiMo-V2.5-Pro (Command Code) | `commandcode/mimo-v2.5-pro` | `commandcode-oauth/mimo-v2.5-pro` |
-| Grok 4.5 (Command Code) | `commandcode/grok-4.5` | `commandcode-oauth/grok-4.5` |
-| GPT 5.6 Luna (Command Code) | `commandcode/gpt-5.6-luna` | `commandcode-oauth/gpt-5.6-luna` |
-| GPT 5.5 (Command Code) | `commandcode/gpt-5.5` | `commandcode-oauth/gpt-5.5` |
-| Gemini 3.5 Flash (Command Code) | `commandcode/gemini-3.5-flash` | `commandcode-oauth/gemini-3.5-flash` |
-| Hy3 (Command Code) | `commandcode/hy3-paid` | `commandcode-oauth/hy3-paid` |
-| Step 3.7 Flash (Command Code) | `commandcode/step-3.7-flash` | `commandcode-oauth/step-3.7-flash` |
-| Claude Sonnet 5 (Command Code) | `commandcode-messages/claude-sonnet-5` | `commandcode-oauth-messages/claude-sonnet-5` |
-| Claude Opus 4.8 (Command Code) | `commandcode-messages/claude-opus-4.8` | `commandcode-oauth-messages/claude-opus-4.8` |
-| Claude Fable 5 (Command Code) | `commandcode-messages/claude-fable-5` | `commandcode-oauth-messages/claude-fable-5` |
-| Claude Haiku 4.5 (Command Code) | `commandcode-messages/claude-haiku-4.5` | `commandcode-oauth-messages/claude-haiku-4.5` |
-
-The two ID columns are the same models: switching routes changes how you
-authenticate, and the model IDs with it. The live catalog is available without
-authentication from `https://api.commandcode.ai/provider/v1/models`, and
-additional models can be added per machine with
-`./bin/curate-models commandcode`. Point `COMMANDCODE_BASE_URL` elsewhere to
-override the endpoint. Command Code does not document an account-balance API,
-so the tray links to Command Code Studio for credits and usage.
+Both entries are one selectable family that shares a single stored key;
+enabling or disabling either toggles the whole family together. The live
+catalog is available without authentication from
+`https://api.commandcode.ai/provider/v1/models`, and additional models can be
+added per machine with `./bin/curate-models commandcode`. Point
+`COMMANDCODE_BASE_URL` elsewhere to override the endpoint. Command Code does
+not document an account-balance API, so the tray links to Command Code Studio
+for credits and usage.
 
 ### Meta Model API
 
