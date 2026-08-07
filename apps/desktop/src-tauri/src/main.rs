@@ -59,7 +59,38 @@ impl Default for DesktopSettings {
     }
 }
 
+/// Returns whether WebKitGTK's DMA-BUF renderer should be disabled.
+///
+/// The renderer shares GPU buffers with the Wayland compositor (Hyprland,
+/// GNOME, ...) through the graphics driver. With the proprietary NVIDIA kernel
+/// driver that handoff segfaults inside libnvidia-eglcore.so on the
+/// SkiaGPUWorker thread as soon as a webview is shown, taking the tray app
+/// down. Mesa drivers (AMD, Intel, NVK) do not crash, so only NVIDIA disables
+/// the renderer; WebKit then falls back to wl_shm and keeps accelerated
+/// compositing. CODEX_ROUTER_WEBKIT_DMABUF forces the renderer on ("1"/"true")
+/// or off ("0"/"false") regardless of the detected driver.
+#[cfg(target_os = "linux")]
+fn dmabuf_renderer_disabled(override_value: Option<&str>, nvidia_driver_present: bool) -> bool {
+    match override_value {
+        Some("1") | Some("true") => false,
+        Some("0") | Some("false") => true,
+        _ => nvidia_driver_present,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_webkit_workarounds() {
+    let nvidia_driver_present = Path::new("/proc/driver/nvidia/version").exists();
+    let override_value = env::var("CODEX_ROUTER_WEBKIT_DMABUF").ok();
+    if dmabuf_renderer_disabled(override_value.as_deref(), nvidia_driver_present) {
+        env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
 fn main() {
+    #[cfg(target_os = "linux")]
+    apply_webkit_workarounds();
+
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             platform_info,
@@ -104,6 +135,13 @@ fn main() {
             });
 
             install_tray(app)?;
+
+            // Verification aid: open the panel on startup when requested. Lets a
+            // smoke test exercise the exact window-show path that historically
+            // crashed WebKitGTK's GPU worker on NVIDIA.
+            if std::env::var_os("CODEX_ROUTER_SHOW_PANEL").is_some() {
+                let _ = show_panel_window(app.handle());
+            }
 
             if should_show_island {
                 show_island_window(app.handle(), false)?;
@@ -968,5 +1006,21 @@ mod tests {
     fn rejects_non_success_health_response() {
         let response = b"HTTP/1.1 503 Nope\r\n\r\n{}";
         assert!(parse_health_response(response).is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn disables_dmabuf_renderer_only_with_nvidia() {
+        assert!(dmabuf_renderer_disabled(None, true));
+        assert!(!dmabuf_renderer_disabled(None, false));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dmabuf_renderer_override_beats_detection() {
+        assert!(!dmabuf_renderer_disabled(Some("1"), true));
+        assert!(!dmabuf_renderer_disabled(Some("true"), true));
+        assert!(dmabuf_renderer_disabled(Some("0"), false));
+        assert!(dmabuf_renderer_disabled(Some("false"), false));
     }
 }
