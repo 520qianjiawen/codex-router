@@ -418,6 +418,50 @@ test("router refuses a known model whose provider is hidden", async () => {
   }
 });
 
+test("router rewrites gateway errors to name the failing provider", async () => {
+  const gateway = await mockServer(async (request, response) => {
+    await bodyJson(request);
+    json(response, 503, {
+      error: {
+        message:
+          "litellm.ServiceUnavailableError: ServiceUnavailableError: OpenAIException - Upstream request failed: Endpoint is unavailable.. Received Model Group=opencode-go-grok-4-5\nAvailable Model Group Fallbacks=None",
+        type: null,
+        param: null,
+        code: "503",
+      },
+    });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: "opencode-go/grok-4.5", input: "test" }),
+    });
+    assert.equal(response.status, 503);
+    const payload = await response.json();
+    assert.equal(
+      payload.error.message,
+      "Something is wrong at opencode: Grok 4.5 (opencode Go) is unavailable right now. Retry in a few minutes or switch models. (HTTP 503: Upstream request failed: Endpoint is unavailable.)",
+    );
+    assert.equal(payload.error.type, "server_error");
+    assert.ok(!payload.error.message.includes("litellm"));
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+  }
+});
+
 test("router dispatches aliased native slugs to the mapped external model", async () => {
   const gatewayRequests = [];
   const gateway = await mockServer(async (request, response) => {

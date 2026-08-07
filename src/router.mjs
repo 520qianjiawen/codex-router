@@ -35,6 +35,7 @@ import {
   flattenCollaborationNamespaceTools,
 } from "./collaboration-namespace.mjs";
 import { activityMetadataFromHeaders } from "./codex-session-names.mjs";
+import { translateGatewayError } from "./error-translation.mjs";
 import { recordUsageEvent } from "./usage-events.mjs";
 import { VERSION } from "./version.mjs";
 
@@ -978,6 +979,41 @@ async function handleResponses(request, response, requestUrl) {
       body: routedBody,
       signal: controller.signal,
     });
+    // Gateway error bodies leak LiteLLM's internal exception chain, which
+    // reads like a router bug. Rewrite them to name the provider that failed.
+    // Native traffic passes through untouched: OpenAI errors are already clear.
+    if (route && !upstream.ok) {
+      const provider = providerForModel(route);
+      const retryAfterHeader = upstream.headers.get("retry-after");
+      const retryAfterSeconds = Number(retryAfterHeader);
+      if (retryAfterHeader) response.setHeader("Retry-After", retryAfterHeader);
+      writeJson(
+        response,
+        upstream.status,
+        translateGatewayError({
+          status: upstream.status,
+          bodyText: await upstream.text(),
+          modelName: route.displayName || route.slug,
+          providerName: provider?.ownedBy || provider?.displayName || route.provider,
+          providerKind: provider?.kind,
+          retryAfterSeconds: Number.isFinite(retryAfterSeconds)
+            ? retryAfterSeconds
+            : undefined,
+        }),
+      );
+      recordUsageEvent({
+        model: route.slug,
+        provider: canonicalProviderId(route.provider),
+        status: upstream.status,
+        durationMs: Date.now() - startedAt,
+      });
+      if (!QUIET) {
+        console.error(
+          `[codex-router] model=${requestedModel || "unknown"} provider=${route.provider} status=${upstream.status}`,
+        );
+      }
+      return;
+    }
     // Native OpenAI responses carry the same `usage` shape as routed ones, so
     // meter both paths; without this, native traffic reports zero tokens.
     const usageTransform = new ResponseUsageTransform(
