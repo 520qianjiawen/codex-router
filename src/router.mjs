@@ -26,6 +26,7 @@ import {
   loopback,
 } from "./paths.mjs";
 import { MODEL_BY_SLUG, PROVIDERS, providerForModel } from "./model-registry.mjs";
+import { createHealthCache } from "./health-cache.mjs";
 import { readNativeAliases } from "./native-alias.mjs";
 import { readNativeRedirect } from "./native-redirect.mjs";
 import { canonicalProviderId, readProviderSelection } from "./provider-selection.mjs";
@@ -297,7 +298,15 @@ function catalogModels() {
   }
 }
 
-async function serviceHealth(url) {
+// Shared across every /health request so a polling companion collapses into
+// one probe per service per window instead of three per poll.
+const healthCache = createHealthCache();
+
+function serviceHealth(url) {
+  return healthCache(url, () => probeService(url));
+}
+
+async function probeService(url) {
   try {
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${INTERNAL_KEY}` },
