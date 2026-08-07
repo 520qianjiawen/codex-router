@@ -14,6 +14,7 @@ import {
   TARGET,
   loopback,
 } from "./paths.mjs";
+import { probeDelayMs } from "./health-backoff.mjs";
 import { writeLiteLlmConfig } from "./litellm-config.mjs";
 
 const litellm =
@@ -104,6 +105,7 @@ function waitForExit(child, label) {
 
 async function waitForHealth(label, url, headers = {}, timeoutMs = 30_000, expectedService, child) {
   const deadline = Date.now() + timeoutMs;
+  let attempt = 0;
   while (Date.now() < deadline) {
     if (child && (child.exitCode !== null || child.signalCode !== null)) {
       throw new Error(`${label} exited before becoming healthy.`);
@@ -122,7 +124,12 @@ async function waitForHealth(label, url, headers = {}, timeoutMs = 30_000, expec
     } catch {
       // The service is still starting.
     }
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    // Back off rather than hammering: the gateway is allowed a 300 second cold
+    // start, and at a flat interval every one of those probes is a gateway
+    // access-log line for a service that is plainly not up yet.
+    const wait = Math.min(probeDelayMs(attempt), Math.max(0, deadline - Date.now()));
+    attempt += 1;
+    await new Promise((resolve) => setTimeout(resolve, wait));
   }
   throw new Error(`Timed out waiting for ${label} to become healthy.`);
 }

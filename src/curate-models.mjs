@@ -1,4 +1,5 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import { discoverProviderModels } from "./model-discovery.mjs";
@@ -45,7 +46,7 @@ function usage() {
   process.exit(2);
 }
 
-function parseEfforts(raw) {
+export function parseEfforts(raw) {
   const efforts = raw.split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
   for (const effort of efforts) {
     if (!EFFORT_DESCRIPTIONS[effort]) {
@@ -80,7 +81,7 @@ const flagEfforts = (() => {
   }
 })();
 
-function renderRows(candidates, curated, selected) {
+export function renderRows(candidates, curated, selected) {
   return candidates
     .map((id, index) => {
       const mark = selected.has(index + 1) ? "[x]" : "[ ]";
@@ -233,7 +234,12 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(`codex-router curate-models: ${error instanceof Error ? error.message : String(error)}`);
-  process.exit(1);
-});
+// Run only when invoked directly. Importing this module used to execute the
+// whole curation flow -- including the credential check -- which is why the
+// only path a catalog-only provider has to a usable model had no tests.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(`codex-router curate-models: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
+}
