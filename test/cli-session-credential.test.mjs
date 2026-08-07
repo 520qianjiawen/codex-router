@@ -182,7 +182,13 @@ test("onboarding offers sign-in beside the key field and reports which one is li
 // piped spawn dies on "Raw mode is not supported" before it opens a browser.
 // The tray has to hand it a terminal instead, and that is worth pinning: the
 // regression is invisible until someone clicks Sign In.
-test("signing in without a terminal launches one rather than piping the CLI", () => {
+//
+// POSIX only: both stand-ins below are `#!/bin/sh` scripts on a hand-built
+// PATH, which Windows can neither resolve (`where.exe` needs a PATHEXT
+// extension) nor execute.
+test("signing in without a terminal launches one rather than piping the CLI", {
+  skip: process.platform === "win32" ? "the stand-in CLIs are POSIX shell scripts" : false,
+}, () => {
   const { testRoot, sessionDirectory } = sessionRoot();
   try {
     const fakeBin = path.join(testRoot, "bin");

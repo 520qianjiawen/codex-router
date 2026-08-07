@@ -294,7 +294,14 @@ function signedInSince(providerId, before) {
 function signInThroughTerminal(providerId, executable) {
   const cli = SIGN_IN_CLIS[providerId];
   const before = sessionWrittenAt(providerId);
-  if (process.platform !== "darwin") {
+  // Terminal.app rather than the operator's preferred terminal: it is always
+  // present, and `open -a` needs no Automation consent the way driving a
+  // specific app with AppleScript would. The override exists so tests (and
+  // anyone whose environment cannot use `open`) can point at another launcher —
+  // which is also the only way this route works off macOS, where there is no
+  // `open -a Terminal` to fall back to.
+  const launcher = process.env.MODEL_ROUTER_TERMINAL_LAUNCHER;
+  if (process.platform !== "darwin" && !launcher) {
     throw new Error(
       `${cli.executable} signs in through an interactive terminal. Run \`${cli.executable} ${cli.loginArgs.join(" ")}\` in one, then reopen this.`,
     );
@@ -305,11 +312,6 @@ function signInThroughTerminal(providerId, executable) {
     .map((part) => `'${part.replaceAll("'", "'\\''")}'`)
     .join(" ");
   writeFileSync(script, `#!/bin/sh\nexec ${quoted}\n`, { encoding: "utf8", mode: 0o700 });
-  // Terminal.app rather than the operator's preferred terminal: it is always
-  // present, and `open -a` needs no Automation consent the way driving a
-  // specific app with AppleScript would. The override exists so tests (and
-  // anyone whose environment cannot use `open`) can point at another launcher.
-  const launcher = process.env.MODEL_ROUTER_TERMINAL_LAUNCHER;
   const opened = launcher
     ? spawnSync(launcher, [script], { encoding: "utf8", env: spawnEnvironment() })
     : spawnSync("/usr/bin/open", ["-a", "Terminal", script], {
