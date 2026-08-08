@@ -15,6 +15,7 @@ import {
   authenticatedRoute,
 } from "./caller-auth.mjs";
 import {
+  endStreamedResponse,
   HOP_BY_HOP_HEADERS,
   httpErrorStatus,
   pipeResponse,
@@ -1375,7 +1376,14 @@ async function handleRequest(request, response) {
 const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
     const status = httpErrorStatus(error);
-    console.error("[codex-router] request failed");
+    // The bare string this used to log made every mid-stream failure
+    // indistinguishable in production. The cause belongs in the log; response
+    // bodies never do, so only the error's own message and code are recorded.
+    console.error(
+      `[codex-router] request failed: ${
+        error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+      }${error?.code ? ` (${error.code})` : ""}`,
+    );
     if (!response.headersSent) {
       writeJson(response, status, {
         error: {
@@ -1383,8 +1391,11 @@ const server = http.createServer((request, response) => {
           message: "The local router could not complete the request.",
         },
       });
-    } else if (!response.writableEnded) {
-      response.destroy();
+    } else {
+      // The body is already streaming, so there is no status left to change.
+      // Destroying here reset the socket and cost the chunked terminator,
+      // which the client reported only as a decode failure.
+      endStreamedResponse(response);
     }
   });
 });
@@ -1394,6 +1405,30 @@ server.on("upgrade", (_request, socket) => {
   socket.end(
     "HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
   );
+});
+// Without this an 'error' event is unhandled and the process exits silently.
+// Under a supervisor that reads as a crash loop with the port never bound and
+// nothing in the log saying why, so name the cause and use exit codes a
+// supervisor and a human can tell apart.
+server.on("error", (error) => {
+  if (error?.code === "EADDRINUSE") {
+    console.error(
+      `[codex-router] cannot listen: ${LISTEN_HOST}:${LISTEN_PORT} is already in use. Another router or an unrelated process holds it; stop that process, then start the service again.`,
+    );
+    process.exit(98);
+  }
+  if (error?.code === "EACCES") {
+    console.error(
+      `[codex-router] cannot listen: permission denied binding ${LISTEN_HOST}:${LISTEN_PORT}.`,
+    );
+    process.exit(97);
+  }
+  console.error(
+    `[codex-router] server error: ${
+      error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+    }${error?.code ? ` (${error.code})` : ""}`,
+  );
+  process.exit(96);
 });
 server.requestTimeout = 0;
 server.headersTimeout = 65_000;
