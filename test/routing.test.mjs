@@ -1257,6 +1257,159 @@ test("router inlines an external parent's plaintext task before replaying to nat
   }
 });
 
+// A routed subagent cannot mint an OpenAI Fernet token, so Codex stores its
+// readable handoff under `agent_message.content[].encrypted_content` regardless
+// of how the surrounding envelope is rendered. The envelope-matching path only
+// covers the four `Message Type:` headers that end at `Payload:`; everything
+// else reached OpenAI unchanged and failed the whole request with "Encrypted
+// function output content could not be decrypted or decoded", so the
+// conversation could neither continue nor compact.
+const readableHandoffCases = [
+  {
+    label: "no envelope at all",
+    id: "amsg_bare",
+    content: [{ type: "encrypted_content", encrypted_content: "Summarize the diff." }],
+    expected: [{ type: "input_text", text: "Summarize the diff." }],
+  },
+  {
+    label: "text after the payload",
+    id: "amsg_trailing",
+    content: [
+      {
+        type: "input_text",
+        text: "Message Type: FINAL_ANSWER\nSender: /root/reviewer\nPayload:\n",
+      },
+      { type: "encrypted_content", encrypted_content: "The review is done." },
+      { type: "input_text", text: "\n(truncated)" },
+    ],
+    expected: [
+      {
+        type: "input_text",
+        text: "Message Type: FINAL_ANSWER\nSender: /root/reviewer\nPayload:\n",
+      },
+      { type: "input_text", text: "The review is done." },
+      { type: "input_text", text: "\n(truncated)" },
+    ],
+  },
+  {
+    label: "unrecognized message type",
+    id: "amsg_unknown_type",
+    content: [
+      { type: "input_text", text: "Message Type: TASK_ABORTED\nSender: /root\nPayload:\n" },
+      { type: "encrypted_content", encrypted_content: "The user interrupted the task." },
+    ],
+    expected: [
+      { type: "input_text", text: "Message Type: TASK_ABORTED\nSender: /root\nPayload:\n" },
+      { type: "input_text", text: "The user interrupted the task." },
+    ],
+  },
+  {
+    label: "readable and opaque parts in one message",
+    id: "amsg_mixed",
+    content: [
+      { type: "input_text", text: "Message Type: MESSAGE\nSender: /root\nPayload:\n" },
+      { type: "encrypted_content", encrypted_content: "Readable routed handoff." },
+      {
+        type: "encrypted_content",
+        encrypted_content: "gAAAAABkZmtM7cT9w_XY_zThisIsAnOpaqueBlobWithNoWhitespace==",
+      },
+    ],
+    expected: [
+      { type: "input_text", text: "Message Type: MESSAGE\nSender: /root\nPayload:\n" },
+      { type: "input_text", text: "Readable routed handoff." },
+      {
+        type: "encrypted_content",
+        encrypted_content: "gAAAAABkZmtM7cT9w_XY_zThisIsAnOpaqueBlobWithNoWhitespace==",
+      },
+    ],
+  },
+];
+
+// Nothing here may be rewritten: an opaque OpenAI blob has to arrive
+// byte-identical, and `input_text` / `input_image` are already legal.
+const untouchedHandoffItems = [
+  {
+    type: "agent_message",
+    id: "amsg_opaque",
+    author: "/root",
+    recipient: "/root/other",
+    content: [
+      { type: "input_text", text: "Message Type: NEW_TASK\nSender: /root\nPayload:\n" },
+      {
+        type: "encrypted_content",
+        encrypted_content: "gAAAAABmXk9wQ1J2c3RfT3BhcXVlQmxvYl9Ob1doaXRlc3BhY2U=",
+      },
+    ],
+  },
+  {
+    type: "agent_message",
+    id: "amsg_plain_parts",
+    author: "/root/reviewer",
+    recipient: "/root",
+    content: [
+      { type: "input_text", text: "Already ordinary text." },
+      { type: "input_image", image_url: "https://example.invalid/shot.png" },
+    ],
+  },
+];
+
+for (const endpoint of ["/responses", "/responses/compact"]) {
+  test(`router converts readable routed-agent handoffs to input_text on ${endpoint}`, async () => {
+    const nativeRequests = [];
+    const native = await mockServer(async (request, response) => {
+      nativeRequests.push({ url: request.url, body: await bodyJson(request) });
+      json(response, 200, { route: "native" });
+    });
+    const routerPort = await openPort();
+    const router = run("router.mjs", {
+      CODEX_ROUTER_PORT: String(routerPort),
+      CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+      CODEX_ROUTER_QUIET: "1",
+    });
+    const headers = {
+      Authorization: "Bearer CODEX_CALLER_SECRET",
+      "Content-Type": "application/json",
+    };
+
+    try {
+      await waitFor(`${routerBase(routerPort)}/models`, router);
+      const input = [
+        ...readableHandoffCases.map((entry) => ({
+          type: "agent_message",
+          id: entry.id,
+          author: "/root",
+          recipient: "/root/reviewer",
+          content: entry.content,
+        })),
+        ...untouchedHandoffItems,
+      ];
+      const replay = await fetch(`${routerBase(routerPort)}${endpoint}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model: "gpt-5.6-sol", input }),
+      });
+      assert.equal(replay.status, 200);
+      assert.match(nativeRequests[0].url, new RegExp(`${endpoint}$`));
+      const sent = nativeRequests[0].body.input;
+      for (const entry of readableHandoffCases) {
+        const item = sent.find((candidate) => candidate?.id === entry.id);
+        assert.deepEqual(item.content, entry.expected, entry.label);
+        assert.equal(item.type, "agent_message", entry.label);
+        assert.equal(item.recipient, "/root/reviewer", entry.label);
+      }
+      for (const untouched of untouchedHandoffItems) {
+        assert.deepEqual(
+          sent.find((candidate) => candidate?.id === untouched.id),
+          untouched,
+        );
+      }
+    } finally {
+      await stopChild(router);
+      await closeServer(native.server);
+    }
+  });
+}
+
 // Gemini models reach the registry only through `bin/curate-models gemini-api`,
 // so the fixture registers one the same way curation does.
 function curatedGeminiModel() {

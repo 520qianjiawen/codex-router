@@ -395,6 +395,19 @@ minutes later. Do not quietly drop the label because a check happened to pass.
   native request with `stream: true`, accept SSE by body framing as well as
   content type, recognize padded `gAAAA...=` ciphertext, and treat non-Fernet
   `encrypted_content` from an external parent as plaintext.
+- The same rule applies in reverse, and it is not conditional on the envelope.
+  A routed subagent cannot mint an OpenAI token, so Codex stores its readable
+  handoff under `agent_message.content[].encrypted_content` whatever the
+  surrounding `Message Type:` rendering looks like. Before forwarding to a
+  native Responses endpoint — `/responses` and `/responses/compact` alike —
+  rewrite every non-Fernet `encrypted_content` part of an `agent_message` to
+  `input_text`; that schema accepts only `input_text`, `input_image`, and
+  `encrypted_content`, so `output_text` is not a fallback. Classify on the
+  ciphertext format (the `gAAAAA` Fernet prefix over base64url with no
+  whitespace), never on whether the plaintext looks readable, and forward a
+  value that passes byte-identical. Do not gate this on a router-written
+  sentinel: the router never authors these items, and a marker would strand
+  the already-broken conversations this recovers.
 - Never log relay response bodies, decrypted task text, or exception messages
   that can echo either. Regressions require fragmented/mislabeled SSE tests and
   real marker-return probes through every installed routed agent plus a

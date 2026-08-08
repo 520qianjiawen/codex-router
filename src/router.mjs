@@ -467,6 +467,17 @@ function nativeAgentRelayModel() {
   }
 }
 
+// Every `encrypted_content` value OpenAI issues is a Fernet token: the version
+// byte 0x80 followed by a big-endian timestamp whose leading bytes stay zero
+// for the rest of the century, which base64url-encodes to the fixed `gAAAAA`
+// prefix over the base64url alphabet with no whitespace. This is the whole
+// detection predicate -- the plaintext is never inspected.
+const NATIVE_ENCRYPTED_TOKEN = /^gAAAAA[A-Za-z0-9_-]+={0,2}$/;
+
+function isNativeEncryptedToken(value) {
+  return typeof value === "string" && NATIVE_ENCRYPTED_TOKEN.test(value);
+}
+
 function encryptedAgentPayload(item) {
   if (!Array.isArray(item?.content)) return undefined;
   const visibleText = item.content
@@ -488,7 +499,7 @@ function encryptedAgentPayload(item) {
   if (!encrypted) return undefined;
   return {
     content: encrypted.encrypted_content,
-    native: /^gAAAAA[A-Za-z0-9_-]+={0,2}$/.test(encrypted.encrypted_content),
+    native: isNativeEncryptedToken(encrypted.encrypted_content),
   };
 }
 
@@ -777,7 +788,43 @@ function sanitizeReasoningForNative(item) {
 // rejects the whole request with "Encrypted function output content could not
 // be decrypted or decoded" and the subagent dies before returning an answer.
 // Inline the payload as ordinary text so the native child can read it.
+//
+// Codex renders every handoff between agents as an `agent_message`, whose
+// content schema accepts only `input_text`, `input_image`, and
+// `encrypted_content` -- so `output_text` is not an option, and the readable
+// handoff has nowhere else to live. Matching the collaboration envelope covers
+// only the four `Message Type:` headers whose visible text ends at `Payload:`;
+// any other rendering reached OpenAI unchanged and failed replay and
+// `/responses/compact` alike, so the conversation could neither continue nor
+// compact. Normalize at the schema level instead.
+//
+// Classify on the ciphertext format alone (`isNativeEncryptedToken`), never on
+// what the plaintext looks like. A value that fails that shape is one the
+// native backend would reject anyway, so rewriting it replaces a certain
+// failure; a value that passes is forwarded byte-identical. Keying off the
+// stored value rather than a router-written sentinel is deliberate: the router
+// never authors these items -- Codex does, from the routed model's
+// collaboration tool call -- so there is no write site to mark, and a marker
+// would in any case abandon the already-broken conversations this recovers.
+function normalizeAgentMessageForNative(item) {
+  if (item?.type !== "agent_message" || !Array.isArray(item.content)) return item;
+  let changed = false;
+  const content = item.content.map((part) => {
+    if (part?.type !== "encrypted_content") return part;
+    const value = part.encrypted_content;
+    if (typeof value !== "string" || value.length === 0) return part;
+    if (isNativeEncryptedToken(value)) return part;
+    changed = true;
+    return { type: "input_text", text: value };
+  });
+  return changed ? { ...item, content } : item;
+}
+
 function sanitizeCollaborationForNative(item) {
+  const normalized = normalizeAgentMessageForNative(item);
+  if (normalized !== item) return normalized;
+  // Anything outside an `agent_message` is only rewritten when it carries a
+  // recognizable collaboration envelope, which is where the payload belongs.
   const payload = encryptedAgentPayload(item);
   if (!payload || payload.native) return item;
   return {
