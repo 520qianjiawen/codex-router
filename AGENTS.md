@@ -250,6 +250,114 @@ surfaces.
    numbers. Routed request/token accounting comes from the shared usage-events
    pipeline and needs no per-provider work beyond correct event recording.
 
+## Vision bridge for text-only models
+
+The router can let a text-only model answer about a pasted image: the routed
+request path sends each image part to a vision-capable model the operator has
+already enabled and credentialed, and substitutes the returned transcript into
+the turn as text. Treat it as a router capability, never as a model capability.
+
+1. It is opt-in per install (`bin/control vision-bridge on`, protected state in
+   `vision-bridge.json`). The installer auto-enables it once, and only when it
+   is still unconfigured and the operator already enabled a vision-capable
+   provider — that reuses a model they already pay for, so no download and no
+   surprise. When no such provider exists it stays off and the summary points
+   at `vision-bridge setup`. `visionBridgeConfigured()` gates this so
+   re-running the installer never overrides an explicit off. Never auto-enable
+   in any other path; a routed image spends the engine provider's quota.
+2. The registry keeps declaring what each model itself reads. `inputModalities`
+   is never edited to add `image` for a bridge, and `visionBridge` accepts only
+   `false`, as a per-model opt-out. The registry loader rejects `true` so the
+   file can never assert a capability the model lacks.
+3. The catalog advertises image input on a bridged model only while an engine
+   actually resolves from the selected, credentialed, listed set. When the
+   bridge is off, or the pinned engine disappears, the advertisement goes with
+   it — Codex gates the paste on `input_modalities`, so a stale advertisement
+   would leave a paste that nothing can serve. Rebuild the catalog after every
+   change and tell the user to fully quit and reopen Codex.
+4. A registry engine's call goes through the same gateway, credential, and
+   request profile as any other routed turn. Do not add a second upstream path,
+   a separate vision API key, or an external CLI dependency for a hosted engine.
+   The one sanctioned exception is the local engine (`vision-bridge local`): a
+   vision model the operator runs themselves (Ollama, LM Studio, llama.cpp). It
+   lives outside the registry, so the request path calls its
+   `/v1/chat/completions` endpoint directly with no credential, and it is used
+   only when explicitly pinned — auto mode never routes images to `localhost`,
+   since an unreachable server would fail every paste. This is what lets a
+   text-only-only install enable the bridge with no paid vision model. The
+   `vision-bridge setup` command and probe target Ollama for auto-download
+   because it is a managed daemon with a stable model registry — the only
+   runtime where "install once and it keeps working" holds. llama.cpp and LM
+   Studio remain first-class manual engines (the probe detects both, and
+   `vision-bridge local <model> <baseUrl>` pins either); the installer never
+   installs a runtime or pulls a multi-gigabyte model without explicit consent
+   (`setup` requires `--yes` before any download). A model download runs
+   detached (`src/vision-download.mjs` streams Ollama's `/api/pull` and records
+   progress in `vision-download.json`): `pull` returns at once and `pull-status`
+   reports the percentage, because a synchronous multi-gigabyte pull freezes
+   the tray and reads as a crash. The worker pins the model only after it is on
+   disk, so a failed or interrupted download never repoints the bridge at a
+   model that is not there.
+5. Substituted transcripts are untrusted user data. Keep them fenced and
+   labelled as quoted image content, never log a transcript or a gateway error
+   body, and keep the per-image failure path degrading to a stated failure
+   rather than a failed turn.
+6. Evidence, not impressions. The instruction set asks for a transcript, a
+   layout list, readable data values, and an explicit uncertainty list, so the
+   downstream model quotes rather than guesses. Preserve the uncertainty
+   section in any rewrite.
+7. Never add a local model to `LOCAL_VISION_CATALOG` with an `accuracy` claim
+   that was not measured. Run `node src/vision-benchmark.mjs`, which scores a
+   model against a checked-in image with known contents, and record the result
+   in `measured`; anything unmeasured stays `untested`. This is not bureaucracy:
+   `llava` scores 0% and `moondream` 0% on text while sounding entirely
+   plausible, so a reputation-based label would route users straight to a model
+   that fabricates invoice numbers. The picker sorts on this field, so an
+   unearned "accurate" puts a confident-wrong reader at the top of the list.
+7. Regression coverage lives in `test/vision-bridge.test.mjs`,
+   `test/vision-bridge-state.test.mjs`, and the bridged-catalog case in
+   `test/catalog.test.mjs`. A change to engine ranking, caching, substitution,
+   or the advertisement rule needs a test there.
+
+## Local models as a provider
+
+`local` is a keyless provider: it serves from this machine, so there is no
+credential to store, prompt for, or redact.
+
+Local models are published as **experimental**, and the two roles are not
+equally proven. Reading images is dependable: a local vision model transcribes
+codes, numbers, and dates exactly, every run. Driving a Codex turn is not: the
+same model has passed `local-models agent-check` and failed the identical check
+minutes later. Do not quietly drop the label because a check happened to pass.
+
+1. `keyless: true` is only valid with a loopback `baseUrl` and no `credential`
+   block; the loader rejects both violations. An unauthenticated provider
+   pointed at the internet would send traffic off-box with no key.
+2. Checked local models are published into the user-model overlay, the same
+   mechanism curated cloud models use. Do not add a second registry path for
+   them, and never write local models into the checked-in `config/` tree --
+   they exist only on the machine that installed them.
+3. A change to the checked set must rewrite **both** the Codex catalog and the
+   gateway route table (`refreshModelSettingsCatalog({ routes: true })`).
+   Writing one without the other is the drift doctor's "Catalog matches gateway
+   routes" check exists to catch.
+4. Checking, installing, and removing are three separate actions. Unchecking
+   never deletes a download; removing requires explicit consent and unchecks
+   the model so nothing stays selected once it is off disk.
+5. A local model advertises image input only when its family can actually read
+   images -- the same standard the checked-in registry is held to.
+6. Codex drives every turn through tool calls, so a local model is publishable
+   only when Ollama reports the `tools` capability. Most vision models do not
+   have it. `local-models inspect <tag>` reads the registry's chat template to
+   answer that before a download, but a template mentioning `.Tools` is
+   necessary and not sufficient -- `qwen2.5-coder:7b` advertises tools and
+   still returns them as plain JSON text, which Codex cannot dispatch. Treat
+   the flag as a filter and a real request as the proof.
+7. New providers only reach a running router after the service restarts, since
+   the registry and gateway config load at startup. If the router starts
+   answering every request with `local_router_error`, suspect a process still
+   holding pre-change state rather than the new code.
+
 ## Codex safety boundaries
 
 - The config manager owns its marked root `openai_base_url` and

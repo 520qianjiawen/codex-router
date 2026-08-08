@@ -86,7 +86,9 @@ export function readRegistryDocument(root = REGISTRY_PATH) {
 // one directory of the user's home, so a stray separator or `..` would let the
 // registry point the reader at an arbitrary path; reject those at load time.
 function cliSessionProblem(provider) {
-  const session = provider.credential.cliSession;
+  // A keyless provider has no credential block at all, so there is no CLI
+  // session descriptor to validate.
+  const session = provider.credential?.cliSession;
   if (session === undefined) return undefined;
   if (!session || typeof session !== "object" || Array.isArray(session)) {
     return `provider ${provider.id} has an invalid credential.cliSession`;
@@ -137,7 +139,25 @@ function loadRegistry() {
       if (!/^https?:\/\//.test(provider.baseUrl || "")) {
         fail(`provider ${provider.id} requires an HTTP(S) baseUrl`);
       }
-      if (!provider.credential?.file || !Array.isArray(provider.credential.environment)) {
+      // A keyless provider serves from this machine (a local Ollama or
+      // llama.cpp), so there is no secret to store and nothing to protect.
+      // Everything else must declare where its credential lives, or the
+      // resolver has no way to authenticate it.
+      if (provider.keyless !== undefined && typeof provider.keyless !== "boolean") {
+        fail(`provider ${provider.id} has an invalid keyless flag`);
+      }
+      if (provider.keyless && provider.credential !== undefined) {
+        fail(`keyless provider ${provider.id} must not declare a credential`);
+      }
+      // Only a loopback endpoint may skip authentication: a keyless provider
+      // pointed at the internet would send unauthenticated traffic off-box.
+      if (provider.keyless && !/^https?:\/\/(127\.0\.0\.1|\[::1\]|localhost)([:/]|$)/.test(provider.baseUrl)) {
+        fail(`keyless provider ${provider.id} must use a loopback baseUrl`);
+      }
+      if (
+        !provider.keyless &&
+        (!provider.credential?.file || !Array.isArray(provider.credential.environment))
+      ) {
         fail(`provider ${provider.id} requires credential metadata`);
       }
       const sessionProblem = cliSessionProblem(provider);
@@ -271,6 +291,14 @@ function modelProblem(model, providers, slugs, gatewayModels) {
     typeof model.supportsImageDetailOriginal !== "boolean"
   ) {
     return `model ${model.slug} has an invalid supportsImageDetailOriginal`;
+  }
+  // The router's vision bridge covers every text-only model once the operator
+  // enables it, so this field exists only to opt one out -- a model whose
+  // upstream mangles long injected transcripts, for example. Setting it true
+  // would read as a capability claim the model does not have, and the bridge
+  // never needs it, so only false is accepted.
+  if (model.visionBridge !== undefined && model.visionBridge !== false) {
+    return `model ${model.slug} may only set visionBridge to false`;
   }
   // "hosted" means the provider's own backend executes web searches
   // server-side (xAI's Responses proxy today). No other mode may be declared

@@ -54,6 +54,10 @@ const commonEnv = {
   MODEL_ROUTER_API_HEALTH_URL: loopback(PORTS.api, "/health"),
   MODEL_ROUTER_GATEWAY_HEALTH_URL: loopback(PORTS.gateway, "/health/liveliness"),
   MODEL_ROUTER_GATEWAY_PORT: String(PORTS.gateway),
+  // LiteLLM's ollama_chat provider talks to the daemon root, not the
+  // OpenAI-compatible /v1 surface the bridge uses for inference.
+  MODEL_ROUTER_LOCAL_BASE_URL_ROOT:
+    (process.env.MODEL_ROUTER_LOCAL_BASE_URL || "http://127.0.0.1:11434/v1").replace(/\/v1\/?$/, ""),
   MODEL_ROUTER_OAUTH_PORT: String(PORTS.oauth),
   MODEL_ROUTER_API_PORT: String(PORTS.api),
   MODEL_ROUTER_PORT: String(PORTS.router),
@@ -79,6 +83,10 @@ const commonEnv = {
   LITELLM_LOG: "ERROR",
   LITELLM_TELEMETRY: "False",
   NO_COLOR: "1",
+  // LiteLLM prints Unicode banners at startup; on a non-UTF-8 Windows code page
+  // (e.g. cp1252) that raises UnicodeEncodeError and the child never comes up.
+  PYTHONIOENCODING: "utf-8",
+  PYTHONUTF8: "1",
 };
 
 const children = [];

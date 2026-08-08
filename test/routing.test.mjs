@@ -1234,8 +1234,18 @@ test("API forwarder fills only missing Gemini thought signatures", async () => {
       body: JSON.stringify({
         model: curated.gatewayModel,
         web_search_options: { search_context_size: "medium" },
+        thinking: { type: "enabled" },
+        think: true,
+        store: true,
+        logit_bias: { 123: -100 },
         messages: [
-          { role: "user", content: "test" },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "look" },
+              { type: "image_url", image_url: { url: "data:image/png;base64,AAA" } },
+            ],
+          },
           {
             role: "assistant",
             tool_calls: [
@@ -1248,7 +1258,14 @@ test("API forwarder fills only missing Gemini thought signatures", async () => {
               { id: "call-bare", type: "function", function: { name: "b", arguments: "{}" } },
             ],
           },
-          { role: "tool", tool_call_id: "call-signed", content: "ok" },
+          {
+            role: "tool",
+            tool_call_id: "call-signed",
+            content: [
+              { type: "text", text: "screenshot:" },
+              { type: "image_url", image_url: { url: "data:image/png;base64,BBB" } },
+            ],
+          },
           { role: "tool", tool_call_id: "call-bare", content: "ok" },
         ],
       }),
@@ -1256,8 +1273,28 @@ test("API forwarder fills only missing Gemini thought signatures", async () => {
     assert.equal(response.status, 200);
     const body = upstreamRequests[0];
     assert.equal(body.model, "gemini-3.5-flash");
-    // Gemini rejects the OpenAI-shaped web search parameter outright.
+    // Google's OpenAI-compatible endpoint 400s on any non-OpenAI field, so the
+    // web search, thinking/think reasoning controls, and the OpenAI-only
+    // store/logit_bias fields are stripped outright.
     assert.equal(body.web_search_options, undefined);
+    assert.equal(body.thinking, undefined);
+    assert.equal(body.think, undefined);
+    assert.equal(body.store, undefined);
+    assert.equal(body.logit_bias, undefined);
+    // Google accepts images only on user turns: the user image survives, the
+    // tool-turn image is downgraded to a text placeholder.
+    const userMsg = body.messages.find((message) => message.role === "user");
+    assert.deepEqual(userMsg.content, [
+      { type: "text", text: "look" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,AAA" } },
+    ]);
+    const toolMsg = body.messages.find(
+      (message) => message.role === "tool" && Array.isArray(message.content),
+    );
+    assert.deepEqual(toolMsg.content, [
+      { type: "text", text: "screenshot:" },
+      { type: "text", text: "[Image]" },
+    ]);
     const [signed, bare] = body.messages.find((message) => message.role === "assistant").tool_calls;
     // A signature Gemini already returned must survive untouched.
     assert.equal(signed.thought_signature, "real-upstream-signature");

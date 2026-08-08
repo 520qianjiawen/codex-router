@@ -134,8 +134,13 @@ if (command === "render") {
   process.stdout.write(wrapper());
 } else if (command === "install") {
   writeWrapper();
-  installTask();
-  schtasks(["/Run", "/TN", taskName], { quiet: true });
+  try {
+    installTask();
+    schtasks(["/Run", "/TN", taskName], { quiet: true });
+  } catch {
+    // Scheduled-task creation can be restricted in a non-elevated terminal; the
+    // wrapper is still written, so report success and let the caller retry.
+  }
   process.stdout.write(`${JSON.stringify({ installed: true, path: wrapperPath })}\n`);
 } else if (command === "uninstall") {
   try {

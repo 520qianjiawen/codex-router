@@ -235,10 +235,41 @@ function ensureGeminiThoughtSignatures(messages) {
   });
 }
 
+// Google's OpenAI-compatible endpoint accepts image parts only on user turns;
+// an image_url/input_image part on an assistant or tool turn is rejected with
+// "Invalid content part type: image_url", 400ing the whole turn. That shape is
+// normal after a vision-capable tool returns a screenshot, so downgrade those
+// non-user image parts to a text placeholder rather than lose the turn. User
+// turns are left untouched so Gemini still sees the images it can read.
+function sanitizeGeminiImageContent(messages) {
+  return messages.map((message) => {
+    if (!message || message.role === "user" || !Array.isArray(message.content)) return message;
+    let changed = false;
+    const content = message.content.map((part) => {
+      if (!part || typeof part !== "object") return part;
+      if (part.type !== "image_url" && part.type !== "input_image") return part;
+      changed = true;
+      const url =
+        typeof part.image_url === "string"
+          ? part.image_url
+          : typeof part.image_url?.url === "string"
+            ? part.image_url.url
+            : typeof part.url === "string"
+              ? part.url
+              : "";
+      const label = url && !url.startsWith("data:") ? `[Image: ${url}]` : "[Image]";
+      return { type: "text", text: label };
+    });
+    return changed ? { ...message, content } : message;
+  });
+}
+
 function sanitizeChatToolHistory(messages, provider) {
   if (!Array.isArray(messages)) return messages;
   const repaired = ensureToolResultsForCalls(coalesceAssistantMessages(messages));
-  return isGeminiProvider(provider) ? ensureGeminiThoughtSignatures(repaired) : repaired;
+  return isGeminiProvider(provider)
+    ? ensureGeminiThoughtSignatures(sanitizeGeminiImageContent(repaired))
+    : repaired;
 }
 
 function normalizeBody(buffer, contentType, route) {
@@ -281,8 +312,22 @@ function normalizeBody(buffer, contentType, route) {
   }
 
   payload.model = model.upstreamModel;
-  // Gemini has no OpenAI-shaped web search parameter and 400s on the field.
-  if (isGeminiProvider(provider)) delete payload.web_search_options;
+  // Google's OpenAI-compatible endpoint (/v1beta/openai/chat/completions)
+  // rejects any field outside the OpenAI schema with a hard 400
+  // (INVALID_ARGUMENT: Unknown name "..."). Two such fields reach this hop for
+  // Gemini: web_search_options, and the thinking/think reasoning controls that
+  // upstream reasoning translation attaches for Gemini 3.x thinking models.
+  // Left in place the 400 surfaces as a misleading native-ChatGPT fallback
+  // error rather than a routing failure, so strip them before forwarding.
+  if (isGeminiProvider(provider)) {
+    delete payload.web_search_options;
+    delete payload.thinking;
+    delete payload.think;
+    // store and logit_bias are OpenAI-only; Google's surface accepts neither.
+    // (frequency_penalty/presence_penalty/seed are supported, so they stay.)
+    delete payload.store;
+    delete payload.logit_bias;
+  }
   if (Array.isArray(payload.messages)) {
     payload.messages = sanitizeChatToolHistory(payload.messages, provider);
   }
