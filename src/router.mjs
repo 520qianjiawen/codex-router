@@ -878,8 +878,10 @@ async function summarize(payload, route, signal) {
     ...payload,
     model: route.gatewayModel,
     stream: false,
+    // An empty tool list already disables tool use on every forwarder, and
+    // xAI rejects tool_choice "none" paired with it, so the field is omitted
+    // rather than sent redundantly.
     tools: [],
-    tool_choice: "none",
     input: [...bridged, messageItem(COMPACT_PROMPT)],
   };
   delete body.previous_response_id;
