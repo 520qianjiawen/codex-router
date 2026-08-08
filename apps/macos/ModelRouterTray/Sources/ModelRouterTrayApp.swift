@@ -109,6 +109,8 @@ final class RouterStore: ObservableObject {
   @Published private(set) var providerUsageError: String?
   @Published private(set) var providerSetup: [String: ProviderSetupState] = [:]
   @Published private(set) var providerOperation: String?
+  @Published private(set) var visionDownload: VisionDownloadState?
+  @Published private(set) var benchmarkingTag: String?
   @Published private(set) var maintenanceMessage: String?
   @Published private(set) var maintenanceSucceeded = false
   @Published private(set) var islandMode: IslandMode
@@ -1071,6 +1073,87 @@ final class RouterStore: ObservableObject {
     await applyModelSettings(arguments: ["picker", "all", "hide"])
   }
 
+  func setVisionBridgeEnabled(_ enabled: Bool) async {
+    await applyModelSettings(arguments: ["vision-bridge", enabled ? "on" : "off"])
+  }
+
+  /// Picks a paid cloud engine ("auto" or a model slug) as the image reader.
+  func setVisionBridgeEngine(_ value: String) async {
+    await applyModelSettings(arguments: ["vision-bridge", "engine", value])
+  }
+
+  func setLocalModelEnabled(_ tag: String, enabled: Bool) async {
+    await applyModelSettings(arguments: ["local-models", "set", tag, enabled ? "on" : "off"])
+  }
+
+  /// Deletes the model from disk. Irreversible short of downloading it again,
+  /// so the tray arms the row before this is reachable.
+  func uninstallLocalModel(_ tag: String) async {
+    await applyModelSettings(arguments: ["local-models", "uninstall", tag, "--yes"])
+  }
+
+  /// Switches the reader to an already-installed local model.
+  func useLocalVisionModel(_ tag: String) async {
+    await applyModelSettings(arguments: ["vision-bridge", "local", tag])
+  }
+
+  /// Scores an installed model against the checked-in ground-truth image. This
+  /// is what makes "not benchmarked" actionable in the tray: download any
+  /// model, then measure whether it actually reads before trusting it.
+  func benchmarkLocalVisionModel(_ tag: String) async {
+    guard benchmarkingTag == nil else { return }
+    benchmarkingTag = tag
+    defer { benchmarkingTag = nil }
+    do {
+      _ = try await runControl(arguments: ["vision-bridge", "benchmark", tag])
+      await refresh()
+      message = "\(tag) tested. The score is on its row."
+    } catch {
+      message = error.localizedDescription
+    }
+  }
+
+  /// Downloads a local vision model with Ollama, then pins it. The tray row
+  /// shows the size, so the click is the consent for the download.
+  ///
+  /// Gigabytes take minutes: the control command starts a detached worker and
+  /// returns at once, and this polls progress so the row shows a live
+  /// percentage instead of a frozen panel. Only the download buttons are
+  /// disabled meanwhile — the rest of the tray stays usable.
+  func downloadLocalVisionModel(_ tag: String) async {
+    guard visionDownload?.isRunning != true else { return }
+    visionDownload = VisionDownloadState(
+      tag: tag, status: "downloading", detail: "starting", percent: 0, error: nil
+    )
+    do {
+      _ = try await runControl(arguments: ["vision-bridge", "pull", tag])
+    } catch {
+      message = error.localizedDescription
+      visionDownload = nil
+      return
+    }
+    await pollVisionDownload()
+  }
+
+  private func pollVisionDownload() async {
+    while !Task.isCancelled {
+      try? await Task.sleep(nanoseconds: 1_000_000_000)
+      guard let data = try? await runControl(arguments: ["vision-bridge", "pull-status"]),
+        let state = try? JSONDecoder().decode(VisionDownloadState.self, from: data)
+      else { continue }
+      visionDownload = state
+      if state.isRunning { continue }
+      // Terminal: refresh so the row flips to "in use" and the engine label
+      // catches up, then report what happened.
+      await refresh()
+      message = state.status == "done"
+        ? "\(state.tag ?? "Model") downloaded. Restart Codex to refresh its picker."
+        : (state.error ?? "The download failed.")
+      visionDownload = nil
+      return
+    }
+  }
+
   private func applyModelSettings(arguments: [String]) async {
     guard providerOperation == nil else { return }
     providerOperation = "models"
@@ -1584,6 +1667,82 @@ struct RouterModel: Decodable, Identifiable {
 struct ModelSettingsSnapshot: Decodable {
   let subagents: SubagentSettingsSnapshot
   let picker: PickerSettingsSnapshot
+  let localModels: LocalModelsSnapshot?
+  let visionBridge: VisionBridgeSnapshot?
+}
+
+struct LocalModelsSnapshot: Decodable {
+  let installed: Int
+  let enabled: Int
+  let usableAsChat: Int?
+  let totalGb: Double
+  let models: [InstalledLocalModel]
+}
+
+struct InstalledLocalModel: Decodable, Identifiable, Equatable {
+  let tag: String
+  let sizeGb: Double
+  let modified: String?
+  let enabled: Bool
+  let running: Bool
+  let vision: Bool
+  let tools: Bool?
+  let accuracy: String?
+  let agent: String?
+  var id: String { tag }
+
+  /// Codex drives every turn through tool calls, so a model without them
+  /// cannot be a chat model here however good it is. It stays useful as a
+  /// vision reader, and the row has to say so or the checkbox looks broken.
+  var canBeChatModel: Bool { tools == true }
+
+  /// What this model is good for as a Codex chat model, from a measured run of
+  /// the real client where one exists. Tool support alone is not enough: a
+  /// model can call tools perfectly on a short prompt and still fall apart on
+  /// Codex's real instructions.
+  var chatRoleLabel: String {
+    if tools != true { return "no tools — can't chat" }
+    switch agent {
+    case "agent": return "works in Codex"
+    case "flaky": return "unreliable in Codex"
+    case "not-published": return "not offered yet"
+    case .some: return "fails in Codex"
+    default: return "chat — untested"
+    }
+  }
+
+  var chatRoleGood: Bool { tools == true && agent == "agent" }
+}
+
+struct VisionEngineOption: Decodable, Identifiable, Equatable {
+  let slug: String
+  let displayName: String
+  var id: String { slug }
+}
+
+struct VisionBridgeSnapshot: Decodable {
+  let enabled: Bool
+  let engine: String?
+  let local: VisionLocalPin?
+  let resolvedEngine: String?
+  let resolvedEngineName: String?
+  let hostMemGib: Double?
+  let paidEngines: [VisionEngineOption]
+  let download: VisionDownloadState?
+}
+
+struct VisionLocalPin: Decodable, Equatable {
+  let model: String?
+}
+
+struct VisionDownloadState: Decodable, Equatable {
+  let tag: String?
+  let status: String
+  let detail: String?
+  let percent: Int?
+  let error: String?
+
+  var isRunning: Bool { status == "downloading" }
 }
 
 struct SubagentSettingsSnapshot: Decodable {
@@ -2039,6 +2198,10 @@ private struct TrayView: View {
     let target: RouterTarget
     @State private var subagentsExpanded = true
     @State private var pickerExpanded = true
+    @State private var visionExpanded = true
+    @State private var localLlmExpanded = false
+    @State private var installTag = ""
+    @State private var armedRemoval: String?
     @State private var collapsedProviders = Set<String>()
 
     private struct ProviderModels: Identifiable {
@@ -2189,7 +2352,343 @@ private struct TrayView: View {
             }
           }
         }
+
+        AccordionPanel(
+          title: "Local LLMs",
+          summary: localLlmSummary,
+          expanded: $localLlmExpanded
+        ) {
+          localLlmPanel
+        }
+
+        // Header says "Vision" and nothing else; the state it used to summarise
+        // is one line below, in the toggle's own detail.
+        AccordionPanel(
+          title: "Vision",
+          summary: "",
+          expanded: $visionExpanded
+        ) {
+          visionPanel
+        }
       }
+    }
+
+    // Everything installed through Ollama, in one place: check the ones to
+    // offer Codex, install more by tag, remove the ones eating disk. Checking a
+    // model is not the same as downloading it and not the same as deleting it,
+    // so the three actions stay visibly separate.
+    //
+    // The popover is 352pt wide, so the row is two lines rather than one: name
+    // and size on top, role and actions below. Everything that can grow -- an
+    // `hf.co/user/repo:Q4_K_M` tag, a long role phrase -- truncates in place,
+    // which keeps the buttons on screen instead of pushing them past the edge.
+    @ViewBuilder private var localLlmPanel: some View {
+      VStack(alignment: .leading, spacing: 8) {
+        Text("Models on this Mac, through Ollama. Check one to offer it to Codex as a chat model.")
+          .font(.system(size: 9))
+          .foregroundStyle(routerMuted)
+        if sortedLocalModels.isEmpty {
+          Text("Nothing installed yet. Add one below, or install Ollama first.")
+            .font(.system(size: 9))
+            .foregroundStyle(routerMutedStrong)
+        } else {
+          // Names the checkbox column, which otherwise reads as a mystery
+          // control: checking a model is what offers it to Codex as a chat
+          // model, and that is the only thing the checkbox does.
+          HStack(spacing: 0) {
+            Text("CODEX")
+              .frame(width: Self.checkColumnWidth, alignment: .leading)
+            Text("MODEL")
+            Spacer()
+            Text("SIZE")
+          }
+          .font(.system(size: 8, weight: .semibold))
+          .foregroundStyle(routerMuted)
+          .padding(.horizontal, 2)
+          VStack(spacing: 7) {
+            ForEach(sortedLocalModels) { model in
+              installedLocalRow(model)
+            }
+          }
+        }
+        Divider().padding(.vertical, 2)
+        HStack(spacing: 6) {
+          TextField("Tag, e.g. gemma3:4b or hf.co/user/repo:Q4_K_M", text: $installTag)
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 10))
+            .disabled(busy || store.visionDownload?.isRunning == true)
+            .onSubmit { submitInstall() }
+          Button("Install") { submitInstall() }
+            .buttonStyle(.borderless)
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(canInstall ? routerMint : routerMutedStrong)
+            .disabled(!canInstall)
+        }
+        // Only for a tag that is not on the list yet -- an install already in
+        // the list reports its own progress on its row.
+        if let download = store.visionDownload,
+          download.isRunning,
+          !sortedLocalModels.contains(where: { $0.tag == download.tag }) {
+          downloadBar(tag: download.tag, percent: download.percent)
+        }
+      }
+    }
+
+    private static let checkColumnWidth: CGFloat = 38
+
+    @ViewBuilder private func downloadBar(tag: String?, percent: Int?) -> some View {
+      HStack(spacing: 6) {
+        ProgressView(value: Double(percent ?? 0), total: 100)
+          .progressViewStyle(.linear)
+          .tint(routerMint)
+        Text("\(tag ?? "") \(percent ?? 0)%")
+          .font(.system(size: 9, weight: .medium))
+          .foregroundStyle(routerMint)
+          .lineLimit(1)
+          .monospacedDigit()
+      }
+    }
+
+    @ViewBuilder private func installedLocalRow(_ model: InstalledLocalModel) -> some View {
+      HStack(alignment: .top, spacing: 0) {
+        // Codex drives every turn through tool calls, so a model without them
+        // can never be a chat model. The checkbox goes dead rather than
+        // silently doing nothing, and the role line below says why.
+        Toggle("", isOn: Binding(
+          get: { model.enabled },
+          set: { on in Task { await store.setLocalModelEnabled(model.tag, enabled: on) } }
+        ))
+        .labelsHidden()
+        .toggleStyle(.checkbox)
+        .controlSize(.mini)
+        .disabled(busy || !model.canBeChatModel)
+        .frame(width: Self.checkColumnWidth, alignment: .leading)
+        VStack(alignment: .leading, spacing: 3) {
+          HStack(spacing: 6) {
+            Text(model.tag)
+              .font(.system(size: 11, weight: .medium))
+              .lineLimit(1)
+              .truncationMode(.middle)
+            if model.running {
+              Text("loaded")
+                .font(.system(size: 8, weight: .medium))
+                .foregroundStyle(routerMint)
+            }
+            Spacer(minLength: 6)
+            Text(String(format: "%.1f GB", model.sizeGb))
+              .font(.system(size: 9))
+              .foregroundStyle(routerMutedStrong)
+              .layoutPriority(1)
+          }
+          if let download = store.visionDownload,
+            download.isRunning,
+            download.tag == model.tag {
+            downloadBar(tag: nil, percent: download.percent)
+          } else {
+            HStack(spacing: 8) {
+              roleLine(model)
+              Spacer(minLength: 6)
+              rowActions(model)
+            }
+          }
+        }
+      }
+      .padding(.horizontal, 2)
+    }
+
+    // What this model is for, in one truncating phrase rather than a row of
+    // competing badges: its Codex role first, then how well it reads images if
+    // that has been measured.
+    @ViewBuilder private func roleLine(_ model: InstalledLocalModel) -> some View {
+      HStack(spacing: 5) {
+        Text(localRoleLabel(model))
+          .foregroundStyle(localRoleColor(model))
+        if let accuracy = model.accuracy, model.vision {
+          Text("· \(accuracy)")
+            .foregroundStyle(accuracy == "accurate" ? routerMint : routerRed)
+        }
+      }
+      .font(.system(size: 9))
+      .lineLimit(1)
+    }
+
+    private func localRoleLabel(_ model: InstalledLocalModel) -> String {
+      if model.canBeChatModel { return model.chatRoleLabel }
+      return model.vision ? "vision only — no tools" : model.chatRoleLabel
+    }
+
+    private func localRoleColor(_ model: InstalledLocalModel) -> Color {
+      if model.chatRoleGood { return routerMint }
+      return model.canBeChatModel || model.vision ? routerYellow : routerMutedStrong
+    }
+
+    @ViewBuilder private func rowActions(_ model: InstalledLocalModel) -> some View {
+      HStack(spacing: 8) {
+        // The vision role is chosen per model, independently of whether the
+        // model is offered to Codex as a chat model: the best image reader
+        // here cannot call tools, and the best agent cannot see.
+        if model.vision {
+          if store.benchmarkingTag == model.tag {
+            Text("testing…")
+              .font(.system(size: 9, weight: .medium))
+              .foregroundStyle(routerYellow)
+          } else {
+            // Any installed reader can be measured here, so a model is never
+            // stuck reading "not benchmarked" with no way to fix it.
+            Button("Test") { Task { await store.benchmarkLocalVisionModel(model.tag) } }
+              .buttonStyle(.borderless)
+              .font(.system(size: 9))
+              .foregroundStyle(routerMutedStrong)
+              .disabled(busy || store.benchmarkingTag != nil)
+          }
+          if isVisionEngine(model) {
+            Text("reading images")
+              .font(.system(size: 9, weight: .medium))
+              .foregroundStyle(routerMint)
+          } else {
+            Button("Use for vision") { Task { await store.useLocalVisionModel(model.tag) } }
+              .buttonStyle(.borderless)
+              .font(.system(size: 9))
+              .foregroundStyle(routerMint)
+              .disabled(busy)
+          }
+        }
+        // Two-step, because this deletes gigabytes and there is no undo.
+        if armedRemoval == model.tag {
+          Button("Confirm") {
+            armedRemoval = nil
+            Task { await store.uninstallLocalModel(model.tag) }
+          }
+          .buttonStyle(.borderless)
+          .font(.system(size: 9, weight: .medium))
+          .foregroundStyle(routerRed)
+          .disabled(busy)
+        } else {
+          Button("Remove") { armedRemoval = model.tag }
+            .buttonStyle(.borderless)
+            .font(.system(size: 9))
+            .foregroundStyle(routerMutedStrong)
+            .disabled(busy)
+        }
+      }
+      .fixedSize()
+    }
+
+    private var localModels: LocalModelsSnapshot? { settings?.localModels }
+
+    // Useful first: models that actually drive Codex, then the rest that can
+    // chat, then image readers, then the ones that can do neither. A flat list
+    // in this order groups by role without spending rows on group headers,
+    // which the popover width cannot afford.
+    private var sortedLocalModels: [InstalledLocalModel] {
+      (localModels?.models ?? []).sorted {
+        if localRoleRank($0) != localRoleRank($1) {
+          return localRoleRank($0) < localRoleRank($1)
+        }
+        return $0.tag < $1.tag
+      }
+    }
+
+    private func localRoleRank(_ model: InstalledLocalModel) -> Int {
+      if model.chatRoleGood { return 0 }
+      if model.canBeChatModel { return 1 }
+      return model.vision ? 2 : 3
+    }
+
+    private func isVisionEngine(_ model: InstalledLocalModel) -> Bool {
+      vision?.engine == "local" && vision?.local?.model == model.tag
+    }
+
+    private var localLlmSummary: String {
+      guard let localModels, localModels.installed > 0 else { return "none installed" }
+      let chat = localModels.usableAsChat ?? 0
+      return "\(localModels.installed) installed · \(chat) for Codex · \(String(format: "%.1f", localModels.totalGb)) GB"
+    }
+
+    private var canInstall: Bool {
+      !busy && store.visionDownload?.isRunning != true
+        && !installTag.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private func submitInstall() {
+      let tag = installTag.trimmingCharacters(in: .whitespaces)
+      guard canInstall else { return }
+      installTag = ""
+      Task { await store.downloadLocalVisionModel(tag) }
+    }
+
+    // Lets a text-only model (DeepSeek, GLM, ...) answer about a pasted image by
+    // having a vision model read it. The engine defaults to an enabled paid
+    // model; a local model becomes selectable here once it is installed in the
+    // Local LLMs panel above, which is the one place local models are managed.
+    // Everything maps to a `control vision-bridge` command, so the tray never
+    // needs the agent.
+    @ViewBuilder private var visionPanel: some View {
+      VStack(alignment: .leading, spacing: 8) {
+        Text("Text-only models can't see images. When on, a vision model reads the paste and hands over the text.")
+          .font(.system(size: 9))
+          .foregroundStyle(routerMuted)
+        toggleRow(
+          title: "Read images for text-only models",
+          detail: vision?.enabled == true
+            ? "Reading via \(currentEngineLabel)"
+            : "Off — text-only models refuse pasted images",
+          isOn: Binding(
+            get: { vision?.enabled == true },
+            set: { on in Task { await store.setVisionBridgeEnabled(on) } }
+          ),
+          disabled: busy
+        )
+        if vision?.enabled == true {
+          HStack(spacing: 8) {
+            Text("Engine")
+              .font(.system(size: 11, weight: .medium))
+            Spacer()
+            engineMenu
+          }
+          .padding(.horizontal, 2)
+        }
+      }
+    }
+
+    @ViewBuilder private var engineMenu: some View {
+      Menu {
+        Button("Auto · cheapest paid model") {
+          Task { await store.setVisionBridgeEngine("auto") }
+        }
+        if !(vision?.paidEngines ?? []).isEmpty {
+          Section("Paid (cloud)") {
+            ForEach(vision?.paidEngines ?? []) { option in
+              Button(option.displayName) {
+                Task { await store.setVisionBridgeEngine(option.slug) }
+              }
+            }
+          }
+        }
+      } label: {
+        HStack(spacing: 4) {
+          Text(currentEngineLabel).lineLimit(1)
+          Image(systemName: "chevron.up.chevron.down").font(.system(size: 8))
+        }
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(routerMint)
+      }
+      .menuStyle(.borderlessButton)
+      .fixedSize()
+      .disabled(busy)
+    }
+
+    private var vision: VisionBridgeSnapshot? { settings?.visionBridge }
+
+    private var currentEngineLabel: String {
+      guard let vision else { return "none" }
+      if vision.engine == "local" {
+        return "Local · \(vision.local?.model ?? "model")"
+      }
+      if vision.engine == nil {
+        return "Auto · \(vision.resolvedEngineName ?? vision.resolvedEngine ?? "none")"
+      }
+      return vision.resolvedEngineName ?? vision.resolvedEngine ?? vision.engine ?? "none"
     }
 
     private var hiddenModels: Set<String> {
