@@ -344,6 +344,14 @@ function normalizeBody(buffer, contentType, route) {
     delete payload.top_p;
     delete payload.presence_penalty;
     delete payload.frequency_penalty;
+    // DeepSeek rejects forced tool choices while thinking is enabled
+    // ("Thinking mode does not support this tool_choice"); downgrade to auto so
+    // tool calls stay available. Codex sends "required" for the compatibility
+    // probe and a function object for the subagent payload relay, so without
+    // this both tool calling and routed subagents fail on every thinking model.
+    if (payload.tool_choice !== undefined && payload.tool_choice !== "none") {
+      payload.tool_choice = "auto";
+    }
   } else if (model.requestProfile === "deepseek-nonthinking") {
     payload.thinking = { type: "disabled" };
     delete payload.reasoning_effort;

@@ -1602,6 +1602,86 @@ test("API forwarder supports all DeepSeek V4 models and normalizes thinking", as
   }
 });
 
+test("API forwarder downgrades forced tool choices for DeepSeek thinking models", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { choices: [] });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    DEEPSEEK_API_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    DEEPSEEK_API_KEY: "TEST_DEEPSEEK_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  async function forward(gatewayModel, body) {
+    const response = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: gatewayModel,
+          messages: [{ role: "user", content: "test" }],
+          ...body,
+        }),
+      },
+    );
+    assert.equal(response.status, 200);
+    return upstreamRequests.at(-1);
+  }
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    // DeepSeek answers a forced tool choice under thinking with HTTP 400
+    // ("Thinking mode does not support this tool_choice"). The compatibility
+    // probe sends the string form and the subagent payload relay sends the
+    // object form, so both must arrive as auto rather than failing the turn.
+    for (const gatewayModel of [
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+      "deepseek-legacy-reasoner",
+    ]) {
+      for (const toolChoice of [
+        "required",
+        { type: "function", function: { name: "relay_external_agent_payload" } },
+      ]) {
+        const request = await forward(gatewayModel, { tool_choice: toolChoice });
+        assert.deepEqual(request.body.thinking, { type: "enabled" });
+        assert.equal(request.body.tool_choice, "auto");
+      }
+
+      // "none" is not a forced choice: it suppresses tool calls, which the
+      // compaction turn relies on, so it must survive untouched.
+      const suppressed = await forward(gatewayModel, { tool_choice: "none" });
+      assert.equal(suppressed.body.tool_choice, "none");
+
+      // An absent choice stays absent so DeepSeek applies its own default.
+      const absent = await forward(gatewayModel, {});
+      assert.equal(absent.body.tool_choice, undefined);
+      assert.equal("tool_choice" in absent.body, false);
+    }
+
+    // Thinking is disabled on the non-thinking profile, so the restriction does
+    // not apply and a forced choice must pass through unchanged.
+    const nonThinking = await forward("deepseek-legacy-chat", {
+      tool_choice: "required",
+    });
+    assert.deepEqual(nonThinking.body.thinking, { type: "disabled" });
+    assert.equal(nonThinking.body.tool_choice, "required");
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
 test("API forwarder coalesces consecutive assistant messages so tool results follow tool calls", async () => {
   const upstreamRequests = [];
   const upstream = await mockServer(async (request, response) => {
