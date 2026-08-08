@@ -405,6 +405,27 @@ function sortCatalogModels(models) {
   });
 }
 
+// Native entries carry upstream's static multi_agent_version, and upstream
+// still ships gpt-5.6-luna as "v1" even though it runs correctly on the v2
+// backend (openai/codex#35097, #36294). spawn_agent filters candidate child
+// models on that static value, so a v1 entry can never be delegated to by a v2
+// parent. applyMultiAgentSettings only reaches routed models, which is why
+// "all" mode never promoted the native slugs; apply the same opt-in here so the
+// subagent modes mean what the Settings tab says they mean.
+export function promoteNativeMultiAgent(models, settings, hidden = new Set()) {
+  const enabled = new Set(settings.enabled || []);
+  const disabled = new Set(settings.disabled || []);
+  return models.map((model) => {
+    const slug = String(model.slug);
+    if (model.visibility !== "list") return model;
+    if (hidden.has(slug) || disabled.has(slug)) return model;
+    if (settings.mode === "all" || (settings.mode === "selected" && enabled.has(slug))) {
+      return { ...model, multi_agent_version: "v2" };
+    }
+    return model;
+  });
+}
+
 export function buildMergedCatalog(native, routedModelsList, { includeNative = true } = {}) {
   const template =
     native.models.find((model) => model.slug === "gpt-5.5") ||
@@ -477,7 +498,15 @@ function main() {
   // input" as though it grew the capability itself.
   const visionEngine = resolveVisionEngine(selectedModels, readVisionBridgeSettings());
   const catalogModels = applyVisionBridge(routedModels, visionEngine);
-  const native = nativeCatalog();
+  const captured = nativeCatalog();
+  const native = {
+    ...captured,
+    models: promoteNativeMultiAgent(
+      captured.models,
+      readMultiAgentSettings(),
+      hiddenModels,
+    ),
+  };
   // Dropping every native model is destructive, so only do it when Codex
   // actually answered that the session is signed out. If the probe could not
   // run at all we do not know, and guessing "signed out" is what silently

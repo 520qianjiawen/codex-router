@@ -54,6 +54,25 @@ export function flattenCollaborationNamespaceTools(tools) {
   return { tools: flattened, flattened: changed };
 }
 
+// Flattening only the tool list leaves the model reading two different names
+// for the same tool: `collaboration__spawn_agent` in its tools, but a bare
+// `spawn_agent` in its own call history, because LiteLLM's bridge drops the
+// `namespace` field when it converts stored function calls to Chat Completions
+// tool calls. The model imitates the history, emits the bare name, nothing
+// rewrites it, and Codex answers `unsupported call: spawn_agent` — permanently,
+// since every failure adds another bare example. Rename the history to match
+// the flattened tool list so both surfaces agree.
+export function flattenCollaborationHistory(input) {
+  if (!Array.isArray(input)) return input;
+  return input.map((item) => {
+    if (item?.type !== "function_call") return item;
+    if (item.namespace !== COLLABORATION_NAMESPACE) return item;
+    if (typeof item.name !== "string" || splitFlatToolName(item.name)) return item;
+    const { namespace, ...rest } = item;
+    return { ...rest, name: flattenToolName(COLLABORATION_NAMESPACE, item.name) };
+  });
+}
+
 function rewriteCollaborationFunctionCall(event) {
   const item = event?.item;
   if (!item || item.type !== "function_call") return undefined;

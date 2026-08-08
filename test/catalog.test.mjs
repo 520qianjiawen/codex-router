@@ -10,6 +10,7 @@ import {
   clampModelEfforts,
   codexEffortVocabulary,
   nativeCatalogIsReusable,
+  promoteNativeMultiAgent,
   routedModel,
 } from "../src/catalog.mjs";
 
@@ -363,6 +364,62 @@ test("native catalog cache is reusable only for the codex build that captured it
   // Invalid or empty caches are never reusable.
   assert.equal(nativeCatalogIsReusable(undefined, undefined), false);
   assert.equal(nativeCatalogIsReusable({ models: [] }, "codex-cli 0.146.1"), false);
+});
+
+test("native listed models follow the local subagent opt-in", () => {
+  // Upstream still ships gpt-5.6-luna as v1 while it runs fine on the v2
+  // backend, and spawn_agent filters child models on that static value.
+  const native = [
+    { slug: "gpt-5.6-terra", visibility: "list", multi_agent_version: "v2" },
+    { slug: "gpt-5.6-luna", visibility: "list", multi_agent_version: "v1" },
+    { slug: "codex-auto-review", visibility: "hide", multi_agent_version: "v1" },
+  ];
+  const promoted = promoteNativeMultiAgent(native, {
+    mode: "all",
+    enabled: [],
+    disabled: [],
+  });
+  assert.equal(promoted[1].multi_agent_version, "v2");
+  // Hidden native entries are never advertised as spawn targets.
+  assert.equal(promoted[2].multi_agent_version, "v1");
+});
+
+test("native promotion honours disabled models and picker-hidden slugs", () => {
+  const native = [
+    { slug: "gpt-5.6-luna", visibility: "list", multi_agent_version: "v1" },
+    { slug: "gpt-5.5", visibility: "list", multi_agent_version: "v1" },
+  ];
+  const promoted = promoteNativeMultiAgent(
+    native,
+    { mode: "all", enabled: [], disabled: ["gpt-5.6-luna"] },
+    new Set(["gpt-5.5"]),
+  );
+  assert.equal(promoted[0].multi_agent_version, "v1");
+  assert.equal(promoted[1].multi_agent_version, "v1");
+});
+
+test("selected subagent mode only promotes the chosen native models", () => {
+  const native = [
+    { slug: "gpt-5.6-luna", visibility: "list", multi_agent_version: "v1" },
+    { slug: "gpt-5.4", visibility: "list", multi_agent_version: "v1" },
+  ];
+  const promoted = promoteNativeMultiAgent(native, {
+    mode: "selected",
+    enabled: ["gpt-5.6-luna"],
+    disabled: [],
+  });
+  assert.equal(promoted[0].multi_agent_version, "v2");
+  assert.equal(promoted[1].multi_agent_version, "v1");
+});
+
+test("proven subagent mode leaves the native catalog untouched", () => {
+  const native = [{ slug: "gpt-5.6-luna", visibility: "list", multi_agent_version: "v1" }];
+  const promoted = promoteNativeMultiAgent(native, {
+    mode: "proven",
+    enabled: [],
+    disabled: [],
+  });
+  assert.deepEqual(promoted, native);
 });
 
 test("a bridged text-only model advertises image input, and only through the bridge", async () => {
