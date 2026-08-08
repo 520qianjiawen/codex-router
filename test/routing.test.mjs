@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import http from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -2817,5 +2824,237 @@ test("native redirect falls back to native when the target cannot route", async 
     await stopChild(router);
     await closeServer(native.server);
     rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+function usageEvents(stateDir) {
+  const file = path.join(stateDir, "usage-events.jsonl");
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+// The router meters after it has already answered the client, so the fetch can
+// resolve before the event reaches disk. Poll rather than sleep.
+async function waitForUsageEvents(stateDir, count, child) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const events = usageEvents(stateDir);
+    if (events.length >= count) return events;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${count} usage events: ${child.testErrors()}`);
+}
+
+async function waitForStderr(child, pattern) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (pattern.test(child.testErrors())) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${pattern}: ${child.testErrors()}`);
+}
+
+// A routed compaction that leaves no usage event and no log line is invisible:
+// nothing in the router's own telemetry can answer "was compaction even
+// attempted?", which is what made issue #95 slow to diagnose.
+test("routed compaction records usage and logs on success and on failure", async () => {
+  let failing = false;
+  const gateway = await mockServer(async (request, response) => {
+    await bodyJson(request);
+    if (failing) {
+      json(response, 502, { error: { message: "provider refused the compaction" } });
+      return;
+    }
+    json(response, 200, {
+      id: "resp-summary",
+      object: "response",
+      output: [
+        { type: "message", content: [{ type: "output_text", text: "compact summary" }] },
+      ],
+      usage: { input_tokens: 1234, output_tokens: 56, total_tokens: 1290 },
+    });
+  });
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-compaction-usage-"));
+  const routerPort = await openPort();
+  // QUIET stays off here: the log line is half of what this test asserts.
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    MODEL_ROUTER_STATE_DIR: stateDir,
+  });
+  const headers = {
+    Authorization: "Bearer CODEX_CALLER_SECRET",
+    "Content-Type": "application/json",
+  };
+  const body = JSON.stringify({
+    model: "deepseek/deepseek-v4-pro",
+    input: [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "keep me" }] },
+    ],
+  });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+
+    const ok = await fetch(`${routerBase(routerPort)}/responses/compact`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    assert.equal(ok.status, 200, await ok.text());
+    const [success] = await waitForUsageEvents(stateDir, 1, router);
+    assert.equal(success.model, "deepseek/deepseek-v4-pro");
+    assert.equal(success.provider, "deepseek");
+    assert.equal(success.status, 200);
+    assert.equal(success.inputTokens, 1234);
+    assert.equal(success.outputTokens, 56);
+    assert.equal(success.totalTokens, 1290);
+    await waitForStderr(
+      router,
+      /\[codex-router\] model=deepseek\/deepseek-v4-pro provider=deepseek status=200/,
+    );
+
+    failing = true;
+    const failed = await fetch(`${routerBase(routerPort)}/responses/compact`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    assert.equal(failed.status, 502);
+    const events = await waitForUsageEvents(stateDir, 2, router);
+    const failure = events.at(-1);
+    assert.equal(failure.model, "deepseek/deepseek-v4-pro");
+    assert.equal(failure.provider, "deepseek");
+    assert.equal(failure.status, 502);
+    // A failed compaction reports no tokens at all rather than zeros, which
+    // would be indistinguishable from the zero-token accounting behind #95.
+    assert.equal("inputTokens" in failure, false);
+    assert.equal("outputTokens" in failure, false);
+    assert.equal("totalTokens" in failure, false);
+    await waitForStderr(
+      router,
+      /\[codex-router\] model=deepseek\/deepseek-v4-pro provider=deepseek status=502/,
+    );
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// AGENTS.md requires the same collaboration handling on `/responses` and
+// `/responses/compact` alike. Compaction replays the whole conversation, so a
+// `/goal` or subagent session compacting through a routed model would otherwise
+// summarize opaque payloads.
+test("routed compaction resolves subagent handoffs before summarizing", async () => {
+  const nativeRequests = [];
+  const native = await mockServer(async (request, response) => {
+    nativeRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    const relayArguments = JSON.stringify({ payload: "Review the routed diff." });
+    const events = [
+      {
+        type: "response.output_item.added",
+        item: {
+          type: "function_call",
+          id: "fc_relay",
+          name: "relay_external_agent_payload",
+          arguments: "",
+        },
+      },
+      {
+        type: "response.function_call_arguments.done",
+        item_id: "fc_relay",
+        arguments: relayArguments,
+      },
+    ];
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(
+      `${events
+        .map((entry) => `event: ${entry.type}\ndata: ${JSON.stringify(entry)}\n\n`)
+        .join("")}data: [DONE]\n\n`,
+    );
+  });
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayRequests.push(await bodyJson(request));
+    json(response, 200, {
+      id: "resp-summary",
+      object: "response",
+      output: [
+        { type: "message", content: [{ type: "output_text", text: "compact summary" }] },
+      ],
+    });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses/compact`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CHATGPT_SESSION_TOKEN",
+        "ChatGPT-Account-Id": "account-id",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "kimi-oauth/k3",
+        input: [
+          {
+            type: "agent_message",
+            id: "amsg_routed",
+            author: "/root",
+            recipient: "/root/critic",
+            content: [
+              {
+                type: "input_text",
+                text: "Message Type: NEW_TASK\nTask name: /root/critic\nSender: /root\nPayload:\n",
+              },
+              {
+                type: "encrypted_content",
+                encrypted_content: "Summarize the routed subagent handoff.",
+              },
+            ],
+          },
+          {
+            type: "agent_message",
+            id: "amsg_native",
+            author: "/root",
+            recipient: "/root/critic",
+            content: [
+              { type: "input_text", text: "Message Type: MESSAGE\nSender: /root\nPayload:\n" },
+              { type: "encrypted_content", encrypted_content: "gAAAAA-test-payload=" },
+            ],
+          },
+        ],
+      }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(gatewayRequests.length, 1);
+    const sent = gatewayRequests[0].input;
+
+    const routed = sent.find((item) => item?.id === "amsg_routed");
+    assert.equal(routed.content.some((part) => part.type === "encrypted_content"), false);
+    assert.equal(routed.content.at(-1).type, "input_text");
+    assert.equal(routed.content.at(-1).text, "Summarize the routed subagent handoff.");
+
+    // The Fernet-shaped payload proves the request itself is threaded through:
+    // resolving it needs the caller's native session for the relay.
+    const relayed = sent.find((item) => item?.id === "amsg_native");
+    assert.equal(relayed.content.some((part) => part.type === "encrypted_content"), false);
+    assert.equal(relayed.content.at(-1).text, "Review the routed diff.");
+    assert.equal(nativeRequests.length, 1);
+    assert.equal(nativeRequests[0].headers.authorization, "Bearer CHATGPT_SESSION_TOKEN");
+  } finally {
+    await stopChild(router);
+    await Promise.all([closeServer(native.server), closeServer(gateway.server)]);
   }
 });

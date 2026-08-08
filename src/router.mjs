@@ -37,7 +37,7 @@ import {
   readProviderSelection,
   selectedConfiguredListedModels,
 } from "./provider-selection.mjs";
-import { ResponseUsageTransform } from "./response-usage.mjs";
+import { ResponseUsageTransform, tokenUsageFromPayload } from "./response-usage.mjs";
 import {
   CollaborationToolCallTransform,
   flattenCollaborationHistory,
@@ -912,13 +912,19 @@ function extractResponseText(payload) {
   return text.join("\n");
 }
 
-async function summarize(payload, route, signal) {
+async function summarize(request, payload, route, signal) {
   const originalInput = Array.isArray(payload.input) ? payload.input : [];
   // Compaction replays the whole conversation, so any image still in it would
   // reach the text-only model unbridged and fail the compaction rather than
   // the turn. The evidence is already cached from the turn that pasted it.
+  //
+  // It replays the collaboration items too, so the agent-payload resolution a
+  // routed turn performs has to happen here as well -- otherwise a compaction
+  // inside a `/goal` or subagent session summarizes opaque payloads. The relay
+  // is cached by ciphertext, so a conversation whose turns already resolved
+  // costs nothing extra here.
   const bridged = await bridgeVisionInput(
-    normalizeRoutedInput(originalInput),
+    await normalizeRoutedAgentInput(request, originalInput, signal),
     route,
     signal,
   );
@@ -945,8 +951,15 @@ async function summarize(payload, route, signal) {
     return { ok: false, status: 502, payload: { error: { message: "Compact response is too large." } } };
   }
   const parsed = JSON.parse(bytes.toString("utf8"));
-  if (!upstream.ok) return { ok: false, status: upstream.status, payload: parsed };
-  return { ok: true, summary: extractResponseText(parsed), input: originalInput };
+  // Compaction is a plain non-streaming call, so the usage block (when the
+  // provider sends one) is already in hand. `tokenUsageFromPayload` returns
+  // undefined when it is absent, and `recordUsageEvent` then omits the token
+  // fields entirely rather than metering an invented zero.
+  const usage = tokenUsageFromPayload(parsed);
+  if (!upstream.ok) {
+    return { ok: false, status: upstream.status, payload: parsed, usage };
+  }
+  return { ok: true, summary: extractResponseText(parsed), input: originalInput, usage };
 }
 
 function compactionSnapshot(model, item, status = "completed") {
@@ -987,11 +1000,13 @@ function writeCompactionSse(response, model, summary) {
   response.end("data: [DONE]\n\n");
 }
 
-async function handleRoutedCompaction(response, payload, route, signal, v2) {
-  const result = await summarize(payload, route, signal);
+// Returns what the request path needs to meter and log the compaction, so a
+// routed compaction leaves the same telemetry trail as any other routed turn.
+async function handleRoutedCompaction(request, response, payload, route, signal, v2) {
+  const result = await summarize(request, payload, route, signal);
   if (!result.ok) {
     writeJson(response, result.status, result.payload);
-    return;
+    return { status: result.status, usage: result.usage };
   }
   if (v2) {
     if (payload.stream === false) {
@@ -1004,9 +1019,10 @@ async function handleRoutedCompaction(response, payload, route, signal, v2) {
     } else {
       writeCompactionSse(response, payload.model, result.summary);
     }
-    return;
+    return { status: 200, usage: result.usage };
   }
   writeJson(response, 200, { output: compactOutput(result.input, result.summary) });
+  return { status: 200, usage: result.usage };
 }
 
 async function handleModels(response) {
@@ -1110,7 +1126,29 @@ async function handleResponses(request, response, requestUrl) {
     });
 
     if (route && (compactV1 || compactV2)) {
-      await handleRoutedCompaction(response, payload, route, controller.signal, compactV2);
+      const compaction = await handleRoutedCompaction(
+        request,
+        response,
+        payload,
+        route,
+        controller.signal,
+        compactV2,
+      );
+      // Compaction used to return here without metering or logging, so neither
+      // a successful nor a failed one appeared anywhere in the router's own
+      // telemetry. Mirror the ordinary request path exactly.
+      recordUsageEvent({
+        model: route.slug,
+        provider: canonicalProviderId(route.provider),
+        status: compaction.status,
+        durationMs: Date.now() - startedAt,
+        ...compaction.usage,
+      });
+      if (!QUIET) {
+        console.error(
+          `[codex-router] model=${requestedModel || "unknown"} provider=${route.provider} status=${compaction.status}`,
+        );
+      }
       return;
     }
 
