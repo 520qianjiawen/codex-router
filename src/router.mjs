@@ -769,10 +769,20 @@ function visionEngineProvider(engine) {
   return engine.provider || "unknown";
 }
 
+// The cache only stops a *finished* read from being bought twice. Codex sends
+// concurrent requests, and one turn can carry the same image more than once, so
+// two reads of one screenshot were routinely in flight together -- both missing
+// the cache because neither had returned yet, and the engine charged twice for
+// one transcript. Seen in production: two overlapping reads of a single pasted
+// image, three seconds apart. Waiters share the first read's outcome, failure
+// included, because retrying an image the engine just refused buys the same
+// refusal again.
+const visionReadsInFlight = new Map();
+
 // Codex resends the whole conversation every turn, so the same screenshot
 // arrives again on every follow-up. Without the hash cache a five-turn
 // conversation about one image would buy the same transcript five times.
-async function visionEvidenceFor(url, engine, signal, request, effort, question = "") {
+async function visionEvidenceFor(url, engine, request, effort, question = "") {
   // A native engine is spent on the caller's own ChatGPT session, so it can
   // only be reached with the headers this very request arrived with. The router
   // never stores those.
@@ -798,14 +808,32 @@ async function visionEvidenceFor(url, engine, signal, request, effort, question 
   // A cache hit buys nothing, so it records nothing: the events file is a
   // record of spend, not of calls the router avoided.
   if (cached !== undefined) return cached;
-  // A bridged read is a request the operator never asked for by name, billed to
-  // whichever engine won the ranking. It rides the same usage-events pipeline
-  // every routed turn uses, so `usage-events.jsonl` and `control probe` show
-  // that a vision call happened, against which model, and whether it worked --
-  // otherwise the very first read on an install that enabled nothing would
-  // leave no trace at all. Token counts are not available here (`describeImage`
-  // returns the transcript, not the envelope), so the event carries what it
-  // honestly has.
+  const readKey = `${key} ${question}`;
+  const running = visionReadsInFlight.get(readKey);
+  if (running) return running;
+  // Deliberately not tied to the caller's AbortSignal. The read is shared, so
+  // one client's cancellation would abort a read another live request is
+  // waiting on and cost it an image it could have had. `describeImage` bounds
+  // itself with its own timeout, and an abandoned read still fills the cache
+  // for the retry that usually follows.
+  const read = readVisionEvidence({ url, engine, nativeCall, effort, question, key });
+  visionReadsInFlight.set(readKey, read);
+  try {
+    return await read;
+  } finally {
+    visionReadsInFlight.delete(readKey);
+  }
+}
+
+// A bridged read is a request the operator never asked for by name, billed to
+// whichever engine won the ranking. It rides the same usage-events pipeline
+// every routed turn uses, so `usage-events.jsonl` and `control probe` show
+// that a vision call happened, against which model, and whether it worked --
+// otherwise the very first read on an install that enabled nothing would
+// leave no trace at all. Token counts are not available here (`describeImage`
+// returns the transcript, not the envelope), so the event carries what it
+// honestly has.
+async function readVisionEvidence({ url, engine, nativeCall, effort, question, key }) {
   const startedAt = Date.now();
   let status = 0;
   try {
@@ -816,7 +844,6 @@ async function visionEvidenceFor(url, engine, signal, request, effort, question 
       headers: routedHeaders(),
       nativeCall,
       effort,
-      signal,
       question,
     });
     status = 200;
@@ -834,7 +861,7 @@ async function visionEvidenceFor(url, engine, signal, request, effort, question 
 // Text-only models get their images read by a vision-capable model the
 // operator already enabled. Turns without images cost nothing here, and a
 // model that reads images itself is never touched.
-async function bridgeVisionInput(input, route, signal, request) {
+async function bridgeVisionInput(input, route, request) {
   if (!inputHasImage(input)) return input;
   if (supportsImageInput(route)) return input;
   if (route.visionBridge === false) {
@@ -881,7 +908,7 @@ async function bridgeVisionInput(input, route, signal, request) {
   const engineName = engine.displayName || engine.slug;
   const { effort } = settings;
   const result = await substituteImages(input, async (url, _ordinal, question) => ({
-    text: await visionEvidenceFor(url, engine, signal, request, effort, question),
+    text: await visionEvidenceFor(url, engine, request, effort, question),
     engineName,
   }));
   // Never gated on QUIET, for the same reason the retry line is not: a
@@ -1059,7 +1086,6 @@ async function summarize(request, payload, route, signal) {
   const bridged = await bridgeVisionInput(
     await normalizeRoutedAgentInput(request, originalInput, signal),
     route,
-    signal,
     request,
   );
   const body = {
@@ -1294,7 +1320,6 @@ async function handleResponses(request, response, requestUrl) {
       const input = await bridgeVisionInput(
         await normalizeRoutedAgentInput(request, payload.input, controller.signal),
         route,
-        controller.signal,
         request,
       );
       const provider = providerForModel(route);
