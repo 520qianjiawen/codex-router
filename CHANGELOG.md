@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **A curated model can say it refuses a forced tool choice.** A few upstreams
+  call tools happily when `tool_choice` is `"auto"` and answer HTTP 400 when
+  one is required, so the compatibility check reported no tool support and the
+  routed-subagent handoff failed on a model whose tool calling was fine. The
+  vendor profiles already covered DeepSeek and Qwen on their own endpoints;
+  reached through a reseller like OpenRouter the same model had nowhere to
+  declare it, because those providers ship no registry models to inherit a
+  profile from. Curation now asks, and stores `auto-tool-choice`
+  (`--request-profile auto-tool-choice` in the `--models` form), which
+  downgrades the forced choice for that model and touches no other parameter.
+  It stays per model on purpose: OpenRouter reports `tool_choice` support per
+  model in its own catalog, so downgrading for a whole reseller would let
+  models that honor a forced choice quietly decline both the probe and the
+  subagent relay's forced function call. The probe itself still sends
+  `required`. Thanks to @jepgambardella for the report.
+
 - **Windows no longer opens a console window at logon.** The scheduled task ran
   the CMD wrapper through `cmd.exe`, so a console window appeared at every logon
   and stayed for the router's lifetime, reappearing on each watchdog restart.

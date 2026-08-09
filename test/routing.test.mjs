@@ -2174,6 +2174,143 @@ test("API forwarder routes Qwen plan models without unsupported parameters", asy
   }
 });
 
+// The catalog-only resellers ship no models, so their entries reach the
+// registry only through `bin/curate-models`. The fixture registers two
+// OpenRouter models the same way curation does: one whose upstream refuses a
+// forced tool choice and therefore carries the opt-in profile, and one that
+// does not, because OpenRouter itself imposes no such restriction.
+function curatedOpenRouterModels() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "routing-openrouter-models-"));
+  const file = path.join(dir, "user-models.json");
+  const entry = (upstreamModel, gatewayModel, requestProfile) => ({
+    slug: `openrouter/${upstreamModel}`,
+    gatewayModel,
+    upstreamModel,
+    provider: "openrouter",
+    listed: true,
+    displayName: `${upstreamModel} (curated)`,
+    description: "Test fixture.",
+    priority: 500,
+    defaultEffort: "high",
+    reasoningLevels: [{ effort: "high", description: "Adaptive reasoning" }],
+    contextWindow: 131072,
+    autoCompact: 110000,
+    inputModalities: ["text"],
+    compHash: `${gatewayModel}-user-v1`,
+    ...(requestProfile ? { requestProfile } : {}),
+  });
+  writeFileSync(
+    file,
+    JSON.stringify({
+      version: 1,
+      models: [
+        entry("qwen/qwen3.8-max", "openrouter-qwen-qwen3-8-max", "auto-tool-choice"),
+        entry("openai/gpt-5.3", "openrouter-openai-gpt-5-3"),
+      ],
+    }),
+    "utf8",
+  );
+  return {
+    dir,
+    file,
+    restricted: "openrouter-qwen-qwen3-8-max",
+    unrestricted: "openrouter-openai-gpt-5-3",
+  };
+}
+
+test("API forwarder downgrades forced tool choices only for models that declare the restriction", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { choices: [] });
+  });
+  const curated = curatedOpenRouterModels();
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    OPENROUTER_API_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    OPENROUTER_API_KEY: "TEST_OPENROUTER_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  async function forward(gatewayModel, body) {
+    const response = await fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: gatewayModel,
+        messages: [{ role: "user", content: "test" }],
+        ...body,
+      }),
+    });
+    assert.equal(response.status, 200);
+    return upstreamRequests.at(-1);
+  }
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    // Some upstreams answer a forced tool choice with a hard 400 while still
+    // calling tools under "auto". The compatibility probe sends the string
+    // form and the subagent payload relay sends the object form, so both must
+    // arrive as auto rather than failing the turn.
+    for (const toolChoice of [
+      "required",
+      { type: "function", function: { name: "relay_external_agent_payload" } },
+    ]) {
+      const request = await forward(curated.restricted, { tool_choice: toolChoice });
+      assert.equal(request.headers.authorization, "Bearer TEST_OPENROUTER_API_KEY");
+      assert.equal(request.body.model, "qwen/qwen3.8-max");
+      assert.equal(request.body.tool_choice, "auto");
+    }
+
+    // "none" is not a forced choice: it suppresses tool calls, which the
+    // compaction turn relies on, so it must survive untouched.
+    const suppressed = await forward(curated.restricted, { tool_choice: "none" });
+    assert.equal(suppressed.body.tool_choice, "none");
+
+    // An absent choice stays absent so the upstream applies its own default.
+    const absent = await forward(curated.restricted, {});
+    assert.equal(absent.body.tool_choice, undefined);
+    assert.equal("tool_choice" in absent.body, false);
+
+    // The profile normalizes the tool choice and nothing else. Reusing
+    // qwen-plan here would have collapsed the picked effort to DashScope's
+    // two-tier ladder, which is not OpenRouter's parameter surface.
+    const untouched = await forward(curated.restricted, {
+      reasoning_effort: "medium",
+      temperature: 0.4,
+      tool_choice: "required",
+    });
+    assert.equal(untouched.body.reasoning_effort, "medium");
+    assert.equal(untouched.body.temperature, 0.4);
+
+    // The restriction belongs to the upstream model, not to the reseller: a
+    // sibling curated on the same provider keeps its forced choice, so tool
+    // calling is not weakened for every OpenRouter model to serve two.
+    const sibling = await forward(curated.unrestricted, { tool_choice: "required" });
+    assert.equal(sibling.body.model, "openai/gpt-5.3");
+    assert.equal(sibling.body.tool_choice, "required");
+
+    const siblingObject = await forward(curated.unrestricted, {
+      tool_choice: { type: "function", function: { name: "relay_external_agent_payload" } },
+    });
+    assert.deepEqual(siblingObject.body.tool_choice, {
+      type: "function",
+      function: { name: "relay_external_agent_payload" },
+    });
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+    rmSync(curated.dir, { recursive: true, force: true });
+  }
+});
+
 
 test("API forwarder routes MiniMax M3 streaming tool calls with adaptive thinking", async () => {
   const upstreamRequests = [];

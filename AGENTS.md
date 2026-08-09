@@ -165,7 +165,17 @@ to ship tested support to every installer.
    times per slug, tracked by the Codex client itself); leave it unset unless
    the model is genuinely news to the operator. Curated models are not
    implicitly approved as native v2 subagent model overrides.
-6. Run `./bin/model-router codex doctor`. A live `bin/test-model` request uses
+6. A curated model inherits a request profile from the provider's registry
+   models. The catalog-only resellers ship none, so curation also asks whether
+   the model rejects a forced `tool_choice` (`--request-profile
+   auto-tool-choice` in the deterministic form). Answer yes only for a model
+   observed to answer HTTP 400 on `tool_choice: "required"` while still
+   calling tools under `"auto"` — the restriction belongs to the upstream
+   behind the reseller, not to the reseller, so it is set per model and never
+   as a provider-wide default. Never widen it by changing what
+   `src/compatibility-test.mjs` sends: the probe must keep sending `required`,
+   or it stops proving tool calling works for every other provider.
+7. Run `./bin/model-router codex doctor`. A live `bin/test-model` request uses
    provider quota, so run it only with the user's approval. Finally, tell the
    user to fully quit and reopen Codex before checking the picker.
 
