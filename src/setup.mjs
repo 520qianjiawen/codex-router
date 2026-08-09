@@ -367,7 +367,7 @@ async function main() {
   // provider, it stays off and the summary points at the local-model setup.
   let visionBridge;
   if (!visionBridgeConfigured()) {
-    const engine = resolveVisionEngine(selectedConfiguredListedModels(), {
+    const engine = resolveVisionEngine(() => selectedConfiguredListedModels(), {
       enabled: true,
       engine: null,
     });

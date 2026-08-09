@@ -174,7 +174,7 @@ async function emitProbe() {
                 // or the router would then refuse.
                 const natives = installedNativeVisionEngines({ hidden: hiddenModels });
                 const resolved = resolveVisionEngine(
-                  [...candidates, ...natives],
+                  () => [...candidates, ...natives],
                   readVisionBridgeSettings(),
                 );
                 return {
@@ -671,7 +671,7 @@ async function handleVisionBridge(action, value, extra) {
   const snapshot = () => {
     const candidates = [...selectedConfiguredListedModels(), ...nativeEngines];
     const settings = readVisionBridgeSettings();
-    const resolved = resolveVisionEngine(candidates, settings);
+    const resolved = resolveVisionEngine(() => candidates, settings);
     return {
       ...visionBridgeSnapshot(),
       // The local engine is a real answer even when no paid vision model is

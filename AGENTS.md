@@ -328,6 +328,15 @@ the turn as text. Treat it as a router capability, never as a model capability.
    it — Codex gates the paste on `input_modalities`, so a stale advertisement
    would leave a paste that nothing can serve. Rebuild the catalog after every
    change and tell the user to fully quit and reopen Codex.
+   `resolveVisionEngine` takes that set as a **function**, never as an array,
+   and rejects an array outright. Assembling it means probing every provider's
+   credential synchronously — on macOS one `/usr/bin/security` spawn per
+   provider per keychain service, ~250ms with the event loop stopped — while two
+   of the three answers (bridge off, engine pinned to `local`) never look at a
+   candidate. On the request path that cost was paid per pasted image and
+   blocked every other in-flight request. Deferring narrows nothing: what gets
+   ranked is still exactly the selected, credentialed, listed set. A lazy list
+   that skips the credential check is a security regression, not a speedup.
 4. A registry engine's call goes through the same gateway, credential, and
    request profile as any other routed turn. Do not add a second upstream path,
    a separate vision API key, or an external CLI dependency for a hosted engine.

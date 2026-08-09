@@ -75,12 +75,79 @@ test("a cheap vision tier outranks a higher-priority flagship", () => {
 });
 
 test("a disabled bridge resolves no engine", () => {
-  const engine = resolveVisionEngine([FLASH_VISION], { enabled: false, engine: null });
+  const engine = resolveVisionEngine(() => [FLASH_VISION], { enabled: false, engine: null });
   assert.equal(engine, undefined);
 });
 
+// The regression this guards: the candidate list used to be built before
+// `resolveVisionEngine` was called, so an image-bearing turn paid for a full
+// synchronous credential probe of every provider -- ~250ms with the event loop
+// stopped -- even in the two cases that answer without ranking anything. This
+// asserts the observable behaviour (was the credential path consulted at all?)
+// rather than a duration, which would be flaky.
+test("the candidate list is never built for an answer that does not rank it", () => {
+  let built = 0;
+  const candidates = () => {
+    built += 1;
+    return [FLASH_VISION];
+  };
+
+  // Off. Nothing to resolve, so nothing to look up.
+  assert.equal(resolveVisionEngine(candidates, { enabled: false, engine: null }), undefined);
+  assert.equal(built, 0, "a switched-off bridge still consulted the credentialed model list");
+
+  // Pinned to the operator's own local model. It lives outside the registry, so
+  // the selected/credentialed set has no bearing on the answer.
+  assert.equal(
+    resolveVisionEngine(candidates, {
+      enabled: true,
+      engine: LOCAL_ENGINE_SLUG,
+      local: { model: "moondream", baseUrl: "http://127.0.0.1:11434/v1" },
+    }).slug,
+    LOCAL_ENGINE_SLUG,
+  );
+  assert.equal(built, 0, "a pinned local engine still consulted the credentialed model list");
+});
+
+// The other half of the same property, and the more important half: laziness
+// must not turn into a skipped gate. Whenever an answer actually depends on
+// which models the operator has selected and credentialed, that list is built
+// and ranked exactly as before -- once.
+test("the candidate list is built, once, for every answer that does rank it", () => {
+  for (const settings of [
+    { enabled: true, engine: null },
+    { enabled: true, engine: FLAGSHIP_VISION.slug },
+    { enabled: true, engine: "nothing/enabled-resolves-this" },
+  ]) {
+    let built = 0;
+    const engine = resolveVisionEngine(() => {
+      built += 1;
+      return [FLASH_VISION, FLAGSHIP_VISION];
+    }, settings);
+    assert.equal(built, 1, `engine=${settings.engine} did not rank the credentialed set exactly once`);
+    assert.equal(engine?.slug, settings.engine === null ? FLASH_VISION.slug : (
+      settings.engine === FLAGSHIP_VISION.slug ? FLAGSHIP_VISION.slug : undefined
+    ));
+  }
+});
+
+// An array is the shape that used to be passed, and accepting one alongside the
+// function would leave the eager form available to the next call site added.
+test("resolveVisionEngine refuses an already-built candidate list", () => {
+  assert.throws(
+    () => resolveVisionEngine([FLASH_VISION], { enabled: true, engine: null }),
+    /function returning the selected, credentialed candidates/,
+  );
+  // Rejected before the settings are even read, so an off bridge cannot hide a
+  // call site that went back to building the list eagerly.
+  assert.throws(
+    () => resolveVisionEngine([FLASH_VISION], { enabled: false, engine: null }),
+    TypeError,
+  );
+});
+
 test("a pinned engine wins over the ranking", () => {
-  const engine = resolveVisionEngine([FLASH_VISION, FLAGSHIP_VISION], {
+  const engine = resolveVisionEngine(() => [FLASH_VISION, FLAGSHIP_VISION], {
     enabled: true,
     engine: FLAGSHIP_VISION.slug,
   });
@@ -88,7 +155,7 @@ test("a pinned engine wins over the ranking", () => {
 });
 
 test("a pin that no longer resolves falls back to nothing, not to another model", () => {
-  const engine = resolveVisionEngine([FLASH_VISION], {
+  const engine = resolveVisionEngine(() => [FLASH_VISION], {
     enabled: true,
     engine: "grok/grok-4.5",
   });
@@ -97,7 +164,7 @@ test("a pin that no longer resolves falls back to nothing, not to another model"
 
 test("a pinned local engine resolves even with no paid vision model enabled", () => {
   // The DeepSeek-only install: nothing in the registry reads images.
-  const engine = resolveVisionEngine([TEXT_ONLY], {
+  const engine = resolveVisionEngine(() => [TEXT_ONLY], {
     enabled: true,
     engine: LOCAL_ENGINE_SLUG,
     local: { model: "moondream", baseUrl: "http://127.0.0.1:11434/v1" },
@@ -371,14 +438,14 @@ test("native candidates skip text-only, hidden, and unlisted models", () => {
 
 test("a native engine can be pinned and outranks nothing by accident", () => {
   const candidates = [FLASH_VISION, ...nativeVisionCandidates([NATIVE_LUNA])];
-  const pinned = resolveVisionEngine(candidates, {
+  const pinned = resolveVisionEngine(() => candidates, {
     enabled: true,
     engine: "gpt-5.6-luna",
   });
   assert.equal(pinned.slug, "gpt-5.6-luna");
   // Without a pin the cheap-tier hint still wins, so enabling the bridge does
   // not quietly start spending the subscription.
-  const automatic = resolveVisionEngine(candidates, { enabled: true });
+  const automatic = resolveVisionEngine(() => candidates, { enabled: true });
   assert.equal(automatic.slug, FLASH_VISION.slug);
 });
 
@@ -780,6 +847,36 @@ test("the request path will not nominate a native engine without a live session"
     body,
     /installedNativeVisionEngines\(/,
     "bridgeVisionInput must take native candidates from the shared helper",
+  );
+});
+
+// The unit tests above prove `resolveVisionEngine` does not build a list it will
+// not rank. This proves the request path actually hands it the deferred form, so
+// the two together cover the regression end to end: the same technique the
+// native-session guard above uses, for the same reason -- the property lives in
+// how the caller is written, and nothing else observes it from outside.
+test("the request path hands the engine resolver a list it has not built yet", async () => {
+  const source = await readFile(path.join(repoRoot, "src/router.mjs"), "utf8");
+  const start = source.indexOf("async function bridgeVisionInput");
+  assert.notEqual(start, -1, "router.mjs must still resolve the engine in bridgeVisionInput");
+  const body = source.slice(start, source.indexOf("\n}\n", start));
+  assert.match(
+    body,
+    /resolveVisionEngine\(\s*\(\)\s*=>/,
+    "bridgeVisionInput must pass resolveVisionEngine a thunk, not an assembled array",
+  );
+  // `selectedConfiguredListedModels()` is the synchronous credential scan. It
+  // may only appear inside that thunk -- never on a line the handler runs before
+  // it knows the bridge is even on.
+  const eager = body
+    .split("\n")
+    .filter((line) => !/^\s*\/\//.test(line))
+    .filter((line) => line.includes("selectedConfiguredListedModels()"))
+    .filter((line) => !/^\s*\.\.\.selectedConfiguredListedModels\(\),?\s*$/.test(line));
+  assert.deepEqual(
+    eager,
+    [],
+    "bridgeVisionInput must only reach the credential scan from inside the deferred candidate list",
   );
 });
 

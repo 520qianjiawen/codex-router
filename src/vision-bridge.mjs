@@ -182,15 +182,37 @@ export function nativeVisionCandidates(models, hidden = new Set()) {
     .filter(supportsImageInput);
 }
 
-// `candidates` must already be the selected and credentialed set: an engine the
+// `listCandidates` must return the selected and credentialed set: an engine the
 // operator cannot actually call would make the catalog promise image input that
 // every turn then fails to deliver. The local engine is the one exception --
 // it lives outside the registry, so a DeepSeek-only install with no paid vision
 // model can still enable the bridge by pinning `local`.
-export function resolveVisionEngine(candidates, settings) {
+//
+// It is a function rather than the list itself, and that is load-bearing rather
+// than stylistic. Two of the three answers below are reached without looking at
+// a single candidate, and on the routed request path assembling that list means
+// `selectedConfiguredListedModels()` -> `configuredProviderIds()` -> a
+// synchronous credential probe for every registered provider. On macOS each of
+// those probes spawns `/usr/bin/security`, so an image-bearing turn blocked the
+// whole event loop for a quarter of a second -- for every other in-flight
+// request too -- and with the bridge switched off it bought nothing at all.
+//
+// Deferring is deliberately the *only* shape accepted. The gate itself is
+// untouched: callers pass the same expression they used to pass, just unevaluated
+// (`() => [...selectedConfiguredListedModels(), ...nativeEngines]`), so what gets
+// ranked is still exactly the selected, credentialed, listed set. Refusing an
+// array as well is what stops a future call site from quietly reintroducing the
+// eager scan -- there is no cheaper-looking overload to reach for.
+export function resolveVisionEngine(listCandidates, settings) {
+  if (typeof listCandidates !== "function") {
+    throw new TypeError(
+      "resolveVisionEngine takes a function returning the selected, credentialed candidates, " +
+        "so the list is only built when it is going to be ranked.",
+    );
+  }
   if (!settings?.enabled) return undefined;
   if (settings.engine === LOCAL_ENGINE_SLUG) return localVisionEngine(settings);
-  const ranked = rankVisionEngines(candidates);
+  const ranked = rankVisionEngines(listCandidates());
   if (settings.engine) {
     // A pin that no longer resolves is an operator-visible problem, not a
     // reason to silently describe images with a different model.

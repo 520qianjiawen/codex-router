@@ -535,7 +535,7 @@ function main() {
     authorized: openaiAuthenticated && !loginFree,
   });
   const visionEngine = resolveVisionEngine(
-    [...selectedModels, ...nativeEngines],
+    () => [...selectedModels, ...nativeEngines],
     readVisionBridgeSettings(),
   );
   const catalogModels = applyVisionBridge(routedModels, visionEngine);

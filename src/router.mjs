@@ -804,22 +804,34 @@ async function bridgeVisionInput(input, route, signal, request) {
   if (route.visionBridge === false) {
     return stripImages(input, `${route.displayName || route.slug} cannot read images`).input;
   }
-  // Native candidates need two things at once, and neither is sufficient alone.
-  // The shared helper (`src/vision-engines.mjs`) applies the same auth gate the
-  // catalog build and the tray apply -- this path used to read the capture off
-  // disk with no gate at all. But every on-disk artifact is reused across a
-  // failed probe by design, so a sign-out leaves them naming an engine nothing
-  // can call. The caller's live session is the evidence that cannot be stale,
-  // so it has to hold too: without one there is no native engine to nominate,
-  // and a pin naming one stops resolving on the very next paste rather than at
-  // the next catalog rebuild.
-  const nativeEngines =
-    request && hasNativeSession(nativeHeaders(request))
-      ? installedNativeVisionEngines({ hidden: readHiddenModels() })
-      : [];
+  const settings = readVisionBridgeSettings();
+  // Nothing below is evaluated unless `resolveVisionEngine` is actually going to
+  // rank candidates, which it is not when the bridge is off and not when the
+  // engine is pinned to `local`. Both of those used to pay for this list anyway:
+  // `selectedConfiguredListedModels()` probes every provider's credential
+  // synchronously, spawning `/usr/bin/security` once per provider per keychain
+  // service on macOS, and this runs inside the request handler -- so a bridge
+  // that was switched off still stalled the event loop for ~250ms on every
+  // pasted image, for every other in-flight request as well.
+  //
+  // The set itself is unchanged. It is still exactly the selected, credentialed,
+  // listed models, plus native candidates that need two things at once, neither
+  // sufficient alone. The shared helper (`src/vision-engines.mjs`) applies the
+  // same auth gate the catalog build and the tray apply -- this path used to
+  // read the capture off disk with no gate at all. But every on-disk artifact is
+  // reused across a failed probe by design, so a sign-out leaves them naming an
+  // engine nothing can call. The caller's live session is the evidence that
+  // cannot be stale, so it has to hold too: without one there is no native
+  // engine to nominate, and a pin naming one stops resolving on the very next
+  // paste rather than at the next catalog rebuild.
   const engine = resolveVisionEngine(
-    [...selectedConfiguredListedModels(), ...nativeEngines],
-    readVisionBridgeSettings(),
+    () => [
+      ...selectedConfiguredListedModels(),
+      ...(request && hasNativeSession(nativeHeaders(request))
+        ? installedNativeVisionEngines({ hidden: readHiddenModels() })
+        : []),
+    ],
+    settings,
   );
   if (!engine) {
     // The catalog only advertises image input while an engine resolves, so
@@ -831,7 +843,7 @@ async function bridgeVisionInput(input, route, signal, request) {
     ).input;
   }
   const engineName = engine.displayName || engine.slug;
-  const { effort } = readVisionBridgeSettings();
+  const { effort } = settings;
   const result = await substituteImages(input, async (url) => ({
     text: await visionEvidenceFor(url, engine, signal, request, effort),
     engineName,

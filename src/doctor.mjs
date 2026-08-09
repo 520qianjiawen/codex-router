@@ -286,7 +286,7 @@ add(
 // paste while nothing could read it, so the catalog drops the advertisement
 // and this says why.
 const visionSettings = readVisionBridgeSettings();
-const visionEngine = resolveVisionEngine(requiredRoutedModels, visionSettings);
+const visionEngine = resolveVisionEngine(() => requiredRoutedModels, visionSettings);
 if (visionSettings.enabled && !visionEngine) {
   add(
     "warn",

@@ -446,7 +446,7 @@ test("a ChatGPT-plan model drives the same advertisement as a routed engine", as
     },
   ];
 
-  const engine = resolveVisionEngine(nativeVisionCandidates(capture), {
+  const engine = resolveVisionEngine(() => nativeVisionCandidates(capture), {
     enabled: true,
     engine: "gpt-5.6-luna",
   });
@@ -456,7 +456,7 @@ test("a ChatGPT-plan model drives the same advertisement as a routed engine", as
   // A model the operator took out of the picker is not theirs to spend, so it
   // cannot resolve, and the advertisement goes with it.
   const hidden = resolveVisionEngine(
-    nativeVisionCandidates(capture, new Set(["gpt-5.6-luna"])),
+    () => nativeVisionCandidates(capture, new Set(["gpt-5.6-luna"])),
     { enabled: true, engine: "gpt-5.6-luna" },
   );
   assert.equal(hidden, undefined);
