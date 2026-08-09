@@ -50,6 +50,23 @@
   now updates the checkout recorded as the installation owner instead of
   whichever checkout the tray binary was built from.
 
+- **A busy machine no longer fails startup on services that are working.**
+  Each health probe was abandoned after a flat second, and a probe we gave up
+  on counted exactly like a refused connection. Under the fork and exec
+  contention of a login — when a build or a sync starts at the same moment as
+  the router — a forwarder that had printed `listening` at 1.4 s answered every
+  probe later than that, so all of them aborted, the budget ran out, and
+  startup reported `Timed out waiting for API forwarder to become healthy`
+  about a service that was fine. The probe window now widens from 1 s to a 10 s
+  cap, and the two outcomes are told apart: nothing listening on loopback
+  refuses instantly, so a refusal still backs off (a cold-starting gateway must
+  not flood its own access log), while an abort is retried at once with a wider
+  window, because the window it already spent is backoff enough and gives no
+  evidence the service is dead. A timeout now also says which of the two it
+  saw. Genuine failures get faster, not slower: a child that exits now aborts
+  the probe in flight and cuts the backoff short, so a crash is reported
+  immediately instead of up to three seconds later.
+
 ## 0.4.0-beta.2
 
 - **Updates stop reinstalling dependencies that never changed.** Every update

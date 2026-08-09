@@ -21,27 +21,37 @@ async function freePort() {
   return address.port;
 }
 
+// On loopback this settles either way in microseconds: a live listener accepts,
+// and a closed port refuses. A socket that does neither is not a third answer
+// this test can interpret, so bound it rather than letting it hang until the
+// outer test timeout turns a clear result into a mystery.
+const PORT_PROBE_TIMEOUT_MS = 2_000;
+
 async function portIsClosed(port) {
   return new Promise((resolve) => {
     const socket = net.connect(port, "127.0.0.1");
-    socket.once("connect", () => {
+    const settle = (closed) => {
       socket.destroy();
-      resolve(false);
-    });
-    socket.once("error", () => resolve(true));
+      resolve(closed);
+    };
+    socket.setTimeout(PORT_PROBE_TIMEOUT_MS, () => settle(false));
+    socket.once("connect", () => settle(false));
+    socket.once("error", () => settle(true));
   });
 }
 
 // Startup is a pipeline of five sequential child spawns, each gated on an HTTP
-// health probe that backs off from 200 ms to a 2 s cap and aborts any single
-// probe after 1 s. That makes the run time depend on how fast this machine can
-// fork and schedule processes, not on the behaviour under test: measured
-// end-to-end at ~1.2 s idle, ~1.5 s under 2x CPU oversubscription, and ~18.6 s
-// when a concurrent fork storm makes spawns slow enough that live-but-starved
-// servers keep blowing the 1 s probe abort and the loop retries behind the
-// backoff. A single fixed budget for the whole pipeline therefore races machine
-// speed, which is why 10 s failed on a busy machine while startup was working
-// perfectly.
+// health probe that backs off from 200 ms to a 2 s cap between refused probes
+// and widens the probe window itself from 1 s to a 10 s cap. That makes the run
+// time depend on how fast this machine can fork and schedule processes, not on
+// the behaviour under test: measured end-to-end at ~1.2 s idle, ~1.5 s under 2x
+// CPU oversubscription, and ~18.6 s when a concurrent fork storm made spawns
+// slow enough that live-but-starved servers kept blowing the probe abort. (That
+// fork-storm figure predates the widening window, which is what stopped those
+// starved servers being declared dead outright -- but the run time still tracks
+// machine speed.) A single fixed budget for the whole pipeline therefore races
+// machine speed, which is why 10 s failed on a busy machine while startup was
+// working perfectly.
 //
 // Progress, not elapsed time, separates "slow" from "stuck": every stage
 // announces itself on the child's stderr ("[kimi-oauth] listening", the
