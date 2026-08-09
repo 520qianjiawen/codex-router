@@ -304,9 +304,11 @@ test("resellers of one upstream model share a default effort when their ladders 
 
 // Ollama validates reasoning_effort against high/medium/low/max/none and
 // rejects anything else outright, so a level the forwarder cannot map into that
-// set would 400 the moment a user picked it.
-test("Ollama Cloud models advertise only levels Ollama accepts", () => {
-  const accepted = new Set(["none", "low", "medium", "high", "max"]);
+// set would 400 the moment a user picked it. Codex does not expose none, so
+// the no-thinking rung is advertised as minimal and mapped to none in
+// src/api-forwarder.mjs.
+test("Ollama Cloud models advertise only levels the forwarder maps to Ollama", () => {
+  const accepted = new Set(["minimal", "low", "medium", "high", "max"]);
   for (const model of MODELS) {
     if (model.requestProfile !== "ollama-cloud") continue;
     for (const level of model.reasoningLevels || []) {

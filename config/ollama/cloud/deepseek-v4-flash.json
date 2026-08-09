@@ -13,7 +13,7 @@
       "defaultEffort": "max",
       "reasoningLevels": [
         {
-          "effort": "none",
+          "effort": "minimal",
           "description": "No thinking for fast, intuitive answers"
         },
         {
