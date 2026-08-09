@@ -330,6 +330,12 @@ test("routed request flattens every namespace to the gateway and restores calls 
   const historyCall = outgoing.input.find((item) => item?.type === "function_call");
   assert.equal(historyCall.name, "codex_app__create_thread");
   assert.equal(historyCall.namespace, undefined);
+  // A routed session that spawns a thread without an explicit model inherits
+  // the session's model, so the child bills the same custom provider instead
+  // of dying on the quota-blocked native default.
+  assert.deepEqual(JSON.parse(historyCall.arguments), {
+    model: "opencode-go/deepseek-v4-flash",
+  });
 
   // Function calls streaming back are restored to the client's native
   // namespace shape so the app dispatches them itself.

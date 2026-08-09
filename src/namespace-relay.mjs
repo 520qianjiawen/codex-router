@@ -28,6 +28,51 @@ import { StringDecoder } from "node:string_decoder";
 
 export const NAMESPACE_DELIMITER = "__";
 
+// The tools that create or continue a thread with a model: `create_thread`
+// takes the model only when the user explicitly asked for one, and
+// `send_message_to_thread` describes its model field the same way. A routed
+// session that omits the field leaves the new thread on the app's default
+// (native gpt-5.6-luna), which is quota-blocked until Sep 8, 2026, so the
+// spawn dies instantly with usage_limit_exceeded while the parent waits. The
+// relay answers for the model instead: an omitted model on a routed session
+// becomes the session's own model (route.slug), so children inherit the
+// parent's custom provider. An explicit user-specified model always wins and
+// stays untouched. The injected children bill the custom provider -- the same
+// account the parent already bills -- never native quota.
+export const SPAWN_MODEL_TOOLS = new Set(["create_thread", "send_message_to_thread"]);
+const SPAWN_TOOL_PREFIX = `codex_app${NAMESPACE_DELIMITER}`;
+
+function isSpawnModelCall(item) {
+  if (!item || typeof item.name !== "string") return false;
+  // Flattened form the router sends to chat-completions bridges:
+  // `codex_app__create_thread`.
+  if (item.name.startsWith(SPAWN_TOOL_PREFIX)) {
+    return SPAWN_MODEL_TOOLS.has(item.name.slice(SPAWN_TOOL_PREFIX.length));
+  }
+  // Native namespace form openai-responses providers keep:
+  // `{ name: "create_thread", namespace: "codex_app" }`.
+  if (item.namespace === "codex_app") return SPAWN_MODEL_TOOLS.has(item.name);
+  return false;
+}
+
+// Inject the session model into spawn/continue tool calls that omitted it.
+// `model` is the routed session's model (route.slug). Returns a rewritten
+// item when the call is one of SPAWN_MODEL_TOOLS, carries no explicit model,
+// and a session model is available; otherwise returns the item untouched.
+export function injectSessionModelForSpawnCalls(item, model) {
+  if (!isSpawnModelCall(item)) return item;
+  if (typeof model !== "string" || !model) return item;
+  let args;
+  try {
+    args = JSON.parse(item.arguments ?? "{}");
+  } catch {
+    return item;
+  }
+  if (typeof args !== "object" || args === null || Array.isArray(args)) return item;
+  if (args.model !== undefined) return item;
+  return { ...item, arguments: JSON.stringify({ ...args, model }) };
+}
+
 // Flatten every namespace entry into plain functions named
 // `<namespace>__<tool>`. Returns the set of namespaces that were flattened
 // (name -> tool names) so callers can rename history and restore calls.
