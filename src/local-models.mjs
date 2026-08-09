@@ -572,8 +572,12 @@ export function fitAdvisory(tag, sizeGb, capacity = detectMachine()) {
 const MIN_CODING_CONTEXT = LOCAL_CONTEXT_WINDOW;
 
 // Codex's own instructions and tool definitions occupy most of that window
-// before the operator's code is added.
-export const CODEX_PROMPT_TOKENS = 24_000;
+// before the operator's code is added. Measured from 40 real session rollouts
+// under ~/.codex/sessions: tool definitions run 28.5K chars at the median and
+// 34.1K at p90, base instructions 17.9K, and the first turn's context another
+// 22.3K -- roughly 17K to 21K tokens on turn one, depending on how densely the
+// JSON tokenizes. This uses the middle of that range.
+export const CODEX_PROMPT_TOKENS = 20_000;
 
 export const SUGGESTED_LOCAL_MODELS = Object.freeze(
   [
