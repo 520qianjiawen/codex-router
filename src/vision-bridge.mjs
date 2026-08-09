@@ -445,16 +445,25 @@ export function missingEvidenceSections(text) {
 // with confidence either way. Naming the gap is also the only moment worth
 // mentioning a second look -- said on every image it would just buy tool calls.
 function partialReadNotice(text) {
-  const missing = missingEvidenceSections(text);
+  // Truncation and a missing section are both incomplete, but only one of them
+  // is worth a second look. A read cut off at the cap left the rest of a large
+  // image genuinely unread, and asking again for the part that matters gets it.
+  // Missing sections usually mean the engine does not follow the format at all
+  // -- a small local model answering in prose -- and reading it again returns
+  // the same shape, so inviting that would buy a loop rather than an answer.
   const truncated = String(text).includes(TRUNCATION_NOTICE);
-  if (!missing.length && !truncated) return "";
-  const cause = truncated
-    ? "it was cut off at the router's size limit"
-    : `the reader left out: ${missing.join(", ")}`;
+  if (truncated) {
+    return (
+      "This reading is incomplete -- it was cut off at the router's size limit. " +
+      "Treat anything absent below as unread rather than absent from the image, " +
+      "and open the image again with a specific question if the answer depends on it."
+    );
+  }
+  const missing = missingEvidenceSections(text);
+  if (!missing.length) return "";
   return (
-    `This reading is incomplete -- ${cause}. Treat anything absent below as ` +
-    "unread rather than absent from the image, and open the image again with a " +
-    "specific question if the answer depends on it."
+    `This reading did not come back in the shape it was asked for -- no ${missing.join(", ")}. ` +
+    "Treat anything absent below as unread rather than absent from the image."
   );
 }
 

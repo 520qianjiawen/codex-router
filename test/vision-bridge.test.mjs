@@ -438,17 +438,22 @@ test("an incomplete reading says so, and only then mentions looking again", asyn
   assert.doesNotMatch(complete, /open the image again/);
 
   // A reader that answered in a shape of its own leaves the model unable to
-  // tell "not in the image" from "not in the transcript".
+  // tell "not in the image" from "not in the transcript". It is told -- but not
+  // invited to look again, because a reader that ignores the format returns the
+  // same shape on the next pass and the invitation would buy a loop.
   const thin = evidenceBlock("A login screen, probably.", { ordinal: 1, engineName: "X" });
-  assert.match(thin, /This reading is incomplete/);
+  assert.match(thin, /did not come back in the shape it was asked for/);
   assert.match(thin, /Text, Layout, Uncertain/);
-  assert.match(thin, /open the image again/);
+  assert.doesNotMatch(thin, /open the image again/);
 
   // `## Data` is optional by contract, so its absence is not a bad read.
   assert.deepEqual(missingEvidenceSections(full), []);
 
+  // Truncation is the one case a second look can actually fix, so it is the
+  // one case that mentions it.
   const cut = evidenceBlock(`${full}\n${TRUNCATION_NOTICE}`, { ordinal: 1, engineName: "X" });
   assert.match(cut, /cut off at the router's size limit/);
+  assert.match(cut, /open the image again/);
 });
 
 test("images in one turn are read together, and keep their numbering", async () => {

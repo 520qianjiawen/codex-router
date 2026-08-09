@@ -447,13 +447,16 @@ the turn as text. Treat it as a router capability, never as a model capability.
    layout list, readable data values, and an explicit uncertainty list, so the
    downstream model quotes rather than guesses. Preserve the uncertainty
    section in any rewrite.
-   - A reading that came back **incomplete** says so in its own header: the four
-     unconditional sections are checked for, truncation at the size cap is
-     reported, and only then is a second look mentioned. The downstream model
-     cannot otherwise tell "the image does not show that" from "the transcript
-     does not mention it", and it answers the first with confidence either way.
-     `## Data` is optional by contract and its absence is not a bad read.
-     Advertising a second look on every image would just buy tool calls.
+   - A reading that came back **incomplete** says so in its own header. The
+     downstream model cannot otherwise tell "the image does not show that" from
+     "the transcript does not mention it", and it answers the first with
+     confidence either way. `## Data` is optional by contract and its absence is
+     not a bad read. The two causes are reported differently on purpose: a read
+     cut off at the size cap left a large image genuinely unread, so it is the
+     one case that invites a second look; missing sections mean the engine does
+     not follow the format at all -- a small local model answering in prose --
+     and reading again returns the same shape, so an invitation there buys a
+     loop rather than an answer. Never advertise a second look on every image.
 8. Every image the router carries is read, in **both** places Codex puts one:
    parts of a user message, and the `output` of a `function_call_output`. A
    text-only model that has just been handed a transcript still sees the file's
