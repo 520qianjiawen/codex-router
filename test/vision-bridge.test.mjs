@@ -23,6 +23,7 @@ import {
   questionForImage,
   rankVisionEngines,
   resolveVisionEngine,
+  resolveVisionEngines,
   responseText,
   streamedResponseText,
   stripImages,
@@ -683,6 +684,63 @@ test("the question is the operator's words, not Codex's bookkeeping", () => {
 // engine is a rate-limited account across a network. A 429 or a 502 that would
 // have cleared in a second used to cost the operator that image for the whole
 // turn.
+// Resolving an engine and reaching it are different questions. Both of these
+// happened within an hour of live testing: the native engine answered 401 after
+// a session lapsed, and a provider's endpoint answered 503. Either one used to
+// mean every pasted image degraded to "could not be read" until somebody
+// noticed.
+test("the reader is a list, so one unreachable engine does not cost the image", () => {
+  const candidates = () => [FLASH_VISION, FLAGSHIP_VISION, LOOPBACK_VISION];
+
+  // The operator's choice comes first, then the other credentialed models.
+  const pinned = resolveVisionEngines(candidates, { enabled: true, engine: FLAGSHIP_VISION.slug });
+  assert.deepEqual(pinned.map((engine) => engine.slug), [FLAGSHIP_VISION.slug, FLASH_VISION.slug]);
+
+  // Auto puts the cheapest first and still carries a spare.
+  const auto = resolveVisionEngines(candidates, { enabled: true, engine: null });
+  assert.deepEqual(auto.map((engine) => engine.slug), [FLASH_VISION.slug, FLAGSHIP_VISION.slug]);
+
+  // A machine-served engine is never a fallback: it is only there while the
+  // operator's own runtime is running, which is why auto never picks one.
+  assert.ok(!auto.some((engine) => engine.slug === LOOPBACK_VISION.slug));
+
+  // ...and pinning one means the operator named their machine on purpose, so
+  // nothing falls off it onto a provider's quota they did not choose to spend.
+  const local = resolveVisionEngines(candidates, {
+    enabled: true,
+    engine: LOCAL_ENGINE_SLUG,
+    local: { model: "moondream", baseUrl: "http://127.0.0.1:11434/v1" },
+  });
+  assert.equal(local.length, 1);
+  assert.equal(local[0].slug, LOCAL_ENGINE_SLUG);
+
+  // Off is still off, and an unresolvable pin is still an operator-visible
+  // problem rather than a silent switch to another model.
+  assert.deepEqual(resolveVisionEngines(candidates, { enabled: false }), []);
+  assert.deepEqual(resolveVisionEngines(candidates, { enabled: true, engine: "nobody/here" }), []);
+});
+
+// The credentialed list costs a synchronous credential probe per provider, so
+// asking for a fallback must not mean asking for that list twice.
+test("the candidate list is still built at most once, fallback or not", () => {
+  let built = 0;
+  const candidates = () => {
+    built += 1;
+    return [FLASH_VISION, FLAGSHIP_VISION];
+  };
+  assert.equal(resolveVisionEngines(candidates, { enabled: true, engine: null }).length, 2);
+  assert.equal(built, 1);
+
+  built = 0;
+  resolveVisionEngines(candidates, { enabled: false });
+  assert.equal(built, 0, "a switched-off bridge still consulted the credentialed model list");
+
+  assert.throws(
+    () => resolveVisionEngines([FLASH_VISION], { enabled: true, engine: null }),
+    /function returning the selected, credentialed candidates/,
+  );
+});
+
 test("a read that fails transiently is asked again; a refusal is not", async () => {
   const engine = localVisionEngine({ local: { model: "moondream" } });
   const ok = () =>
@@ -1420,8 +1478,8 @@ test("the request path hands the engine resolver a list it has not built yet", a
   const body = source.slice(start, source.indexOf("\n}\n", start));
   assert.match(
     body,
-    /resolveVisionEngine\(\s*\(\)\s*=>/,
-    "bridgeVisionInput must pass resolveVisionEngine a thunk, not an assembled array",
+    /resolveVisionEngines\(\s*\(\)\s*=>/,
+    "bridgeVisionInput must pass resolveVisionEngines a thunk, not an assembled array",
   );
   // `selectedConfiguredListedModels()` is the synchronous credential scan. It
   // may only appear inside that thunk -- never on a line the handler runs before
@@ -1472,6 +1530,31 @@ test("a bridged read is recorded rather than spent silently", async () => {
     /if \(!QUIET\)/,
     "the vision-bridge line must not be gated on QUIET",
   );
+});
+
+// The list only helps if the read path actually walks it. Asserted against the
+// source because the loop lives inside the request handler, the same way the
+// QUIET and usage-event rules above are asserted.
+test("the read path tries every resolved engine before giving up on an image", async () => {
+  const source = await readFile(path.join(repoRoot, "src/router.mjs"), "utf8");
+  const bridge = source.slice(
+    source.indexOf("async function bridgeVisionInput"),
+    source.indexOf("function isOpaqueEncryptedContent"),
+  );
+  assert.match(bridge, /for \(const \[index, engine\] of engines\.entries\(\)\)/);
+  // A failure moves to the next engine rather than ending the image.
+  assert.match(bridge, /catch \(error\) \{\s*lastError = error;/);
+  // ...and when they all refuse, the turn says what the last one said.
+  assert.match(bridge, /throw lastError;/);
+  // A fallback is never silent: the engine that actually read it is named in
+  // the evidence, and the log line says a fallback happened.
+  assert.match(bridge, /engineName: engine\.displayName \|\| engine\.slug/);
+  assert.match(bridge, /fellBack/);
+  // Another provider beats another attempt: an engine is only retried when
+  // there is nothing else left to try, or a paste waits out a retry ladder
+  // against a dead endpoint while a working engine sits behind it.
+  assert.match(bridge, /const last = index === engines\.length - 1;/);
+  assert.match(bridge, /last \? undefined : \[\]/);
 });
 
 test("a cached native transcript is not replayed for a different account", () => {

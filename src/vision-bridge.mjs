@@ -371,6 +371,48 @@ export function resolveVisionEngine(listCandidates, settings) {
   return ranked.find((model) => !isLoopbackEngine(model));
 }
 
+// How many engines one image may be offered to before it is written off. The
+// point is an image that gets read, not a tour of every provider the operator
+// has a key for: a second opinion is worth a little quota, a fifth is not.
+const VISION_ENGINE_ATTEMPTS = 3;
+
+// Resolving an engine and *reaching* it are different questions, and the bridge
+// used to conflate them. A pin that no longer resolves stays an operator-visible
+// problem -- that rule is untouched above. But a pinned engine that resolves and
+// then answers 401 because a session lapsed, or 503 because the provider's
+// endpoint is down, left every paste degrading to "could not be read" until
+// somebody noticed. Both happened here within one hour of testing.
+//
+// So the reader is a *list*: the chosen engine first, then the other
+// credentialed, non-loopback vision models, ranked as always. Nothing extra is
+// spent on the happy path, because the second engine is only ever called after
+// the first has failed and exhausted its retries. It is not silent either --
+// the evidence header names whichever engine actually did the reading, and the
+// per-turn log line says a fallback happened.
+export function resolveVisionEngines(listCandidates, settings) {
+  if (typeof listCandidates !== "function") {
+    throw new TypeError(
+      "resolveVisionEngines takes a function returning the selected, credentialed candidates, " +
+        "so the list is only built when it is going to be ranked.",
+    );
+  }
+  // Built at most once per call, however many times it is needed below.
+  // Assembling it means a synchronous credential probe of every provider --
+  // on macOS a `/usr/bin/security` spawn each, ~250ms with the event loop
+  // stopped -- so asking twice would double the cost of every pasted image.
+  let candidates;
+  const once = () => (candidates ??= listCandidates());
+  const primary = resolveVisionEngine(once, settings);
+  if (!primary) return [];
+  // A pinned local engine is the operator naming their own machine; falling
+  // back off it would spend a provider's quota they did not ask to spend here.
+  if (primary.local) return [primary];
+  const alternates = rankVisionEngines(once()).filter(
+    (model) => model.slug !== primary.slug && !isLoopbackEngine(model),
+  );
+  return [primary, ...alternates].slice(0, VISION_ENGINE_ATTEMPTS);
+}
+
 // The bridge stands in for the model, so a model that already reads images is
 // left exactly as the registry declared it.
 export function bridgedModel(model, engine) {

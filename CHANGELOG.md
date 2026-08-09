@@ -24,6 +24,25 @@
   the one section where inference is allowed — `## Text` stays verbatim, and an
   unrecognizable image says `(unrecognized)` rather than guessing.
 
+- **One unreachable engine no longer costs you the image.** Resolving an engine
+  and reaching it are different questions, and the bridge conflated them: a
+  pinned engine that resolved and then answered 401 because a session lapsed,
+  or 503 because the provider's endpoint was down, left every paste degrading
+  to "could not be read" until somebody noticed. Both happened within an hour of
+  testing. The reader is now a short list — your chosen engine first, then the
+  other credentialed vision models — and the image is offered to the next one
+  when the first cannot be reached. Verified live with a genuinely dead engine
+  pinned first: all ten test images were still read.
+
+  Nothing extra is spent when your engine works, since a second engine is only
+  called after the first has failed. It is not silent: the evidence names
+  whichever engine actually did the reading and the log line records the
+  fallback. A pin that does not resolve at all is still an operator-visible
+  problem rather than a quiet switch, and a pinned local engine never falls back
+  onto a provider's quota you did not choose to spend. Another provider is tried
+  before another attempt at a broken one, which cut a degraded read from 30–52s
+  to 12–35s.
+
 - **A read that fails once is asked again.** The engine is a rate-limited
   account across a network, so a 429, a 502, a reset connection, or an empty
   reply used to cost you that image for the whole turn. Those are retried twice,
