@@ -82,6 +82,35 @@
   the turn logs `estimated-input-tokens=<count>`, so estimated turns can never
   be mistaken for the provider having recovered.
 
+- **A local model is now checked against the machine before it downloads.**
+  Installing one asked whether Codex could drive it but never whether the
+  machine could run it, so a 65 GB pull could finish on a laptop that can never
+  load it. The registry manifest already carries the size, so the same lookup
+  now also rates fit against detected memory — unified memory on Apple Silicon,
+  GPU memory where NVIDIA reports it, system RAM otherwise, allowing ~20% above
+  the weights for context and cache. `inspect` reports `fits`, `tight`, or
+  `too-large`; `install` refuses a `too-large` model before transferring
+  anything unless `--yes` overrides it, and warns on a `tight` one.
+
+- **The doctor stopped telling the local provider to store an API key.** Its
+  provider loop labelled every row "<name> key" and offered `provider-key ...
+  set` as the fix — a command the keyless local provider refuses. The
+  empty-picker warning also claimed a "key stored" that never existed and
+  pointed at `curate-models`, which is the remote-catalog flow rather than the
+  download-and-check one local models use. The row is named for the endpoint
+  now, and both fixes name commands that work.
+
+- **The macOS tray lists every provider, not just the ones already working.**
+  Its Providers section built rows by grouping the models in the picker, so a
+  provider shipping none had no row — hiding the local provider and all ten
+  catalog-only services in the one place built to configure them. Rows now come
+  from the router's registry snapshot.
+
+- **The Windows and Linux tray can toggle providers added after it shipped.**
+  Its provider allowlist was a hardcoded six-entry list, so everything added
+  since — the local provider included — failed with "Unknown provider." It now
+  validates the id's shape and lets the registry decide what exists.
+
 - **Windows no longer opens a console window at logon.** The scheduled task ran
   the CMD wrapper through `cmd.exe`, so a console window appeared at every logon
   and stayed for the router's lifetime, reappearing on each watchdog restart.

@@ -539,8 +539,8 @@ the rest stay installed and stay usable as vision readers, labelled *"no tools �
 vision only"*. Check before you download:
 
 ```sh
-./bin/control local-models inspect llama3.2:3b   # {"tools":true,"sizeGb":2}
-./bin/control local-models inspect gemma3:4b     # {"tools":false,"sizeGb":3.3}
+./bin/control local-models inspect llama3.2:3b   # {"tools":true,"sizeGb":2,"fit":"fits"}
+./bin/control local-models inspect gemma3:4b     # {"tools":false,"sizeGb":3.3,"fit":"fits"}
 ```
 
 That reads the model's chat template from the registry — a few kilobytes
@@ -548,6 +548,28 @@ instead of a multi-gigabyte pull. It is a filter, not a guarantee:
 `qwen2.5-coder:7b` advertises tools and still returns them as plain JSON text,
 which Codex cannot dispatch. `llama3.2:3b` was verified making a real
 structured tool call through the router.
+
+**And it has to fit in memory.** The same registry lookup carries the download
+size, so `inspect` also reports whether this machine can run it — reading
+unified memory on Apple Silicon, GPU memory where NVIDIA reports it, and system
+RAM otherwise. Weights are not the whole cost: the context and cache sit beside
+them, so the estimate allows about 20% on top.
+
+| `fit` | Meaning |
+| --- | --- |
+| `fits` | Runs at full speed |
+| `tight` | Runs, but spills onto the CPU and is slow |
+| `too-large` | Cannot run on this machine |
+
+`install` refuses a `too-large` model before downloading anything, because
+gigabytes that cannot load cost both the transfer and the disk:
+
+```text
+Error: gpt-oss:120b needs about 79 GB to run and this machine has
+68.7 GB unified memory · GPU budget ~51.5 GB. Pass --yes to download it anyway.
+```
+
+A `tight` model warns and proceeds — that one is a judgement call, not a wall.
 
 **Size matters more than the tools flag.** Codex sends a large system prompt —
 around 24K tokens before your question — and a small model spends its whole
