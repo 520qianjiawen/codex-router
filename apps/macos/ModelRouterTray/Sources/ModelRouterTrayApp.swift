@@ -2811,15 +2811,21 @@ private struct TrayView: View {
           ),
           disabled: busy
         )
-        if vision?.enabled == true {
-          HStack(spacing: 8) {
-            Text("Engine")
-              .font(.system(size: 11, weight: .medium))
-            Spacer()
-            engineMenu
-          }
-          .padding(.horizontal, 2)
+        // The row stays put when the switch flips. Showing and hiding it
+        // resized the whole panel on every toggle, and because the state only
+        // settles after the control command returns, the jump happened twice.
+        HStack(spacing: 8) {
+          Text("Engine")
+            .font(.system(size: 11, weight: .medium))
+            // The one label that must never compress; it is four characters
+            // and the menu beside it is what should give way.
+            .fixedSize()
+          Spacer(minLength: 8)
+          engineMenu
         }
+        .padding(.horizontal, 2)
+        .opacity(vision?.enabled == true ? 1 : 0.45)
+        .disabled(vision?.enabled != true)
       }
     }
 
@@ -2844,14 +2850,25 @@ private struct TrayView: View {
         }
       } label: {
         HStack(spacing: 4) {
-          Text(currentEngineLabel).lineLimit(1)
-          Image(systemName: "chevron.up.chevron.down").font(.system(size: 8))
+          Text(currentEngineLabel)
+            .lineLimit(1)
+            // A label reads "Auto · MiniMax M3 (opencode Go) · high": the ends
+            // carry the meaning, so the middle is what goes.
+            .truncationMode(.middle)
+          Image(systemName: "chevron.up.chevron.down")
+            .font(.system(size: 8))
+            .fixedSize()
         }
         .font(.system(size: 10, weight: .medium))
         .foregroundStyle(routerMint)
       }
       .menuStyle(.borderlessButton)
-      .fixedSize()
+      // Not fixedSize: that asks for the label's ideal width and ignores the
+      // 352pt popover, so a long engine name pushed the row off the panel
+      // instead of truncating. A ceiling lets it shrink and keeps the chevron
+      // on screen.
+      .frame(maxWidth: 230, alignment: .trailing)
+      .help(currentEngineLabel)
       .disabled(busy)
     }
 
@@ -2902,7 +2919,13 @@ private struct TrayView: View {
       }
       let suffix = vision.effort.map { " · \($0)" } ?? ""
       if vision.engine == nil {
-        return "Auto · \(vision.resolvedEngineName ?? vision.resolvedEngine ?? "none")\(suffix)"
+        // While a change is in flight the snapshot can arrive with the choice
+        // recorded but nothing resolved yet. "Auto" alone is true throughout;
+        // "Auto · none" was a claim that flashed and then contradicted itself.
+        guard let resolved = vision.resolvedEngineName ?? vision.resolvedEngine else {
+          return "Auto\(suffix)"
+        }
+        return "Auto · \(resolved)\(suffix)"
       }
       return "\(vision.resolvedEngineName ?? vision.resolvedEngine ?? vision.engine ?? "none")\(suffix)"
     }
@@ -2963,8 +2986,12 @@ private struct TrayView: View {
             .font(.system(size: 9))
             .foregroundStyle(routerMutedStrong)
             .lineLimit(1)
+            // "Reading via <engine>" carries a model name of unbounded length,
+            // and the switch to the right must not be pushed off the panel.
+            .truncationMode(.tail)
+            .help(detail)
         }
-        Spacer()
+        Spacer(minLength: 8)
         Toggle("", isOn: isOn)
           .labelsHidden()
           .toggleStyle(.switch)
