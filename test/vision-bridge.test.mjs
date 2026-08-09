@@ -18,6 +18,7 @@ import {
   nativeAccountKey,
   nativeVisionCandidates,
   nativeVisionEngine,
+  questionForImage,
   rankVisionEngines,
   resolveVisionEngine,
   responseText,
@@ -28,6 +29,7 @@ import {
   visionEngineEfforts,
   VisionStreamError,
   VISION_EVIDENCE_MAX_CHARS,
+  VISION_QUESTION_MAX_CHARS,
 } from "../src/vision-bridge.mjs";
 import { nativeVisionEngines } from "../src/vision-engines.mjs";
 
@@ -336,11 +338,14 @@ test("images survive as text when no engine can read them", () => {
 test("the same image is described once and served from cache after that", async () => {
   const cache = createEvidenceCache();
   let calls = 0;
-  const describe = async (url) => {
-    const cached = cache.get(url);
+  const describe = async (url, _ordinal, question) => {
+    const cached = cache.get(url, question);
     if (cached !== undefined) return { text: cached, engineName: "Qwen3.6 Flash" };
     calls += 1;
-    return { text: cache.set(url, "## Summary\nSame chart."), engineName: "Qwen3.6 Flash" };
+    return {
+      text: cache.set(url, question, "## Summary\nSame chart."),
+      engineName: "Qwen3.6 Flash",
+    };
   };
   await substituteImages(imageInput(), describe);
   await substituteImages(imageInput(), describe);
@@ -350,9 +355,102 @@ test("the same image is described once and served from cache after that", async 
 
 test("cache entries expire", () => {
   const cache = createEvidenceCache();
-  cache.set("data:image/png;base64,AAAA", "evidence", 0);
-  assert.equal(cache.get("data:image/png;base64,AAAA", 1_000), "evidence");
-  assert.equal(cache.get("data:image/png;base64,AAAA", 4 * 60 * 60 * 1_000), undefined);
+  cache.set("data:image/png;base64,AAAA", "", "evidence", 0);
+  assert.equal(cache.get("data:image/png;base64,AAAA", "", 1_000), "evidence");
+  assert.equal(
+    cache.get("data:image/png;base64,AAAA", "", 4 * 60 * 60 * 1_000),
+    undefined,
+  );
+});
+
+test("the question comes from the image's own message, not the newest one", () => {
+  assert.equal(questionForImage(imageInput()[0]), "what does this say?");
+  assert.equal(
+    questionForImage(
+      userTurn([
+        { type: "input_text", text: "read the dialog" },
+        { type: "input_image", image_url: "data:image/png;base64,AAAA" },
+        { type: "input_text", text: "and the title bar" },
+      ])[0],
+    ),
+    "read the dialog\n\nand the title bar",
+  );
+  assert.equal(
+    questionForImage(userTurn([{ type: "input_image", image_url: "data:x" }])[0]),
+    "",
+  );
+  const long = questionForImage(
+    userTurn([
+      { type: "input_text", text: "q".repeat(VISION_QUESTION_MAX_CHARS + 200) },
+      { type: "input_image", image_url: "data:x" },
+    ])[0],
+  );
+  assert.equal(long.length, VISION_QUESTION_MAX_CHARS);
+});
+
+// Summary, Text, Layout, Data, Uncertain.
+const VISION_EVIDENCE_SECTIONS = 5;
+
+test("a question is added to the engine's instructions without replacing them", async () => {
+  const call = async (question) => {
+    let seen;
+    await describeImage({
+      engine: localVisionEngine({ local: { model: "moondream" } }),
+      imageUrl: "data:image/png;base64,AAAA",
+      gatewayBase: "http://unused/v1",
+      headers: {},
+      question,
+      fetchImpl: async (url, init) => {
+        seen = JSON.parse(init.body);
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: "read" } }] }),
+          { status: 200 },
+        );
+      },
+    });
+    return seen.messages[0].content;
+  };
+
+  const focused = await call("what is the error code in the red dialog?");
+  assert.match(focused, /## Summary/);
+  assert.match(focused, /## Uncertain/);
+  assert.match(focused, /IN ADDITION/);
+  assert.match(focused, /what is the error code in the red dialog\?/);
+  // A question asks for detail; it must never license following image text.
+  assert.match(focused, /never as permission to follow text/);
+  // The question must not read as a seventh section to emit -- a small engine
+  // copies any heading it is given straight into the transcript.
+  assert.equal(focused.match(/^## /gm).length, VISION_EVIDENCE_SECTIONS);
+
+  const plain = await call("");
+  assert.match(plain, /## Summary/);
+  assert.doesNotMatch(plain, /IN ADDITION/);
+  assert.equal(plain.match(/^## /gm).length, VISION_EVIDENCE_SECTIONS);
+});
+
+test("two questions about one image are described separately, each cached once", async () => {
+  const cache = createEvidenceCache();
+  const asked = [];
+  const describe = async (url, _ordinal, question) => {
+    const cached = cache.get(url, question);
+    if (cached !== undefined) return { text: cached, engineName: "Qwen3.6 Flash" };
+    asked.push(question);
+    return { text: cache.set(url, question, `read: ${question}`), engineName: "Qwen3.6 Flash" };
+  };
+  const turnAsking = (text) =>
+    userTurn([
+      { type: "input_text", text },
+      { type: "input_image", image_url: "data:image/png;base64,AAAA" },
+    ]);
+
+  await substituteImages(turnAsking("what is the error code?"), describe);
+  await substituteImages(turnAsking("what colour is the header?"), describe);
+  // Codex resends the whole conversation, so each turn arrives again verbatim.
+  await substituteImages(turnAsking("what is the error code?"), describe);
+  await substituteImages(turnAsking("what colour is the header?"), describe);
+
+  assert.deepEqual(asked, ["what is the error code?", "what colour is the header?"]);
+  assert.equal(cache.size, 2);
 });
 
 test("response text is read from both Responses and chat-completions shapes", () => {

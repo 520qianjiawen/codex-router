@@ -772,7 +772,7 @@ function visionEngineProvider(engine) {
 // Codex resends the whole conversation every turn, so the same screenshot
 // arrives again on every follow-up. Without the hash cache a five-turn
 // conversation about one image would buy the same transcript five times.
-async function visionEvidenceFor(url, engine, signal, request, effort) {
+async function visionEvidenceFor(url, engine, signal, request, effort, question = "") {
   // A native engine is spent on the caller's own ChatGPT session, so it can
   // only be reached with the headers this very request arrived with. The router
   // never stores those.
@@ -789,8 +789,12 @@ async function visionEvidenceFor(url, engine, signal, request, effort) {
   const account = engine.native ? nativeAccountKey(nativeCall?.headers) : "";
   // The effort is part of the identity of a transcript: raising it and pasting
   // the same screenshot again must re-read it, not replay the cheaper pass.
+  // The question is part of that identity too -- the same screenshot read for
+  // "what is the total?" and for "which rows are overdue?" are different
+  // readings -- but the evidence cache keys on the question itself, so folding
+  // it into this string as well would only key it twice.
   const key = `${engine.slug}\u0000${effort || "default"}\u0000${account}\u0000${url}`;
-  const cached = evidenceCache.get(key);
+  const cached = evidenceCache.get(key, question);
   // A cache hit buys nothing, so it records nothing: the events file is a
   // record of spend, not of calls the router avoided.
   if (cached !== undefined) return cached;
@@ -813,9 +817,10 @@ async function visionEvidenceFor(url, engine, signal, request, effort) {
       nativeCall,
       effort,
       signal,
+      question,
     });
     status = 200;
-    return evidenceCache.set(key, text);
+    return evidenceCache.set(key, question, text);
   } finally {
     recordUsageEvent({
       model: engine.slug,
@@ -875,8 +880,8 @@ async function bridgeVisionInput(input, route, signal, request) {
   }
   const engineName = engine.displayName || engine.slug;
   const { effort } = settings;
-  const result = await substituteImages(input, async (url) => ({
-    text: await visionEvidenceFor(url, engine, signal, request, effort),
+  const result = await substituteImages(input, async (url, _ordinal, question) => ({
+    text: await visionEvidenceFor(url, engine, signal, request, effort, question),
     engineName,
   }));
   // Never gated on QUIET, for the same reason the retry line is not: a

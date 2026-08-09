@@ -248,11 +248,12 @@ async function startBridgedRouter(upstreams, { enabled = true, engine = "local" 
   };
 }
 
-function textTurn({ model = TEXT_MODEL, question } = {}) {
+function textTurn({ model = TEXT_MODEL, question, history = [] } = {}) {
   return {
     model,
     stream: false,
     input: [
+      ...history,
       { type: "message", role: "user", content: [{ type: "input_text", text: question }] },
     ],
   };
@@ -327,11 +328,18 @@ test("five turns about one pasted image buy exactly one transcript", async () =>
     report(`no-image turns ms: ${baseline.map((ms) => ms.toFixed(0)).join(", ")}`);
     assert.equal(upstreams.state.visionRequests.length, 0);
 
-    // Codex resends the whole conversation, so every turn carries the same
-    // image again and appends the next question.
+    // Codex resends the whole conversation, so the message the screenshot was
+    // pasted into -- image, question and all -- arrives again on every later
+    // turn, with each new question appended after it as its own message. The
+    // engine is asked about the words beside the image, and those never change
+    // once the turn carrying them has been sent, so the four follow-ups land on
+    // the transcript the first turn bought.
     const history = [];
     for (let index = 1; index <= 5; index += 1) {
-      const body = imageTurn({ question: `Question ${index} about this screenshot?`, history });
+      const question = `Question ${index} about this screenshot?`;
+      const body = index === 1
+        ? imageTurn({ question, history })
+        : textTurn({ question, history });
       const result = await turn(router.port, body);
       assert.equal(result.status, 200, `turn ${index} failed`);
       durations.push(result.ms);
@@ -383,9 +391,13 @@ test("five turns about one pasted image buy exactly one transcript", async () =>
       assert.ok(injectionAt > opened && injectionAt < closed, "injection escaped the fence");
       assert.ok(evidence.includes("error TS2345"), "the transcript text did not reach the model");
     }
-    // The engine was asked to transcribe, never to answer the user's question,
-    // so a per-question re-read would buy nothing the first pass did not have.
+    // The engine was asked to transcribe, and told what the paste was asking so
+    // it spends its detail there. It was never asked to answer -- the sections
+    // it must emit are the same ones every read emits.
     assert.equal(upstreams.state.visionRequests[0].model, LOCAL_ENGINE_MODEL);
+    const instructions = upstreams.state.visionRequests[0].messages[0].content;
+    assert.match(instructions, /Question 1 about this screenshot\?/);
+    assert.match(instructions, /## Summary/);
   } finally {
     await router.stop();
     await closeServer(upstreams.server);
@@ -468,12 +480,13 @@ test("a model that declares image input is never sent through the bridge", async
   }
 });
 
-// 6. What the cache is actually keyed on. On this tree it is the image bytes
-// (plus engine, effort and native account) and NOT the question, so a second
-// question about the same screenshot replays the first transcript. That is
-// what makes measurement 1 come out at one read; it is recorded here as the
-// measured behaviour rather than the intended one.
-test("the evidence cache is keyed on the image, not on the question asked about it", async () => {
+// 6. What the cache is actually keyed on: the image bytes, the engine, the
+// effort, the native account -- and the words pasted beside the image. A second
+// screenshot pasted under a different question is a different reading, so it is
+// bought separately rather than answered from the first transcript. Measurement
+// 1 still comes out at one read because a resent conversation repeats the
+// image's own message verbatim; it is a fresh paste that costs again.
+test("the evidence cache is keyed on the image and on the question pasted with it", async () => {
   const upstreams = await bridgeUpstreams({ visionDelayMs: 0 });
   const router = await startBridgedRouter(upstreams);
 
@@ -487,24 +500,32 @@ test("the evidence cache is keyed on the image, not on the question asked about 
     report(`reads after repeating the identical question: ${afterRepeat}`);
     assert.equal(afterRepeat, 1);
 
-    // A different question about the same image, pasted the same way.
+    // A different question about the same image, pasted the same way. The first
+    // transcript spent its detail on the error code; replaying it here would
+    // answer a question nobody asked.
     await turn(router.port, imageTurn({ question: "Which file is on line 3?" }));
     const afterDifferent = upstreams.state.visionRequests.length;
     report(`reads after a different question about the same image: ${afterDifferent}`);
-    assert.equal(afterDifferent, 1);
+    assert.equal(afterDifferent, 2);
 
-    // A different image is a different transcript, which is the boundary the
-    // key does draw.
+    // A different image is a different transcript, which is the other boundary
+    // the key draws.
     await turn(router.port, imageTurn({ question: "And this one?", image: IMAGE_B }));
     report(`reads after a second, different image: ${upstreams.state.visionRequests.length}`);
-    assert.equal(upstreams.state.visionRequests.length, 2);
+    assert.equal(upstreams.state.visionRequests.length, 3);
 
-    // Whatever the question was, the engine was asked the same fixed thing, so
-    // the transcript it returned cannot have been question-specific.
-    const asked = upstreams.state.visionRequests.map(
+    // Each read carried the question it was bought for, and every one of them
+    // asked for the same fixed sections: the question directs the detail, it
+    // does not replace the transcript with an answer.
+    const asked = upstreams.state.visionRequests.map((body) => body.messages[0].content);
+    assert.equal(new Set(asked).size, 3);
+    assert.match(asked[0], /What is the error code\?/);
+    assert.match(asked[1], /Which file is on line 3\?/);
+    for (const instructions of asked) assert.match(instructions, /## Summary/);
+    const transcribe = upstreams.state.visionRequests.map(
       (body) => body.messages.at(-1).content.find((part) => part.type === "text").text,
     );
-    assert.deepEqual(new Set(asked).size, 1);
+    assert.equal(new Set(transcribe).size, 1);
   } finally {
     await router.stop();
     await closeServer(upstreams.server);
@@ -572,8 +593,10 @@ test("two overlapping turns on the same image each buy their own transcript", as
     report(`reads for 2 overlapping turns on one image: ${upstreams.state.visionRequests.length}`);
     assert.equal(upstreams.state.visionRequests.length, 2);
 
-    // Once one of them has landed, the cache does its job again.
-    await turn(router.port, imageTurn({ question: "Third reader, after the fact." }));
+    // Once one of them has landed, the cache does its job again -- for a turn
+    // that repeats one of their pastes word for word, which is what a resent
+    // conversation looks like.
+    await turn(router.port, imageTurn({ question: "First reader." }));
     assert.equal(upstreams.state.visionRequests.length, 2);
   } finally {
     await router.stop();
