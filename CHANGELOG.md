@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **GitHub Copilot is available as a catalog-only provider.** A
+  fine-grained PAT with the Copilot Requests permission is validated through
+  the Copilot account endpoint; account-selected inference hosts are restricted
+  to GitHub-owned Copilot hosts, and account routing is refreshed once on a 401
+  before any bytes are relayed. Live discovery exposes only
+  account-visible Responses models that advertise streaming and tool calls, so
+  plans and organization policy remain authoritative. Setup, doctor, both tray
+  implementations, quota reporting, curation, and credential redaction all use
+  the same provider path. Account discovery keeps GitHub authoritative as its
+  model and inference interfaces evolve.
 - **The gateway no longer installs a cryptography with a known advisory.**
   litellm 1.95.0 required `cryptography>=48.0.1,<49.0`, and the fix for
   GHSA-g6cj-pr64-35w5 — a Bleichenbacher oracle reachable through PKCS#7
