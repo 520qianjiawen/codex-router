@@ -1,4 +1,12 @@
 import assert from "node:assert/strict";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -273,6 +281,88 @@ test("login-free catalog keeps overflow models visible under their own slugs", (
   const bySlug = new Map(models.map((model) => [model.slug, model]));
   assert.equal(bySlug.get("kimi-oauth/kimi-for-coding").visibility, "list");
   assert.equal(bySlug.get("grok-oauth/grok-4.5").visibility, "hide");
+});
+
+function withCredentialEnvironment(kimiHome, run) {
+  const previousKimi = process.env.KIMI_CODE_HOME;
+  const previousGrok = process.env.GROK_AUTH_PATH;
+  const dir = mkdtempSync(path.join(os.tmpdir(), "catalog-login-free-"));
+  if (kimiHome === "unconfigured") {
+    process.env.KIMI_CODE_HOME = path.join(dir, "kimi-home");
+  } else {
+    const credentialsDir = path.join(dir, "kimi-home", "credentials");
+    mkdirSync(credentialsDir, { recursive: true });
+    writeFileSync(
+      path.join(credentialsDir, "kimi-code.json"),
+      JSON.stringify({
+        access_token: "access-value",
+        refresh_token: "refresh-value",
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+        scope: "kimi-code",
+      }),
+      { mode: 0o600 },
+    );
+    process.env.KIMI_CODE_HOME = path.join(dir, "kimi-home");
+  }
+  process.env.GROK_AUTH_PATH = path.join(dir, "grok", "auth.json");
+  try {
+    return run();
+  } finally {
+    if (previousKimi === undefined) delete process.env.KIMI_CODE_HOME;
+    else process.env.KIMI_CODE_HOME = previousKimi;
+    if (previousGrok === undefined) delete process.env.GROK_AUTH_PATH;
+    else process.env.GROK_AUTH_PATH = previousGrok;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("login-free catalog does not assign slots to unauthenticated providers", () => {
+  const kimi = {
+    ...grok,
+    slug: "kimi-oauth/k3",
+    provider: "kimi-oauth",
+    displayName: "Kimi K3 (OAuth)",
+    priority: 2,
+    compHash: "kimi-oauth-k3-v1",
+  };
+  withCredentialEnvironment("unconfigured", () => {
+    // The credential file does not exist under this KIMI_CODE_HOME, so
+    // kimi-oauth is not configured; its model must not take a slot.
+    const { models, aliases } = buildLoginFreeCatalog(
+      { models: [template] },
+      [kimi],
+    );
+    assert.deepEqual(aliases, {});
+    assert.deepEqual(models, []);
+  });
+});
+
+test("login-free catalog assigns slots to models of credentialed providers", () => {
+  const kimi = {
+    ...grok,
+    slug: "kimi-oauth/k3",
+    provider: "kimi-oauth",
+    displayName: "Kimi K3 (OAuth)",
+    priority: 2,
+    compHash: "kimi-oauth-k3-v1",
+  };
+  const unauthenticatedGrok = {
+    ...grok,
+    provider: "grok-oauth",
+  };
+  withCredentialEnvironment("configured", () => {
+    // kimi-oauth has a live credential, grok-oauth does not: only the kimi
+    // model may take the whitelist slot.
+    const { models, aliases } = buildLoginFreeCatalog(
+      { models: [template] },
+      [kimi, unauthenticatedGrok],
+    );
+    assert.deepEqual(aliases, { "gpt-5.5": "kimi-oauth/k3" });
+    const bySlug = new Map(models.map((model) => [model.slug, model]));
+    assert.equal(bySlug.get("gpt-5.5").display_name, "Kimi K3 (OAuth)");
+    assert.equal(bySlug.get("gpt-5.5").visibility, "list");
+    assert.equal(bySlug.get("kimi-oauth/k3").visibility, "hide");
+  });
 });
 
 test("effort vocabulary follows the installed codex build's enum history", () => {
