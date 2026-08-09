@@ -14,7 +14,7 @@ import test from "node:test";
 const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-credentials-"));
 process.env.CODEX_HOME = path.join(testRoot, "codex");
 process.env.CODEX_ROUTER_STATE_DIR = path.join(testRoot, "state");
-for (const name of ["ANTHROPIC_API_KEY", "CLINE_API_KEY", "DEEPSEEK_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY", "XAI_API_KEY", "GROK_API_KEY"]) {
+for (const name of ["ANTHROPIC_API_KEY", "CLINE_API_KEY", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DEEPSEEK_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY", "XAI_API_KEY", "GROK_API_KEY"]) {
   delete process.env[name];
 }
 
@@ -46,6 +46,33 @@ test("provider credentials use protected files and remove legacy managed keys", 
     assert.equal(privateFileIsProtected(anthropicPath), true);
     assert.equal(resolveProviderCredential("anthropic-api")?.value, "TEST_ANTHROPIC_FILE_KEY");
 
+    assert.throws(
+      () => writeProviderCredential("github-copilot", "ghp_TEST_CLASSIC_TOKEN"),
+      /Classic GitHub PATs are not supported/,
+    );
+    process.env.COPILOT_GITHUB_TOKEN = "ghp_TEST_CLASSIC_ENV_TOKEN";
+    assert.equal(resolveProviderCredential("github-copilot"), undefined);
+    process.env.GH_TOKEN = "gho_TEST_GH_TOKEN";
+    process.env.GITHUB_TOKEN = "ghu_TEST_GITHUB_TOKEN";
+    assert.equal(resolveProviderCredential("github-copilot")?.value, "gho_TEST_GH_TOKEN");
+    process.env.COPILOT_GITHUB_TOKEN = "github_pat_TEST_PRIMARY_TOKEN";
+    assert.equal(
+      resolveProviderCredential("github-copilot")?.value,
+      "github_pat_TEST_PRIMARY_TOKEN",
+    );
+    delete process.env.COPILOT_GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    const copilotPath = writeProviderCredential(
+      "github-copilot",
+      "github_pat_TEST_FINE_GRAINED_TOKEN",
+    );
+    assert.equal(privateFileIsProtected(copilotPath), true);
+    assert.equal(
+      resolveProviderCredential("github-copilot")?.value,
+      "github_pat_TEST_FINE_GRAINED_TOKEN",
+    );
+
     const clinepassPath = writeProviderCredential("clinepass", "TEST_CLINEPASS_FILE_KEY");
     assert.equal(privateFileIsProtected(clinepassPath), true);
     assert.equal(resolveProviderCredential("clinepass")?.value, "TEST_CLINEPASS_FILE_KEY");
@@ -61,10 +88,12 @@ test("provider credentials use protected files and remove legacy managed keys", 
     assert.equal(removeProviderCredential("deepseek"), 1);
     assert.equal(removeProviderCredential("grok-api"), 1);
     assert.equal(removeProviderCredential("anthropic-api"), 1);
+    assert.equal(removeProviderCredential("github-copilot"), 1);
     assert.equal(removeProviderCredential("clinepass"), 1);
     assert.equal(existsSync(deepSeekPath), false);
     assert.equal(existsSync(xaiPath), false);
     assert.equal(existsSync(anthropicPath), false);
+    assert.equal(existsSync(copilotPath), false);
     assert.equal(existsSync(clinepassPath), false);
   } finally {
     rmSync(testRoot, { recursive: true, force: true });

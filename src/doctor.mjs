@@ -29,7 +29,7 @@ import {
   SOURCE_ROOT,
 } from "./paths.mjs";
 import { cliSessionDescriptor } from "./cli-session-credential.mjs";
-import { credentialStatus } from "./provider-credentials.mjs";
+import { credentialLabel, credentialStatus } from "./provider-credentials.mjs";
 import { providerNeedsCuration } from "./provider-onboarding.mjs";
 import { stateOwnershipStatus } from "./state-owner.mjs";
 import {
@@ -505,12 +505,16 @@ for (const provider of PROVIDERS.values()) {
   if (provider.kind !== "openai-compatible") continue;
   const status = credentialStatus(provider, { persistent: true });
   const session = cliSessionDescriptor(provider);
+  const credentialType = credentialLabel(provider);
+  const credentialNoun = credentialType === "API key" ? "key" : credentialType.toLowerCase();
   // A keyless provider has no key to name, so calling its row a "key" and
   // telling the operator to run `provider-key` sends them at a command that
   // refuses them. What decides whether it works is its local runtime.
   add(
     status.configured ? "ok" : selection.providers.includes(provider.id) ? "fail" : "warn",
-    provider.keyless ? `${provider.displayName} endpoint` : `${provider.displayName} key`,
+    provider.keyless
+      ? `${provider.displayName} endpoint`
+      : `${provider.displayName} ${credentialNoun}`,
     status.configured ? status.source : "not configured",
     provider.keyless
       ? "Start Ollama, then run ./bin/control local-models list."
@@ -533,7 +537,7 @@ for (const provider of PROVIDERS.values()) {
       `${provider.displayName} models`,
       provider.keyless
         ? "no local models are checked, so the picker stays empty"
-        : "key stored but no models curated; the picker stays empty",
+        : `${credentialNoun} stored but no models curated; the picker stays empty`,
       // Local models are downloaded and checked, never curated from a remote
       // catalog, so naming `curate-models` here points at the wrong command.
       provider.keyless

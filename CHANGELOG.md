@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **GitHub Copilot is available as a catalog-only provider.** A
+  fine-grained PAT with the Copilot Requests permission is validated through
+  the Copilot account endpoint; account-selected inference hosts are restricted
+  to GitHub-owned Copilot hosts, and account routing is refreshed once on a 401
+  before any bytes are relayed. Live discovery exposes only
+  account-visible Responses models that advertise streaming and tool calls, so
+  plans and organization policy remain authoritative. Setup, doctor, both tray
+  implementations, quota reporting, curation, and credential redaction all use
+  the same provider path. Account discovery keeps GitHub authoritative as its
+  model and inference interfaces evolve.
+
 - **The reader is asked what you actually want to know, and asked again when
   that changes.** The question used to be pinned to the image's own message, so
   an image's reading was fixed by the first thing ever asked about it. Paste a
