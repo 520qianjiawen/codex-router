@@ -2183,7 +2183,7 @@ test("API forwarder routes Ollama Cloud models without unsupported parameters", 
       ["ollama-cloud-glm-5-2", "glm-5.2", "high", "high"],
       ["ollama-cloud-glm-5-2", "glm-5.2", "max", "max"],
       ["ollama-cloud-glm-5-2", "glm-5.2", "xhigh", "max"],
-      ["ollama-cloud-glm-5-2", "glm-5.2", "minimal", "low"],
+      ["ollama-cloud-glm-5-2", "glm-5.2", "minimal", "none"],
       ["ollama-cloud-glm-5-2", "glm-5.2", "bogus", "high"],
       ["ollama-cloud-kimi-k2-7-code", "kimi-k2.7-code", "high", "high"],
     ]) {
