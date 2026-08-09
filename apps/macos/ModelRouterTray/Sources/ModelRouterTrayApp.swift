@@ -1700,16 +1700,15 @@ struct AvailableLocalModel: Decodable, Identifiable, Equatable {
   let sizeGb: Double
   let tools: Bool
   let context: Int?
+  /// What running the real Codex client against this model actually produced.
+  /// A tool template predicts it in neither direction, so "untested" stays
+  /// untested rather than reading as a recommendation.
+  let codex: String?
   let note: String
   let fit: String
   var id: String { tag }
 
-  /// Codex sizes its prompts to the window, so this is what makes a model
-  /// worth pointing at a codebase rather than a snippet.
-  var contextLabel: String {
-    guard let context else { return "" }
-    return context >= 1000 ? "\(context / 1024)K" : "\(context)"
-  }
+  var isVerified: Bool { codex == "verified" }
 }
 
 /// A model that can only read images. Ranked by what it actually scored
@@ -2483,7 +2482,7 @@ private struct TrayView: View {
         // something it cannot run.
         if !suggestedLocalModels.isEmpty {
           Divider().padding(.vertical, 2)
-          downloadHeader("FOR CODING", detail: localModels?.machine)
+          downloadHeader("FOR CODING · EXPERIMENTAL", detail: "~9K to work in after Codex's prompt")
           VStack(spacing: 6) {
             ForEach(suggestedLocalModels) { model in
               availableLocalRow(model)
@@ -2539,12 +2538,10 @@ private struct TrayView: View {
             .font(.system(size: 8, weight: .medium))
             .foregroundStyle(routerYellow)
         }
-        // How much of a codebase it can hold, which is what separates a model
-        // worth coding with from one that only handles snippets.
-        Text(model.contextLabel)
-          .font(.system(size: 9))
-          .foregroundStyle(routerMuted)
-          .monospacedDigit()
+        // Whether anyone has actually driven a Codex turn with it.
+        Text(model.isVerified ? "verified" : "untested")
+          .font(.system(size: 8, weight: model.isVerified ? .semibold : .regular))
+          .foregroundStyle(model.isVerified ? routerMint : routerMuted)
         Text(String(format: "%.1f GB", model.sizeGb))
           .font(.system(size: 9))
           .foregroundStyle(routerMuted)

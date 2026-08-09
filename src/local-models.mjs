@@ -554,28 +554,101 @@ export function fitAdvisory(tag, sizeGb, capacity = detectMachine()) {
 // tag, and install re-checks -- so a republished tag corrects itself there
 // rather than silently disagreeing with this list.
 //
-// Codex drives every turn through tool calls, so a model without them cannot
-// do coding work at any size. Vision readers are not listed here at all: they
-// have their own catalog with measured accuracy.
-const MIN_CODING_CONTEXT = 32_768;
+// A tool template is a floor, not a prediction. Upstream measured it failing
+// in both directions: a 3B model that emits perfect tool calls against a short
+// prompt answers about its own instructions once Codex's real ~24K-token
+// prompt is in front of it, and a 7B model that returns tool calls as plain
+// text on Ollama's OpenAI surface dispatches them correctly through the
+// router's native route. Only `local-models agent-check` settles it, by
+// running the real client twice and requiring both runs to pass.
+//
+// So `codex` below records what was actually observed, and "untested" is left
+// as untested rather than dressed up as a recommendation.
+//
+// Context is a floor check too. Every local model is advertised to Codex at
+// LOCAL_CONTEXT_WINDOW regardless of what it natively holds, so native context
+// above that buys nothing today -- but a model below it is worse than
+// advertised, which is what this threshold catches.
+const MIN_CODING_CONTEXT = LOCAL_CONTEXT_WINDOW;
+
+// Codex's own instructions and tool definitions occupy most of that window
+// before the operator's code is added.
+export const CODEX_PROMPT_TOKENS = 24_000;
 
 export const SUGGESTED_LOCAL_MODELS = Object.freeze(
   [
-    { tag: "qwen2.5-coder:1.5b", sizeGb: 1, tools: true, context: 32_768, note: "smallest coder" },
-    { tag: "qwen2.5-coder:3b", sizeGb: 1.9, tools: true, context: 32_768, note: "small coder" },
-    { tag: "llama3.2:3b", sizeGb: 2, tools: true, context: 131_072, note: "verified working here" },
-    { tag: "mistral:7b", sizeGb: 4.4, tools: true, context: 32_768, note: "general purpose" },
+    {
+      tag: "llama3.2:3b",
+      sizeGb: 2,
+      tools: true,
+      context: 131_072,
+      codex: "verified",
+      note: "ran a real tool call through Codex",
+    },
+    {
+      tag: "qwen2.5-coder:1.5b",
+      sizeGb: 1,
+      tools: true,
+      context: 32_768,
+      codex: "untested",
+      note: "smallest coder",
+    },
+    {
+      tag: "qwen2.5-coder:3b",
+      sizeGb: 1.9,
+      tools: true,
+      context: 32_768,
+      codex: "untested",
+      note: "small coder",
+    },
+    {
+      tag: "mistral:7b",
+      sizeGb: 4.4,
+      tools: true,
+      context: 32_768,
+      codex: "untested",
+      note: "general purpose",
+    },
     {
       tag: "qwen2.5-coder:7b",
       sizeGb: 4.7,
       tools: true,
       context: 32_768,
-      note: "tools can arrive as plain text",
+      codex: "untested",
+      note: "has returned tool calls as plain text",
     },
-    { tag: "llama3.1:8b", sizeGb: 4.9, tools: true, context: 131_072, note: "general purpose" },
-    { tag: "qwen2.5-coder:14b", sizeGb: 9, tools: true, context: 32_768, note: "stronger coder" },
-    { tag: "gpt-oss:20b", sizeGb: 13.8, tools: true, context: 131_072, note: "thinking model" },
-    { tag: "devstral", sizeGb: 14.3, tools: true, context: 131_072, note: "built for agents" },
+    {
+      tag: "llama3.1:8b",
+      sizeGb: 4.9,
+      tools: true,
+      context: 131_072,
+      codex: "untested",
+      note: "general purpose",
+    },
+    {
+      tag: "qwen2.5-coder:14b",
+      sizeGb: 9,
+      tools: true,
+      context: 32_768,
+      codex: "untested",
+      note: "stronger coder",
+    },
+    {
+      tag: "gpt-oss:20b",
+      sizeGb: 13.8,
+      tools: true,
+      context: 131_072,
+      codex: "untested",
+      note: "thinking model",
+    },
+    {
+      tag: "devstral",
+      sizeGb: 14.3,
+      tools: true,
+      context: 131_072,
+      codex: "untested",
+      note: "built for agents",
+    },
   ].map((entry) => Object.freeze(entry)),
 );
 
@@ -597,7 +670,12 @@ export function suggestedLocalModels({
     .map((entry) => ({ ...entry, fit: rateModelFit(entry.sizeGb, capacity) }))
     .filter((entry) => fresh(entry.tag))
     .filter((entry) => includeUnusable || entry.fit !== "too-large")
-    .sort((left, right) => left.sizeGb - right.sizeGb);
+    // Proven first: an untested model is a thing to try, not a recommendation.
+    .sort(
+      (left, right) =>
+        (left.codex === "verified" ? 0 : 1) - (right.codex === "verified" ? 0 : 1) ||
+        left.sizeGb - right.sizeGb,
+    );
 }
 
 // Models that can only read images. Kept separate because the choice is a
@@ -664,15 +742,24 @@ export function renderLocalModels(snapshot) {
   const coding = snapshot.available || [];
   const vision = snapshot.availableVision || [];
   if (coding.length) {
-    lines.push("", "For coding — calls tools, holds enough context:", "");
+    // The honest framing: Codex's own prompt takes most of the window before
+    // any code is added, and only a verified model is known to drive a turn.
+    const room = Math.max(0, LOCAL_CONTEXT_WINDOW - CODEX_PROMPT_TOKENS);
+    lines.push(
+      "",
+      "For coding — experimental. Codex's prompt uses about " +
+        `${Math.round(CODEX_PROMPT_TOKENS / 1000)}K of the ${contextLabel(LOCAL_CONTEXT_WINDOW)} ` +
+        `window, leaving roughly ${Math.round(room / 1000)}K to work in.`,
+      "",
+    );
     const width = Math.max(...coding.map((entry) => entry.tag.length));
     for (const entry of coding) {
       lines.push(
         `  ${entry.tag.padEnd(width)} ${`${entry.sizeGb.toFixed(1)} GB`.padStart(8)} ` +
-          `${contextLabel(entry.context).padStart(5)}  ${entry.note}` +
-          `${entry.fit === "tight" ? " (tight)" : ""}`,
+          `${entry.codex.padEnd(9)} ${entry.note}${entry.fit === "tight" ? " (tight)" : ""}`,
       );
     }
+    lines.push("", "  Test one yourself:  ./bin/control local-models agent-check <tag>");
   }
   if (vision.length) {
     lines.push("", "For reading images only — cannot code:", "");

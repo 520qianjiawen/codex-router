@@ -532,11 +532,11 @@ heart is not a reasonable prerequisite. The tray shows the same two groups
 under **Local LLMs**, one button per model:
 
 ```text
-For coding — calls tools, holds enough context:
+For coding — experimental. Codex's prompt uses about 24K of the 32K window:
 
-  qwen2.5-coder:1.5b   1.0 GB   32K  smallest coder
-  llama3.2:3b          2.0 GB  128K  verified working here
-  devstral            14.3 GB  128K  built for agents
+  llama3.2:3b          2.0 GB verified  ran a real tool call through Codex
+  qwen2.5-coder:1.5b   1.0 GB untested  smallest coder
+  devstral            14.3 GB untested  built for agents
 
 For reading images only — cannot code:
 
@@ -544,13 +544,26 @@ For reading images only — cannot code:
   moondream            1.7 GB  captions-only
 ```
 
-Coding models need two things Codex depends on: tool calls, and a context
-window big enough to be pointed at real code. Neither is taken on trust: the
-chat template in the registry says whether a model can call tools, and the
-model's own GGUF header says how much context it holds. Both are read with
-ranged requests totalling about a megabyte, so `inspect` answers before any
-download — which is how `phi4` turns out to hold 16K, not the 128K its family
-suggests. Image readers are ranked by what
+A tool template is a floor, not a prediction — it has been wrong in both
+directions here. What settles it is running the real client:
+
+```sh
+./bin/control local-models agent-check llama3.2:3b
+```
+
+That runs `codex exec` in a scratch workspace twice and requires both runs to
+verify a marker file only present there, which is proof the model dispatched a
+tool and read real output. Both runs must pass; a mixed result is reported as
+flaky, because a borderline model has passed and then failed the identical
+check minutes later.
+
+Be realistic about the window. Every local model is advertised to Codex at
+32K, and Codex's own instructions and tool definitions take about 24K of that
+before your code is added — so roughly 9K is left to work in, whatever the
+model natively holds. Tool support and native context are still read from the
+model's own files (the chat template and the GGUF header, about a megabyte of
+ranged requests), which is how `phi4` turns out to hold 16K rather than the
+128K its family suggests — below the advertised cap, so worse than it looks. Image readers are ranked by what
 they scored against a known image, so a small confident-wrong reader never
 tops the list. Everything is rated against this machine's memory, anything too
 large is not offered, and anything already downloaded drops off. Add `--json`

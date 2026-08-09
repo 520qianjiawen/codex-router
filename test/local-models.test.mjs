@@ -258,9 +258,12 @@ test("the download list is rated, filtered, and ordered by size", () => {
   // Nothing that cannot run here is ever offered for download.
   assert.ok(suggestions.length > 0);
   assert.ok(suggestions.every((entry) => entry.fit !== "too-large"));
+  // Verified first, then size. Ordering is asserted in full by the
+  // verification test; here it is enough that the untested tail is by size.
+  const untested = suggestions.filter((entry) => entry.codex !== "verified");
   assert.deepEqual(
-    suggestions.map((entry) => entry.sizeGb),
-    [...suggestions.map((entry) => entry.sizeGb)].sort((a, b) => a - b),
+    untested.map((entry) => entry.sizeGb),
+    [...untested.map((entry) => entry.sizeGb)].sort((a, b) => a - b),
   );
 
   // Tool support decides whether Codex can drive a model, so every entry
@@ -302,7 +305,7 @@ test("the listing renders for a person, not only for the tray", () => {
   // A model Codex cannot drive must say so where the choice is made.
   assert.match(rendered, /\[ \] gemma3:4b\s+3\.3 GB\s+images only/);
   // The two groups answer different questions and are never merged.
-  assert.match(rendered, /For coding — calls tools, holds enough context:/);
+  assert.match(rendered, /For coding — experimental/);
   assert.match(rendered, /For reading images only — cannot code:/);
   assert.match(rendered, /control local-models install /);
 });
@@ -415,4 +418,32 @@ test("an unreadable header is unknown rather than an error", () => {
     parseGgufContextLength(ggufHeader([["general.architecture", 8, "llama"]], { declaredPairs: 9 })),
     undefined,
   );
+});
+
+test("only a model observed driving Codex is marked verified", () => {
+  const suggestions = suggestedLocalModels({
+    capacity: machineCapacity({ totalMemoryBytes: 64e9, unifiedMemory: true }),
+  });
+
+  // A tool template predicts capability in neither direction, so nothing may
+  // claim more than was observed.
+  assert.ok(suggestions.every((entry) => ["verified", "untested"].includes(entry.codex)));
+  const verified = suggestions.filter((entry) => entry.codex === "verified");
+  assert.deepEqual(verified.map((entry) => entry.tag), ["llama3.2:3b"]);
+
+  // Proven first: an untested model is a thing to try, not a recommendation,
+  // and sorting by size alone would bury the only one known to work.
+  assert.equal(suggestions[0].tag, "llama3.2:3b");
+  assert.ok(suggestions[1].sizeGb < suggestions[0].sizeGb);
+});
+
+test("the listing says how little room Codex leaves in the window", () => {
+  const rendered = renderLocalModels(
+    localModelsSnapshot({ inventory: [], running: [], selection: { version: 1, enabled: [] } }),
+  );
+  // Native context above the advertised cap buys nothing, so the number that
+  // matters is what is left after Codex's own prompt.
+  assert.match(rendered, /For coding — experimental/);
+  assert.match(rendered, /24K of the 32K window/);
+  assert.match(rendered, /agent-check/);
 });
