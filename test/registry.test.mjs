@@ -63,6 +63,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "meta/muse-spark-1.2-contributor",
       "meta/muse-spark-1.2",
       "minimax-token-plan/minimax-m3",
+      "ollama-cloud/deepseek-v4-flash",
       "ollama-cloud/deepseek-v4-pro",
       "ollama-cloud/glm-5.2",
       "ollama-cloud/kimi-k2.7-code",
@@ -305,7 +306,7 @@ test("resellers of one upstream model share a default effort when their ladders 
 // rejects anything else outright, so a level the forwarder cannot map into that
 // set would 400 the moment a user picked it.
 test("Ollama Cloud models advertise only levels Ollama accepts", () => {
-  const accepted = new Set(["low", "medium", "high", "max"]);
+  const accepted = new Set(["none", "low", "medium", "high", "max"]);
   for (const model of MODELS) {
     if (model.requestProfile !== "ollama-cloud") continue;
     for (const level of model.reasoningLevels || []) {
