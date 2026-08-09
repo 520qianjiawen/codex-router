@@ -38,7 +38,7 @@ switch ($Command) {
   # dropping them; `./model-router.ps1 codex install -ForceDeps` was silently
   # running a plain install.
   "install" { & (Join-Path $Root "install.ps1") -CheckoutInstall -Target $Target @Arguments }
-  "enable" { & (Join-Path $Root "install.ps1") -CheckoutInstall -Target $Target }
+  "enable" { & (Join-Path $Root "install.ps1") -CheckoutInstall -Target $Target @Arguments }
   "disable" {
     Invoke-RouterNode "src\config-manager.mjs" @("disable")
     Invoke-RouterNode "src\service.mjs" @("uninstall")

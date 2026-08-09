@@ -34,6 +34,7 @@ import {
 const args = process.argv.slice(2);
 const guided = args.includes("--guided");
 const migrateKnown = args.includes("--migrate-known");
+const adoptNativeCatalog = args.includes("--adopt-native-catalog");
 const runSmoke = args.includes("--smoke-test");
 const selectionOnly = args.includes("--selection-only");
 const withTray = args.includes("--with-tray");
@@ -43,6 +44,7 @@ const flagOptions = new Set([
   "--guided",
   "--auto",
   "--migrate-known",
+  "--adopt-native-catalog",
   "--smoke-test",
   "--selection-only",
   "--with-tray",
@@ -62,6 +64,10 @@ for (let index = 0; index < args.length; index += 1) {
     setupArgumentError = `Unknown setup option: ${argument}`;
     break;
   }
+}
+if (!setupArgumentError && migrateKnown && adoptNativeCatalog) {
+  setupArgumentError =
+    "--adopt-native-catalog cannot be combined with --migrate-known.";
 }
 
 function option(name) {
@@ -95,6 +101,7 @@ Options:
   --auto               Use already configured credentials (default)
   --providers LIST     Comma-separated provider ids
   --migrate-known      Safely migrate recognized earlier Codex Router installs
+  --adopt-native-catalog  Use an existing user-owned native Codex catalog as the merge base
   --smoke-test         Make one small live request per enabled provider
   --selection-only     Save provider selection without installing (development)
   --with-tray          Also build and launch the desktop companion app
@@ -308,7 +315,10 @@ function installTray() {
 async function main() {
   if (setupArgumentError) throw incomplete(setupArgumentError);
   const legacy = detectLegacyInstallations();
-  if (legacy.unknownConflict) {
+  if (
+    legacy.unknownConflict &&
+    !(adoptNativeCatalog && legacy.adoptableNativeCatalog)
+  ) {
     throw incomplete(
       `An unknown model router owns ${legacy.config.modelCatalogJson}; automatic setup will not replace it.`,
     );
@@ -401,6 +411,7 @@ async function main() {
       `\nReady to install:\n` +
         `  Providers: ${providers.join(", ")}\n` +
         `  Migration: ${migration ? "recognized older router (rollback snapshot kept)" : "none needed"}\n` +
+        `  Native catalog: ${adoptNativeCatalog ? "adopt existing user catalog" : "capture from Codex"}\n` +
         `  Changes: per-user background service and the managed Codex config block\n`,
     );
     if (!confirm("Proceed?")) {
@@ -417,9 +428,13 @@ async function main() {
         "-File",
         path.join(SOURCE_ROOT, "install.ps1"),
         "-CheckoutInstall",
+        ...(adoptNativeCatalog ? ["-AdoptNativeCatalog"] : []),
       ]);
     } else {
-      run(path.join(SOURCE_ROOT, "bin", "install"), []);
+      run(
+        path.join(SOURCE_ROOT, "bin", "install"),
+        adoptNativeCatalog ? ["--adopt-native-catalog"] : [],
+      );
     }
   } catch (error) {
     if (migration?.migrated) rollbackLatestMigration();

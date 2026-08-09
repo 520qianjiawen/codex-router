@@ -731,3 +731,59 @@ test("model_catalog_json accepts apostrophes and backslashes in the path", () =>
     rmSync(codexHome, { recursive: true, force: true });
   }
 });
+
+test("config manager adopts and restores a prepared user-owned native catalog", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-adopt-catalog-"));
+  const stateDir = path.join(codexHome, "router-state");
+  const configPath = path.join(codexHome, "config.toml");
+  const foreignCatalog = path.join(codexHome, "user catalog's", "native-models.json");
+  mkdirSync(path.dirname(foreignCatalog), { recursive: true });
+  writeFileSync(
+    foreignCatalog,
+    JSON.stringify({ models: [{ slug: "gpt-user-native" }] }),
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    configPath,
+    `model = "gpt-user-native"\nmodel_catalog_json = ${JSON.stringify(foreignCatalog)}\n`,
+    { mode: 0o600 },
+  );
+
+  try {
+    execFileSync(
+      process.execPath,
+      [path.join(root, "src", "native-catalog-source.mjs"), "prepare-from-config"],
+      {
+        cwd: root,
+        env: {
+          ...process.env,
+          CODEX_HOME: codexHome,
+          CODEX_ROUTER_STATE_DIR: stateDir,
+        },
+      },
+    );
+    const enabled = run("enable", codexHome, stateDir, ["--adopt-native-catalog"]);
+    assert.equal(enabled.mode, "router");
+    assert.equal(
+      JSON.parse(
+        readFileSync(path.join(stateDir, "native-catalog-source.json"), "utf8"),
+      ).status,
+      "active",
+    );
+
+    const disabled = run("disable", codexHome, stateDir);
+    assert.equal(disabled.mode, "native");
+    assert.equal(
+      readFileSync(configPath, "utf8").includes(
+        `model_catalog_json = ${JSON.stringify(foreignCatalog)}`,
+      ),
+      true,
+    );
+    assert.equal(
+      existsSync(path.join(stateDir, "native-catalog-source.json")),
+      false,
+    );
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});

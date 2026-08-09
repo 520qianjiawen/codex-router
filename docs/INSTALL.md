@@ -228,6 +228,25 @@ stores the original config with protected permissions. Restore it with:
 An unknown catalog owner requires a manual decision; automatic setup stops
 without changing it.
 
+If `model_catalog_json` points to a user-owned native Codex catalog rather than
+another router, you can explicitly keep it as Codex Router's merge base:
+
+```sh
+./install.sh --auto --providers configured --adopt-native-catalog
+```
+
+```powershell
+./install.ps1 -Auto -Providers configured -AdoptNativeCatalog
+```
+
+Adoption is accepted only when the path is absolute, the JSON contains at
+least one native model, none of its slugs are already routed by Codex Router,
+and no custom `openai_base_url` is configured. The file stays user-owned and
+is read in place on every catalog rebuild, so moving, deleting, or making it
+invalid stops the rebuild with an explicit error. Disabling Codex Router
+restores that exact catalog path. A failed install clears a pending adoption
+and leaves the original Codex config intact.
+
 ## Restart and verify
 
 `model_catalog_json` is loaded at Codex startup. Fully quit the app, reopen it,

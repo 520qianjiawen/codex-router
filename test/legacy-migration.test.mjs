@@ -85,6 +85,7 @@ test("a foreign catalog is an unknown conflict at any TOML spacing", () => {
       `model_catalog_json   =   "${foreign}"`,
       `  model_catalog_json = "${foreign}"`,
       `\tmodel_catalog_json = "${foreign}"`,
+      `model_catalog_json = "${foreign}" # user-owned catalog`,
     ];
     for (const line of spacings) {
       writeFileSync(configPath, `model = "gpt-5.6-sol"\n${line}\n`, { mode: 0o644 });
@@ -92,6 +93,37 @@ test("a foreign catalog is an unknown conflict at any TOML spacing", () => {
       assert.equal(detected.unknownConflict, true, `spacing: ${JSON.stringify(line)}`);
       assert.equal(detected.config.modelCatalogJson, foreign);
     }
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("a valid user-owned native catalog is explicitly adoptable", () => {
+  mkdirSync(codexHome, { recursive: true });
+  const configPath = path.join(codexHome, "config.toml");
+  const foreign = path.join(testRoot, "user-native", "models.json");
+  mkdirSync(path.dirname(foreign), { recursive: true });
+  writeFileSync(
+    foreign,
+    `${JSON.stringify({ models: [{ slug: "gpt-user-native" }] })}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    configPath,
+    `model_catalog_json = ${JSON.stringify(foreign)}\n`,
+    { mode: 0o600 },
+  );
+  try {
+    const detected = detectLegacyInstallations();
+    assert.equal(detected.unknownConflict, true);
+    assert.equal(detected.adoptableNativeCatalog, true);
+
+    writeFileSync(
+      configPath,
+      `openai_base_url = "http://127.0.0.1:9999/v1"\nmodel_catalog_json = ${JSON.stringify(foreign)}\n`,
+      { mode: 0o600 },
+    );
+    assert.equal(detectLegacyInstallations().adoptableNativeCatalog, false);
   } finally {
     rmSync(codexHome, { recursive: true, force: true });
   }

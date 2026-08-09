@@ -168,9 +168,9 @@ test("the Windows wrapper hands every command its own arguments", () => {
   );
   assert.ok(branches.size >= 16, `only found ${branches.size} branches`);
 
-  // bin/enable, bin/disable, and bin/uninstall accept no arguments, so their
+  // bin/disable and bin/uninstall accept no arguments, so their
   // branches pass fixed node subcommand names rather than user input.
-  const takesNoArguments = new Set(["enable", "disable", "uninstall"]);
+  const takesNoArguments = new Set(["disable", "uninstall"]);
   for (const [command, body] of branches) {
     if (takesNoArguments.has(command)) {
       assert.equal(
@@ -185,6 +185,21 @@ test("the Windows wrapper hands every command its own arguments", () => {
       `the ${command} branch drops the caller's arguments`,
     );
   }
+});
+
+test("native catalog adoption is inside both installer rollback transactions", () => {
+  const posix = readFileSync(path.join(root, "bin", "install"), "utf8");
+  const windows = readFileSync(path.join(root, "install.ps1"), "utf8");
+
+  assert.ok(
+    posix.indexOf("trap rollback EXIT HUP INT TERM") <
+      posix.indexOf("prepare-from-config"),
+    "POSIX adoption must start after the rollback trap",
+  );
+  assert.match(posix, /clear-pending/);
+  assert.match(windows, /\$AdoptionPending\s*=\s*\$true/);
+  assert.match(windows, /native-catalog-source\.mjs clear-pending/);
+  assert.match(windows, /elseif \(\$AdoptionPending\)/);
 });
 
 test("rollback --force reaches the updater on Windows", () => {

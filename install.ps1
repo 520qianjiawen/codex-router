@@ -9,6 +9,7 @@ param(
   [switch]$Auto,
   [string]$Providers,
   [switch]$MigrateKnown,
+  [switch]$AdoptNativeCatalog,
   [switch]$SmokeTest,
   # Discards tracked edits in the managed checkout so the update can proceed.
   # Deliberately never touches untracked files -- see Reset-ManagedCheckout.
@@ -23,6 +24,12 @@ $ErrorActionPreference = "Stop"
 $env:MODEL_ROUTER_TARGET = $Target
 if ($Target -ne "codex" -and $MigrateKnown) {
   throw "-MigrateKnown applies only to the Codex target."
+}
+if ($PrepareOnly -and $AdoptNativeCatalog) {
+  throw "-AdoptNativeCatalog cannot be used with -PrepareOnly."
+}
+if ($MigrateKnown -and $AdoptNativeCatalog) {
+  throw "-AdoptNativeCatalog cannot be combined with -MigrateKnown."
 }
 $PreviousRevision = $null
 $RepositoryUrl = if ($env:CODEX_ROUTER_REPOSITORY_URL) {
@@ -163,6 +170,7 @@ if (-not $CheckoutInstall) {
   if ($UseGuided) { $SetupArguments += "--guided" }
   if ($Providers) { $SetupArguments += @("--providers", $Providers) }
   if ($MigrateKnown) { $SetupArguments += "--migrate-known" }
+  if ($AdoptNativeCatalog) { $SetupArguments += "--adopt-native-catalog" }
   if ($SmokeTest) { $SetupArguments += "--smoke-test" }
   & node @SetupArguments
   $SetupExitCode = $LASTEXITCODE
@@ -193,12 +201,18 @@ if ([int]$VersionParts[0] -lt 22 -or
   throw "Node.js 22.19 or newer is required; Node.js 24 LTS is recommended."
 }
 
+$ConfigManager = "src\config-manager.mjs"
+$ConfigEnabled = $false
+$ServiceInstalled = $false
+$AdoptionPending = $false
 Push-Location $ScriptDirectory
 try {
   if ($Target -eq "codex") {
     $CodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
     New-Item -ItemType Directory -Force -Path $CodexHome | Out-Null
-    & node src/legacy-migration.mjs assert-clear | Out-Null
+    $LegacyArguments = @("src\legacy-migration.mjs", "assert-clear")
+    if ($AdoptNativeCatalog) { $LegacyArguments += "--adopt-native-catalog" }
+    & node @LegacyArguments | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Resolve the detected older router before installing." }
   }
   if (-not $PrepareOnly) {
@@ -270,6 +284,11 @@ try {
 
   & node src/secret.mjs ensure
   if ($LASTEXITCODE -ne 0) { throw "Local router-key setup failed." }
+  if ($AdoptNativeCatalog) {
+    & node src/native-catalog-source.mjs prepare-from-config | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Existing native model-catalog adoption failed." }
+    $AdoptionPending = $true
+  }
   if ($Target -eq "codex") {
     $StateRoot = if ($env:MODEL_ROUTER_STATE_DIR) { $env:MODEL_ROUTER_STATE_DIR }
       elseif ($env:CODEX_ROUTER_STATE_DIR) { $env:CODEX_ROUTER_STATE_DIR }
@@ -290,26 +309,28 @@ try {
     exit 0
   }
 
-  $ConfigManager = "src\config-manager.mjs"
-  $ConfigEnabled = $false
-  $ServiceInstalled = $false
-  try {
-    $ConfigEnabled = $true
-    & node $ConfigManager enable
-    if ($LASTEXITCODE -ne 0) { throw "$Target configuration update failed." }
-    $ServiceInstalled = $true
-    & node src/service.mjs install
-    if ($LASTEXITCODE -ne 0) { throw "Background-service installation failed." }
-    & node src/wait-health.mjs
-    if ($LASTEXITCODE -ne 0) { throw "The router did not become healthy." }
-    & node src/install-manifest.mjs record | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Install-manifest recording failed." }
-  } catch {
-    if ($ServiceInstalled) { & node src/service.mjs uninstall 2>$null | Out-Null }
-    if ($ConfigEnabled) { & node $ConfigManager disable 2>$null | Out-Null }
-    throw
-  }
+  $ConfigEnabled = $true
+  $ConfigArguments = @($ConfigManager, "enable")
+  if ($AdoptNativeCatalog) { $ConfigArguments += "--adopt-native-catalog" }
+  & node @ConfigArguments
+  if ($LASTEXITCODE -ne 0) { throw "$Target configuration update failed." }
+  $AdoptionPending = $false
+  $ServiceInstalled = $true
+  & node src/service.mjs install
+  if ($LASTEXITCODE -ne 0) { throw "Background-service installation failed." }
+  & node src/wait-health.mjs
+  if ($LASTEXITCODE -ne 0) { throw "The router did not become healthy." }
+  & node src/install-manifest.mjs record | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "Install-manifest recording failed." }
   Write-Host "Installed the selected external model routes. Fully quit and reopen Codex."
+} catch {
+  if ($ServiceInstalled) { & node src/service.mjs uninstall 2>$null | Out-Null }
+  if ($ConfigEnabled) {
+    & node $ConfigManager disable 2>$null | Out-Null
+  } elseif ($AdoptionPending) {
+    & node src/native-catalog-source.mjs clear-pending 2>$null | Out-Null
+  }
+  throw
 } finally {
   Pop-Location
 }

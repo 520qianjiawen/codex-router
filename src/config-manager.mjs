@@ -26,6 +26,12 @@ import {
   protectPrivateFile,
 } from "./file-security.mjs";
 import {
+  activateNativeCatalogSource,
+  catalogPathsEqual,
+  clearNativeCatalogSource,
+  readNativeCatalogSource,
+} from "./native-catalog-source.mjs";
+import {
   BACKUP_PATH,
   CALLER_SECRET_PATH,
   CODEX_PROVIDER_MODE_PATH,
@@ -69,6 +75,8 @@ const markerPairs = [
   ["# BEGIN kimi-codex-proxy-managed", "# END kimi-codex-proxy-managed"],
 ];
 const command = process.argv[2] || "status";
+const adoptNativeCatalog = process.argv.includes("--adopt-native-catalog");
+let nativeCatalogNeedsActivation = false;
 
 function configuredRouterBaseUrl() {
   if (!existsSync(CALLER_SECRET_PATH)) {
@@ -570,6 +578,18 @@ function snapshot(contents) {
 function enabledContents(contents) {
   const { rootLines: currentRoot } = splitRoot(contents);
   const currentProvider = rootValue(currentRoot, "model_provider");
+  const preparedSource = adoptNativeCatalog
+    ? readNativeCatalogSource()
+    : undefined;
+  if (
+    preparedSource?.status === "pending" &&
+    catalogPathsEqual(
+      rootValue(currentRoot, "model_catalog_json"),
+      MERGED_CATALOG_PATH,
+    )
+  ) {
+    nativeCatalogNeedsActivation = true;
+  }
   const legacyProvider = legacyManagedRouterProvider(contents);
   const contentsWithoutLegacyProvider = legacyProvider
     ? removeLegacyManagedRouterProvider(contents, legacyProvider)
@@ -584,7 +604,7 @@ function enabledContents(contents) {
   }
   const routerBaseUrl = configuredRouterBaseUrl();
   const cleaned = clean(contentsWithoutLegacyProvider);
-  const rootLines = trimBlankEdges(cleaned.rootLines);
+  let rootLines = trimBlankEdges(cleaned.rootLines);
   const existingBase = rootValue(rootLines, "openai_base_url");
   const existingCatalog = rootValue(rootLines, "model_catalog_json");
   if (existingBase && existingBase !== routerBaseUrl) {
@@ -593,7 +613,17 @@ function enabledContents(contents) {
     );
   }
   if (existingCatalog && existingCatalog !== MERGED_CATALOG_PATH) {
-    throw new Error(`Refusing to replace user-owned model_catalog_json: ${existingCatalog}`);
+    if (
+      !adoptNativeCatalog ||
+      !preparedSource ||
+      !catalogPathsEqual(preparedSource.path, existingCatalog)
+    ) {
+      throw new Error(`Refusing to replace user-owned model_catalog_json: ${existingCatalog}`);
+    }
+    rootLines = rootLines.filter(
+      (line) => !/^\s*model_catalog_json\s*=/.test(line),
+    );
+    nativeCatalogNeedsActivation = preparedSource.status === "pending";
   }
   const managedRealtimeOverrides = [];
   // Codex Voice uses a WebRTC call plus a sideband WebSocket. Keep both on
@@ -636,6 +666,29 @@ function enabledContents(contents) {
   );
 }
 
+function restoreNativeCatalog(contents) {
+  const source = readNativeCatalogSource();
+  if (!source) return undefined;
+  const cleaned = clean(contents);
+  const existing = rootValue(cleaned.rootLines, "model_catalog_json");
+  if (
+    existing &&
+    existing !== MERGED_CATALOG_PATH &&
+    !catalogPathsEqual(existing, source.path)
+  ) {
+    throw new Error(`Refusing to replace user-owned model_catalog_json: ${existing}`);
+  }
+  const rootLines = cleaned.rootLines.filter(
+    (line) => !/^\s*model_catalog_json\s*=/.test(line),
+  );
+  rootLines.push(`model_catalog_json = ${tomlValue(source.path)}`);
+  return `${[
+    ...trimBlankEdges(rootLines),
+    "",
+    ...trimBlankEdges(cleaned.tableLines),
+  ].join("\n").trimEnd()}\n`;
+}
+
 function atomicWrite(contents) {
   mkdirSync(path.dirname(CONFIG_PATH), { recursive: true, mode: 0o700 });
   const temporary = `${CONFIG_PATH}.tmp.${process.pid}`;
@@ -652,7 +705,7 @@ function atomicWrite(contents) {
 
 if (!new Set(["enable", "disable", "status", "login-free-enable", "login-free-disable"]).has(command)) {
   console.error(
-    "Usage: config-manager.mjs enable|disable|status|login-free-enable|login-free-disable",
+    "Usage: config-manager.mjs enable|disable|status|login-free-enable|login-free-disable [--adopt-native-catalog]",
   );
   process.exit(2);
 }
@@ -665,8 +718,11 @@ if (command === "status") {
 
 let next;
 let pendingProviderModeState;
+let clearNativeCatalogSourceAfterWrite = false;
+let activateNativeCatalogSourceAfterWrite = false;
 if (command === "enable") {
   next = enabledContents(current);
+  activateNativeCatalogSourceAfterWrite = nativeCatalogNeedsActivation;
 } else if (command === "login-free-enable") {
   const enabled = enabledContents(current);
   const { rootLines } = splitRoot(current);
@@ -716,12 +772,18 @@ if (command === "enable") {
   if (command === "login-free-disable") {
     next = restored;
   } else {
-    const cleaned = clean(restored);
-    next = `${[
-      ...trimBlankEdges(cleaned.rootLines),
-      "",
-      ...trimBlankEdges(cleaned.tableLines),
-    ].join("\n").trimEnd()}\n`;
+    const nativeCatalogContents = restoreNativeCatalog(restored);
+    if (nativeCatalogContents) {
+      next = nativeCatalogContents;
+      clearNativeCatalogSourceAfterWrite = true;
+    } else {
+      const cleaned = clean(restored);
+      next = `${[
+        ...trimBlankEdges(cleaned.rootLines),
+        "",
+        ...trimBlankEdges(cleaned.tableLines),
+      ].join("\n").trimEnd()}\n`;
+    }
   }
 }
 if (existsSync(CONFIG_PATH) && !existsSync(BACKUP_PATH)) {
@@ -731,9 +793,21 @@ if (existsSync(BACKUP_PATH)) protectPrivateFile(BACKUP_PATH);
 if (pendingProviderModeState) writeProviderModeState(pendingProviderModeState);
 try {
   atomicWrite(next);
+  if (activateNativeCatalogSourceAfterWrite) activateNativeCatalogSource();
 } catch (error) {
   if (pendingProviderModeState) clearProviderModeState();
+  if (activateNativeCatalogSourceAfterWrite) {
+    try {
+      atomicWrite(current);
+    } catch (restoreError) {
+      throw new AggregateError(
+        [error, restoreError],
+        "Codex config update failed and its original contents could not be restored.",
+      );
+    }
+  }
   throw error;
 }
 if (command === "disable" || command === "login-free-disable") clearProviderModeState();
+if (clearNativeCatalogSourceAfterWrite) clearNativeCatalogSource();
 process.stdout.write(`${JSON.stringify(snapshot(next))}\n`);

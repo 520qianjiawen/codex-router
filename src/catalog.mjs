@@ -32,6 +32,10 @@ import { assertStateOwnership } from "./state-owner.mjs";
 import { applyVisionBridge, resolveVisionEngine } from "./vision-bridge.mjs";
 import { readVisionBridgeSettings } from "./vision-bridge-state.mjs";
 import { nativeVisionEngines } from "./vision-engines.mjs";
+import {
+  readNativeCatalogFile,
+  readNativeCatalogSource,
+} from "./native-catalog-source.mjs";
 
 const refresh = process.argv.includes("--refresh-native");
 const bundled = process.argv.includes("--bundled-native");
@@ -96,6 +100,16 @@ export function nativeCatalogIsReusable(parsed, currentVersion) {
 }
 
 function nativeCatalog() {
+  const source = readNativeCatalogSource();
+  if (source) {
+    const catalog = readNativeCatalogFile(source.path);
+    if (!catalog) {
+      throw new Error(
+        `Configured native model catalog is unavailable or invalid: ${source.path}`,
+      );
+    }
+    return catalog;
+  }
   if (!existsSync(NATIVE_CATALOG_PATH) || refresh) return captureNative();
   const parsed = JSON.parse(readFileSync(NATIVE_CATALOG_PATH, "utf8"));
   if (nativeCatalogIsReusable(parsed, codexVersion())) return parsed;

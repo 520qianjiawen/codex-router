@@ -14,6 +14,11 @@ import { fileURLToPath } from "node:url";
 import { redactCallerUrl } from "./caller-auth.mjs";
 import { protectPrivateFile } from "./file-security.mjs";
 import {
+  readNativeCatalogFile,
+  readRootStringValues,
+  rootAssignmentCount,
+} from "./native-catalog-source.mjs";
+import {
   CODEX_HOME,
   CONFIG_PATH,
   LEGACY_SERVICE_LABEL,
@@ -62,39 +67,12 @@ function serviceLoaded(label) {
   }
 }
 
-function rootValues(contents, key) {
-  const firstTable = contents.search(/^\s*\[/m);
-  const root = firstTable === -1 ? contents : contents.slice(0, firstTable);
-  // The pattern is built in a template literal, so every backslash meant for
-  // the regex has to survive JavaScript's own escaping first: a bare `\s`
-  // collapses to a literal "s" and the pattern silently stops matching any
-  // entry that is indented or spaced around the "=".
-  return [...root.matchAll(new RegExp(`^\\s*${key}\\s*=\\s*["']([^"']+)["']`, "gm"))]
-    .map((match) => match[1]);
-}
-
-// TOML basic strings escape backslashes as "\\". Config values read here are
-// raw file text, so unescape before comparing — otherwise a Windows path
-// written as "C:\\Users\\…" never matches a path built with path.join() and
-// the router reports its own catalog as an unknown, conflicting one.
-function tomlUnescape(value) {
-  return value.replace(/\\(["\\bfnrt])/g, (_match, char) => ({
-    b: "\b",
-    f: "\f",
-    n: "\n",
-    r: "\r",
-    t: "\t",
-    '"': '"',
-    "\\": "\\",
-  })[char]);
-}
-
 // Compares two catalog paths from possibly different sources (raw config text
 // vs. path.join()). On Windows, paths are case-insensitive and both separators
 // are equivalent, so fold both before comparing.
 function catalogPathsEqual(a, b) {
-  let left = tomlUnescape(a);
-  let right = tomlUnescape(b);
+  let left = a;
+  let right = b;
   if (process.platform === "win32") {
     left = left.replaceAll("\\", "/").toLowerCase();
     right = right.replaceAll("\\", "/").toLowerCase();
@@ -121,8 +99,8 @@ export function detectLegacyInstallations() {
     };
   }).filter((variant) => variant.detected);
 
-  const openaiBaseUrls = rootValues(contents, "openai_base_url");
-  const modelCatalogs = rootValues(contents, "model_catalog_json");
+  const openaiBaseUrls = readRootStringValues(contents, "openai_base_url");
+  const modelCatalogs = readRootStringValues(contents, "model_catalog_json");
   const knownCatalogs = new Set([
     MERGED_CATALOG_PATH,
     ...LEGACY_VARIANTS.map((variant) => path.join(variant.stateDir, "merged-models.json")),
@@ -131,10 +109,17 @@ export function detectLegacyInstallations() {
     (catalog) => ![...knownCatalogs].some((known) => catalogPathsEqual(catalog, known)),
   );
   const unknownConflict = Boolean(unknownCatalog);
+  const adoptableNativeCatalog = Boolean(
+    unknownCatalog &&
+      installations.length === 0 &&
+      rootAssignmentCount(contents, "openai_base_url") === 0 &&
+      readNativeCatalogFile(unknownCatalog),
+  );
 
   return {
     installations,
     unknownConflict,
+    adoptableNativeCatalog,
     config: {
       openaiBaseUrl: openaiBaseUrls[0]
         ? redactCallerUrl(openaiBaseUrls[0])
@@ -318,9 +303,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     } else if (command === "assert-clear") {
       const detected = detectLegacyInstallations();
       if (detected.unknownConflict) {
-        throw new Error(
-          `Another router owns ${detected.config.modelCatalogJson}; it must be handled manually.`,
-        );
+        if (
+          !process.argv.includes("--adopt-native-catalog") ||
+          !detected.adoptableNativeCatalog
+        ) {
+          throw new Error(
+            `Another router owns ${detected.config.modelCatalogJson}; it must be handled manually or explicitly adopted when it is a valid native catalog.`,
+          );
+        }
       }
       if (detected.installations.length) {
         throw new Error(
@@ -334,7 +324,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       process.stdout.write(`${JSON.stringify(rollbackLatestMigration(), null, 2)}\n`);
     } else {
       console.error(
-        "Usage: legacy-migration.mjs detect|assert-clear|apply --yes|rollback --yes",
+        "Usage: legacy-migration.mjs detect|assert-clear [--adopt-native-catalog]|apply --yes|rollback --yes",
       );
       process.exitCode = 2;
     }
