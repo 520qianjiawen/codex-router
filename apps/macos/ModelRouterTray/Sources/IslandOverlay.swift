@@ -959,6 +959,7 @@ private struct ProviderIcon: View {
     if providerID == "ollama-cloud" { return "Ollama" }
     if providerID.hasPrefix("commandcode") { return "Command Code" }
     if providerID == "github-copilot" { return "GitHub Copilot" }
+    if providerID == "clinepass" { return "ClinePass" }
     return "Model provider"
   }
 }

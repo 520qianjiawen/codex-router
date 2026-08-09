@@ -389,6 +389,7 @@ final class RouterStore: ObservableObject {
     "ollama-cloud": "Ollama",
     "commandcode": "Command Code",
     "github-copilot": "Copilot",
+    "clinepass": "ClinePass",
   ]
 
   static func shortName(forRegistryProvider provider: RouterProviderInfo) -> String {

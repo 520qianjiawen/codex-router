@@ -23,9 +23,7 @@ export function modelIds(payload, provider) {
         !item.id.startsWith("accounts/") &&
         (item.object === undefined || item.object === "model") &&
         (item.capabilities?.type === undefined || item.capabilities.type === "chat") &&
-        item.model_picker_enabled === true &&
-        item?.policy?.state !== "disabled" &&
-        item?.policy?.state !== "unconfigured" &&
+        item?.policy?.state === "enabled" &&
         item?.capabilities?.supports?.tool_calls === true &&
         item?.capabilities?.supports?.streaming !== false &&
         Array.isArray(item?.supported_endpoints) &&

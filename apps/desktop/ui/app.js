@@ -309,7 +309,7 @@ function startPanel() {
     return `<article class="provider-row">
       <div><strong>${escapeHtml(provider.displayName)}</strong><small>${escapeHtml(detail)}</small>${provider.planNote ? `<small>${escapeHtml(provider.planNote)}</small>` : ""}</div>
       <div class="provider-actions">
-        <button class="mini-button" type="button" data-action="${action}" data-provider="${escapeHtml(provider.id)}"${isBusy ? " disabled" : ""}>${actionLabel}</button>
+        <button class="mini-button" type="button" data-action="${action}" data-provider="${escapeHtml(provider.id)}"${isBusy ? " disabled" : ""}>${escapeHtml(actionLabel)}</button>
         ${
           canRemove
             ? `<button class="mini-button danger" type="button" data-action="remove-key" data-provider="${escapeHtml(provider.id)}" aria-label="Remove ${escapeHtml(provider.displayName)} credential"${isBusy ? " disabled" : ""}>Remove</button>`

@@ -50,6 +50,7 @@ function isolatedEnvironment(testRoot) {
     COPILOT_GITHUB_TOKEN: "",
     GH_TOKEN: "",
     GITHUB_TOKEN: "",
+    CLINE_API_KEY: "",
   };
 }
 
@@ -73,6 +74,7 @@ test("provider onboarding reports install, login, and API key actions without se
     assert.equal(byId["github-copilot"].action, "add-key");
     assert.equal(byId["github-copilot"].credentialLabel, "GitHub token");
     assert.equal("credentialLabel" in byId["deepseek"], false);
+    assert.equal(byId.clinepass.action, "add-key");
     assert.equal("source" in byId["kimi-api"], false);
   } finally {
     rmSync(testRoot, { recursive: true, force: true });

@@ -77,12 +77,13 @@ function kimiK3Effort(value) {
 
 // Ollama's OpenAI-compatible surface documents reasoning_effort as of v0.18.0
 // and validates it against high/medium/low/max/none, erroring on anything else
-// -- so Codex-only rungs must be mapped instead of forwarded verbatim. "none"
-// is never produced here: it disables thinking, which no advertised level asks
-// for. An unrecognized value falls back to the documented default rather than
-// failing the turn.
+// -- so Codex-only rungs must be mapped instead of forwarded verbatim. Codex
+// has no "none" rung, so "minimal" is the advertised no-thinking tier and is
+// translated here to Ollama's "none". An unrecognized value falls back to the
+// documented default rather than failing the turn.
 function ollamaCloudEffort(value) {
-  if (["low", "minimal"].includes(value)) return "low";
+  if (value === "minimal") return "none";
+  if (value === "low") return "low";
   if (value === "medium") return "medium";
   if (["xhigh", "max", "ultra"].includes(value)) return "max";
   return "high";
@@ -372,7 +373,11 @@ function normalizeBody(buffer, contentType, route) {
       );
     }
   }
-  if (model.requestProfile === "kimi-k3") {
+  if (model.requestProfile === "clinepass") {
+    delete payload.reasoning_effort;
+    delete payload.thinking;
+    delete payload.top_p;
+  } else if (model.requestProfile === "kimi-k3") {
     const effort = kimiK3Effort(payload.reasoning_effort);
     // Absent means the platform default (max); K3 rejects the thinking param.
     if (effort) payload.reasoning_effort = effort;
@@ -520,7 +525,7 @@ function upstreamHeaders(requestHeaders, body, apiKey, provider, extraHeaders = 
   headers["User-Agent"] = `codex-router/${VERSION}`;
   headers["Accept-Encoding"] = "identity";
   Object.assign(headers, extraHeaders);
-  if (body.length) headers["Content-Length"] = String(body.length);
+  if (body.length) headers["Content-Length"] = String(Buffer.byteLength(body));
   return headers;
 }
 
@@ -616,18 +621,24 @@ async function handleRequest(request, response) {
   response.once("close", () => {
     if (!response.writableEnded) controller.abort();
   });
+  // Fetch may detach a Buffer's backing ArrayBuffer while sending it. Copilot
+  // can replay once after refreshing account routing, so use one immutable
+  // string for both attempts instead of trying to reuse detached bytes.
+  const upstreamBody = normalized.provider.authProfile === "github-copilot"
+    ? normalized.body.toString("utf8")
+    : normalized.body;
   let session = await upstreamSession(normalized.provider, credential, normalized.payload);
   let target = `${session.baseUrl}${route}${requestUrl.search}`;
   let upstream = await fetch(target, {
     method: request.method,
     headers: upstreamHeaders(
       request.headers,
-      normalized.body,
+      upstreamBody,
       session.apiKey,
       normalized.provider,
       session.headers,
     ),
-    body: normalized.body,
+    body: upstreamBody,
     signal: controller.signal,
   });
   // Account routing can change with plan or policy. Re-resolve and replay once
@@ -645,12 +656,12 @@ async function handleRequest(request, response) {
       method: request.method,
       headers: upstreamHeaders(
         request.headers,
-        normalized.body,
+        upstreamBody,
         session.apiKey,
         normalized.provider,
         session.headers,
       ),
-      body: normalized.body,
+      body: upstreamBody,
       signal: controller.signal,
     });
   }

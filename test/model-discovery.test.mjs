@@ -57,24 +57,29 @@ test("Command Code discovery parses the Provider API model list", () => {
   }
 });
 
-test("Copilot discovery exposes only selectable Responses models with tools", () => {
+test("Copilot discovery exposes only account-enabled Responses models with tools", () => {
   const payload = {
     data: [
       {
         id: "gpt-responses",
-        model_picker_enabled: true,
+        // Copilot CLI integrations currently receive picker=false even for
+        // account-enabled models; policy is the account entitlement signal.
+        model_picker_enabled: false,
+        policy: { state: "enabled" },
         supported_endpoints: ["/responses", "/chat/completions"],
         capabilities: { supports: { tool_calls: true, streaming: true } },
       },
       {
         id: "chat-only",
         model_picker_enabled: true,
+        policy: { state: "enabled" },
         supported_endpoints: ["/chat/completions"],
         capabilities: { supports: { tool_calls: true, streaming: true } },
       },
       {
         id: "no-tools",
         model_picker_enabled: true,
+        policy: { state: "enabled" },
         supported_endpoints: ["/responses"],
         capabilities: { supports: { tool_calls: false, streaming: true } },
       },
@@ -87,7 +92,7 @@ test("Copilot discovery exposes only selectable Responses models with tools", ()
       },
       {
         id: "utility",
-        model_picker_enabled: false,
+        policy: { state: "unconfigured" },
         supported_endpoints: ["/responses"],
         capabilities: { supports: { tool_calls: true, streaming: true } },
       },
@@ -95,6 +100,7 @@ test("Copilot discovery exposes only selectable Responses models with tools", ()
         id: "accounts/router/internal",
         object: "model",
         model_picker_enabled: true,
+        policy: { state: "enabled" },
         supported_endpoints: ["/responses"],
         capabilities: { type: "chat", supports: { tool_calls: true, streaming: true } },
       },
@@ -102,6 +108,7 @@ test("Copilot discovery exposes only selectable Responses models with tools", ()
         id: "embedding-record",
         object: "embedding",
         model_picker_enabled: true,
+        policy: { state: "enabled" },
         supported_endpoints: ["/responses"],
         capabilities: { supports: { tool_calls: true, streaming: true } },
       },
@@ -109,6 +116,7 @@ test("Copilot discovery exposes only selectable Responses models with tools", ()
         id: "non-chat",
         object: "model",
         model_picker_enabled: true,
+        policy: { state: "enabled" },
         supported_endpoints: ["/responses"],
         capabilities: { type: "embedding", supports: { tool_calls: true, streaming: true } },
       },

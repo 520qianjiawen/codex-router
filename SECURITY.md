@@ -10,7 +10,8 @@ intentional exception: the router reuses the official Kimi CLI session under
 
 Codex Router keeps every credential class on a distinct path:
 
-- ChatGPT/Codex authentication is allow-listed only for native GPT requests.
+- ChatGPT/Codex authentication is allow-listed only for native GPT, image, and
+  standalone web-search requests.
 - Kimi Code OAuth is read from the official Kimi CLI directory and sent only to
   the Kimi Code managed endpoint.
 - Kimi Platform API keys are sent only to the configured Kimi Platform endpoint.
@@ -40,6 +41,7 @@ Router state lives under `$CODEX_HOME/codex-router` by default:
 | `caller-secret` | Random capability used by that app target's router requests | `600` |
 | `kimi-api-key.secret` | Optional Kimi Platform key | `600` |
 | `deepseek-api-key.secret` | Optional DeepSeek key | `600` |
+| `clinepass-api-key.secret` | Optional ClinePass key | `600` |
 | `xai-api-key.secret` | Optional xAI key | `600` |
 | `anthropic-api-key.secret` | Optional Anthropic key | `600` |
 | `github-copilot-token.secret` | Optional fine-grained GitHub token with Copilot Requests permission | `600` |

@@ -9,7 +9,6 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -17,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 
 import { callerBaseUrl } from "../src/caller-auth.mjs";
+import { openPort } from "./port-pool.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const INTERNAL_KEY = "test-internal-service-key-with-sufficient-length";
@@ -43,19 +43,6 @@ async function bodyJson(request) {
   // way Codex itself does on the way in, so a mock backend has to decode one.
   const body = request.headers["content-encoding"] === "zstd" ? zstdDecompressSync(raw) : raw;
   return JSON.parse(body.toString("utf8"));
-}
-
-async function openPort() {
-  const server = net.createServer();
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  assert.ok(typeof address === "object" && address);
-  const port = address.port;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
 }
 
 async function mockServer(handler) {
@@ -1024,6 +1011,82 @@ test("router sends standalone image requests only to the native OpenAI backend",
   }
 });
 
+test("router sends standalone web search only to the native OpenAI backend", async () => {
+  const nativeRequests = [];
+  const native = await mockServer(async (request, response) => {
+    nativeRequests.push({
+      url: request.url,
+      headers: request.headers,
+      body: await bodyJson(request),
+    });
+    json(response, 200, {
+      output: "search result",
+      results: [{ type: "text_result", ref_id: "turn0search0" }],
+    });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const headers = {
+    Authorization: "Bearer CODEX_CALLER_SECRET",
+    "ChatGPT-Account-Id": "account-secret",
+    "X-Codex-Installation-Id": "installation-secret",
+    "X-Codex-Turn-Metadata": "turn-metadata",
+    "X-Private-Header": "must-not-forward",
+    "Content-Type": "application/json",
+  };
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const searchBody = zstdCompressSync(
+      Buffer.from(
+        JSON.stringify({
+          id: "search-session",
+          model: "gpt-5.6-sol",
+          commands: { search_query: [{ q: "OpenAI news" }] },
+          settings: { external_web_access: true },
+        }),
+      ),
+    );
+    const search = await fetch(`${routerBase(routerPort)}/alpha/search?source=codex`, {
+      method: "POST",
+      headers: { ...headers, "Content-Encoding": "zstd" },
+      body: searchBody,
+    });
+    const searchPayload = await search.json();
+    assert.equal(search.status, 200, JSON.stringify(searchPayload));
+    assert.deepEqual(searchPayload, {
+      output: "search result",
+      results: [{ type: "text_result", ref_id: "turn0search0" }],
+    });
+
+    assert.equal(nativeRequests.length, 1);
+    assert.equal(nativeRequests[0].url, "/backend-api/codex/alpha/search?source=codex");
+    assert.equal(nativeRequests[0].headers.authorization, "Bearer CODEX_CALLER_SECRET");
+    assert.equal(nativeRequests[0].headers["chatgpt-account-id"], "account-secret");
+    assert.equal(nativeRequests[0].headers["x-codex-installation-id"], "installation-secret");
+    assert.equal(nativeRequests[0].headers["x-codex-turn-metadata"], "turn-metadata");
+    assert.equal(nativeRequests[0].headers["x-private-header"], undefined);
+    assert.equal(nativeRequests[0].headers["content-encoding"], undefined);
+    assert.equal(nativeRequests[0].body.model, "gpt-5.6-sol");
+    assert.deepEqual(nativeRequests[0].body.commands.search_query, [{ q: "OpenAI news" }]);
+
+    const unsupported = await fetch(`${routerBase(routerPort)}/alpha/embeddings`, {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    assert.equal(unsupported.status, 404);
+    assert.equal(nativeRequests.length, 1);
+  } finally {
+    await stopChild(router);
+    await closeServer(native.server);
+  }
+});
+
 test("router synthesizes routed compaction and safely replays it to native models", async () => {
   const gatewayRequests = [];
   const gateway = await mockServer(async (request, response) => {
@@ -1548,7 +1611,7 @@ test("API forwarder validates Copilot auth, sets identity headers, and retries r
         ],
       }),
     });
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 200, forwarder.testErrors());
     assert.equal(userRequests.length, 2);
     assert.equal(userRequests[0].authorization, "Bearer github_pat_TEST_GITHUB_SOURCE_TOKEN");
     assert.equal(upstreamRequests.length, 2);
@@ -1842,6 +1905,76 @@ test("API forwarder replaces caller auth and enforces Kimi K3 API parameters", a
     // K3 documents low/high/max; the requested low passes through unchanged.
     assert.equal(request.body.reasoning_effort, "low");
     assert.equal(request.body.client_metadata, undefined);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
+test("API forwarder routes ClinePass with isolated auth and unchanged stream tools", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({
+      url: request.url,
+      headers: request.headers,
+      body: await bodyJson(request),
+    });
+    json(response, 200, { choices: [] });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    CLINE_API_BASE_URL: `http://127.0.0.1:${upstream.port}/api/v1`,
+    CLINE_API_KEY: "TEST_CLINEPASS_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const tools = [{
+      type: "function",
+      function: {
+        name: "read_file",
+        parameters: { type: "object", properties: { path: { type: "string" } } },
+      },
+    }];
+    const response = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "X-Api-Key": "must-not-forward",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "clinepass-qwen3-8-max",
+          reasoning_effort: "high",
+          thinking: { type: "enabled" },
+          top_p: 0.9,
+          temperature: 0.7,
+          stream: true,
+          tools,
+          tool_choice: "auto",
+          messages: [{ role: "user", content: "test" }],
+        }),
+      },
+    );
+    assert.equal(response.status, 200);
+    const request = upstreamRequests[0];
+    assert.equal(request.url, "/api/v1/chat/completions");
+    assert.equal(request.headers.authorization, "Bearer TEST_CLINEPASS_KEY");
+    assert.equal(request.headers["x-api-key"], undefined);
+    assert.equal(request.body.model, "cline-pass/qwen3.8-max");
+    assert.equal(request.body.reasoning_effort, undefined);
+    assert.equal(request.body.thinking, undefined);
+    assert.equal(request.body.top_p, undefined);
+    assert.equal(request.body.temperature, 0.7);
+    assert.equal(request.body.stream, true);
+    assert.deepEqual(request.body.tools, tools);
+    assert.equal(request.body.tool_choice, "auto");
   } finally {
     await stopChild(forwarder);
     await closeServer(upstream.server);
@@ -2235,7 +2368,7 @@ test("API forwarder routes Ollama Cloud models without unsupported parameters", 
       ["ollama-cloud-glm-5-2", "glm-5.2", "high", "high"],
       ["ollama-cloud-glm-5-2", "glm-5.2", "max", "max"],
       ["ollama-cloud-glm-5-2", "glm-5.2", "xhigh", "max"],
-      ["ollama-cloud-glm-5-2", "glm-5.2", "minimal", "low"],
+      ["ollama-cloud-glm-5-2", "glm-5.2", "minimal", "none"],
       ["ollama-cloud-glm-5-2", "glm-5.2", "bogus", "high"],
       ["ollama-cloud-kimi-k2-7-code", "kimi-k2.7-code", "high", "high"],
     ]) {
