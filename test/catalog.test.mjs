@@ -1,4 +1,12 @@
 import assert from "node:assert/strict";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -10,6 +18,7 @@ import {
   clampModelEfforts,
   codexEffortVocabulary,
   nativeCatalogIsReusable,
+  promoteNativeMultiAgent,
   routedModel,
 } from "../src/catalog.mjs";
 
@@ -284,6 +293,88 @@ test("login-free catalog keeps overflow models visible under their own slugs", (
   assert.equal(bySlug.get("grok-oauth/grok-4.5").visibility, "hide");
 });
 
+function withCredentialEnvironment(kimiHome, run) {
+  const previousKimi = process.env.KIMI_CODE_HOME;
+  const previousGrok = process.env.GROK_AUTH_PATH;
+  const dir = mkdtempSync(path.join(os.tmpdir(), "catalog-login-free-"));
+  if (kimiHome === "unconfigured") {
+    process.env.KIMI_CODE_HOME = path.join(dir, "kimi-home");
+  } else {
+    const credentialsDir = path.join(dir, "kimi-home", "credentials");
+    mkdirSync(credentialsDir, { recursive: true });
+    writeFileSync(
+      path.join(credentialsDir, "kimi-code.json"),
+      JSON.stringify({
+        access_token: "access-value",
+        refresh_token: "refresh-value",
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+        scope: "kimi-code",
+      }),
+      { mode: 0o600 },
+    );
+    process.env.KIMI_CODE_HOME = path.join(dir, "kimi-home");
+  }
+  process.env.GROK_AUTH_PATH = path.join(dir, "grok", "auth.json");
+  try {
+    return run();
+  } finally {
+    if (previousKimi === undefined) delete process.env.KIMI_CODE_HOME;
+    else process.env.KIMI_CODE_HOME = previousKimi;
+    if (previousGrok === undefined) delete process.env.GROK_AUTH_PATH;
+    else process.env.GROK_AUTH_PATH = previousGrok;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("login-free catalog does not assign slots to unauthenticated providers", () => {
+  const kimi = {
+    ...grok,
+    slug: "kimi-oauth/k3",
+    provider: "kimi-oauth",
+    displayName: "Kimi K3 (OAuth)",
+    priority: 2,
+    compHash: "kimi-oauth-k3-v1",
+  };
+  withCredentialEnvironment("unconfigured", () => {
+    // The credential file does not exist under this KIMI_CODE_HOME, so
+    // kimi-oauth is not configured; its model must not take a slot.
+    const { models, aliases } = buildLoginFreeCatalog(
+      { models: [template] },
+      [kimi],
+    );
+    assert.deepEqual(aliases, {});
+    assert.deepEqual(models, []);
+  });
+});
+
+test("login-free catalog assigns slots to models of credentialed providers", () => {
+  const kimi = {
+    ...grok,
+    slug: "kimi-oauth/k3",
+    provider: "kimi-oauth",
+    displayName: "Kimi K3 (OAuth)",
+    priority: 2,
+    compHash: "kimi-oauth-k3-v1",
+  };
+  const unauthenticatedGrok = {
+    ...grok,
+    provider: "grok-oauth",
+  };
+  withCredentialEnvironment("configured", () => {
+    // kimi-oauth has a live credential, grok-oauth does not: only the kimi
+    // model may take the whitelist slot.
+    const { models, aliases } = buildLoginFreeCatalog(
+      { models: [template] },
+      [kimi, unauthenticatedGrok],
+    );
+    assert.deepEqual(aliases, { "gpt-5.5": "kimi-oauth/k3" });
+    const bySlug = new Map(models.map((model) => [model.slug, model]));
+    assert.equal(bySlug.get("gpt-5.5").display_name, "Kimi K3 (OAuth)");
+    assert.equal(bySlug.get("gpt-5.5").visibility, "list");
+    assert.equal(bySlug.get("kimi-oauth/k3").visibility, "hide");
+  });
+});
+
 test("effort vocabulary follows the installed codex build's enum history", () => {
   // max and ultra joined the enum in 0.143.0.
   const legacy = codexEffortVocabulary("codex-cli 0.142.5");
@@ -373,4 +464,129 @@ test("native catalog cache is reusable only for the codex build that captured it
   // Invalid or empty caches are never reusable.
   assert.equal(nativeCatalogIsReusable(undefined, undefined), false);
   assert.equal(nativeCatalogIsReusable({ models: [] }, "codex-cli 0.146.1"), false);
+});
+
+test("native listed models follow the local subagent opt-in", () => {
+  // Upstream still ships gpt-5.6-luna as v1 while it runs fine on the v2
+  // backend, and spawn_agent filters child models on that static value.
+  const native = [
+    { slug: "gpt-5.6-terra", visibility: "list", multi_agent_version: "v2" },
+    { slug: "gpt-5.6-luna", visibility: "list", multi_agent_version: "v1" },
+    { slug: "codex-auto-review", visibility: "hide", multi_agent_version: "v1" },
+  ];
+  const promoted = promoteNativeMultiAgent(native, {
+    mode: "all",
+    enabled: [],
+    disabled: [],
+  });
+  assert.equal(promoted[1].multi_agent_version, "v2");
+  // Hidden native entries are never advertised as spawn targets.
+  assert.equal(promoted[2].multi_agent_version, "v1");
+});
+
+test("native promotion honours disabled models and picker-hidden slugs", () => {
+  const native = [
+    { slug: "gpt-5.6-luna", visibility: "list", multi_agent_version: "v1" },
+    { slug: "gpt-5.5", visibility: "list", multi_agent_version: "v1" },
+  ];
+  const promoted = promoteNativeMultiAgent(
+    native,
+    { mode: "all", enabled: [], disabled: ["gpt-5.6-luna"] },
+    new Set(["gpt-5.5"]),
+  );
+  assert.equal(promoted[0].multi_agent_version, "v1");
+  assert.equal(promoted[1].multi_agent_version, "v1");
+});
+
+test("selected subagent mode only promotes the chosen native models", () => {
+  const native = [
+    { slug: "gpt-5.6-luna", visibility: "list", multi_agent_version: "v1" },
+    { slug: "gpt-5.4", visibility: "list", multi_agent_version: "v1" },
+  ];
+  const promoted = promoteNativeMultiAgent(native, {
+    mode: "selected",
+    enabled: ["gpt-5.6-luna"],
+    disabled: [],
+  });
+  assert.equal(promoted[0].multi_agent_version, "v2");
+  assert.equal(promoted[1].multi_agent_version, "v1");
+});
+
+test("proven subagent mode leaves the native catalog untouched", () => {
+  const native = [{ slug: "gpt-5.6-luna", visibility: "list", multi_agent_version: "v1" }];
+  const promoted = promoteNativeMultiAgent(native, {
+    mode: "proven",
+    enabled: [],
+    disabled: [],
+  });
+  assert.deepEqual(promoted, native);
+});
+
+test("a ChatGPT-plan model drives the same advertisement as a routed engine", async () => {
+  const { applyVisionBridge, nativeVisionCandidates, resolveVisionEngine } = await import(
+    "../src/vision-bridge.mjs"
+  );
+  const deepseek = {
+    ...grok,
+    slug: "deepseek/deepseek-v4-flash",
+    displayName: "DeepSeek V4 Flash",
+    gatewayModel: "deepseek-v4-flash",
+    inputModalities: ["text"],
+    compHash: "deepseek-v4-flash-native-bridge-v1",
+  };
+  // The native capture is snake_case, the registry is camelCase, and both have
+  // to reach the same advertisement rule.
+  const capture = [
+    {
+      slug: "gpt-5.6-luna",
+      display_name: "GPT-5.6-Luna",
+      visibility: "list",
+      priority: 3,
+      input_modalities: ["text", "image"],
+    },
+  ];
+
+  const engine = resolveVisionEngine(() => nativeVisionCandidates(capture), {
+    enabled: true,
+    engine: "gpt-5.6-luna",
+  });
+  const [bridged] = applyVisionBridge([deepseek], engine);
+  assert.deepEqual(routedModel(template, bridged).input_modalities, ["text", "image"]);
+
+  // A model the operator took out of the picker is not theirs to spend, so it
+  // cannot resolve, and the advertisement goes with it.
+  const hidden = resolveVisionEngine(
+    () => nativeVisionCandidates(capture, new Set(["gpt-5.6-luna"])),
+    { enabled: true, engine: "gpt-5.6-luna" },
+  );
+  assert.equal(hidden, undefined);
+  assert.deepEqual(
+    routedModel(template, applyVisionBridge([deepseek], hidden)[0]).input_modalities,
+    ["text"],
+  );
+});
+
+test("a bridged text-only model advertises image input, and only through the bridge", async () => {
+  const { applyVisionBridge } = await import("../src/vision-bridge.mjs");
+  const deepseek = {
+    ...grok,
+    slug: "deepseek/deepseek-v4-pro",
+    displayName: "DeepSeek V4 Pro",
+    gatewayModel: "deepseek-v4-pro",
+    inputModalities: ["text"],
+    compHash: "deepseek-v4-pro-v1",
+  };
+
+  // Off, or with no engine to read images with, the catalog repeats the
+  // registry's honest declaration and Codex refuses the paste.
+  assert.deepEqual(routedModel(template, deepseek).input_modalities, ["text"]);
+
+  const [bridged] = applyVisionBridge([deepseek], grok);
+  const entry = routedModel(template, bridged);
+  assert.deepEqual(entry.input_modalities, ["text", "image"]);
+  // The bridge is router state, not a picker field: nothing about the engine
+  // leaks into what Codex reads.
+  assert.equal(entry.visionBridgeEngine, undefined);
+  // Advertising image input is not a claim about detail handling.
+  assert.equal(entry.supports_image_detail_original, false);
 });

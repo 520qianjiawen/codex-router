@@ -18,6 +18,7 @@ import {
 import { parseRateLimitHeaders } from "./rate-limit-headers.mjs";
 import { recordRateLimitSnapshot } from "./rate-limit-state.mjs";
 import { canonicalProviderId, readProviderSelection } from "./provider-selection.mjs";
+import { stripImages, supportsImageInput } from "./vision-bridge.mjs";
 import {
   credentialStatus,
   resolveProviderCredential,
@@ -71,12 +72,13 @@ function kimiK3Effort(value) {
 
 // Ollama's OpenAI-compatible surface documents reasoning_effort as of v0.18.0
 // and validates it against high/medium/low/max/none, erroring on anything else
-// -- so Codex-only rungs must be mapped instead of forwarded verbatim. "none"
-// is never produced here: it disables thinking, which no advertised level asks
-// for. An unrecognized value falls back to the documented default rather than
-// failing the turn.
+// -- so Codex-only rungs must be mapped instead of forwarded verbatim. Codex
+// has no "none" rung, so "minimal" is the advertised no-thinking tier and is
+// translated here to Ollama's "none". An unrecognized value falls back to the
+// documented default rather than failing the turn.
 function ollamaCloudEffort(value) {
-  if (["low", "minimal"].includes(value)) return "low";
+  if (value === "minimal") return "none";
+  if (value === "low") return "low";
   if (value === "medium") return "medium";
   if (["xhigh", "max", "ultra"].includes(value)) return "max";
   return "high";
@@ -235,10 +237,41 @@ function ensureGeminiThoughtSignatures(messages) {
   });
 }
 
+// Google's OpenAI-compatible endpoint accepts image parts only on user turns;
+// an image_url/input_image part on an assistant or tool turn is rejected with
+// "Invalid content part type: image_url", 400ing the whole turn. That shape is
+// normal after a vision-capable tool returns a screenshot, so downgrade those
+// non-user image parts to a text placeholder rather than lose the turn. User
+// turns are left untouched so Gemini still sees the images it can read.
+function sanitizeGeminiImageContent(messages) {
+  return messages.map((message) => {
+    if (!message || message.role === "user" || !Array.isArray(message.content)) return message;
+    let changed = false;
+    const content = message.content.map((part) => {
+      if (!part || typeof part !== "object") return part;
+      if (part.type !== "image_url" && part.type !== "input_image") return part;
+      changed = true;
+      const url =
+        typeof part.image_url === "string"
+          ? part.image_url
+          : typeof part.image_url?.url === "string"
+            ? part.image_url.url
+            : typeof part.url === "string"
+              ? part.url
+              : "";
+      const label = url && !url.startsWith("data:") ? `[Image: ${url}]` : "[Image]";
+      return { type: "text", text: label };
+    });
+    return changed ? { ...message, content } : message;
+  });
+}
+
 function sanitizeChatToolHistory(messages, provider) {
   if (!Array.isArray(messages)) return messages;
   const repaired = ensureToolResultsForCalls(coalesceAssistantMessages(messages));
-  return isGeminiProvider(provider) ? ensureGeminiThoughtSignatures(repaired) : repaired;
+  return isGeminiProvider(provider)
+    ? ensureGeminiThoughtSignatures(sanitizeGeminiImageContent(repaired))
+    : repaired;
 }
 
 function normalizeBody(buffer, contentType, route) {
@@ -281,10 +314,54 @@ function normalizeBody(buffer, contentType, route) {
   }
 
   payload.model = model.upstreamModel;
-  // Gemini has no OpenAI-shaped web search parameter and 400s on the field.
-  if (isGeminiProvider(provider)) delete payload.web_search_options;
+  // Google's OpenAI-compatible endpoint (/v1beta/openai/chat/completions)
+  // rejects any field outside the OpenAI schema with a hard 400
+  // (INVALID_ARGUMENT: Unknown name "..."). Two such fields reach this hop for
+  // Gemini: web_search_options, and the thinking/think reasoning controls that
+  // upstream reasoning translation attaches for Gemini 3.x thinking models.
+  // Left in place the 400 surfaces as a misleading native-ChatGPT fallback
+  // error rather than a routing failure, so strip them before forwarding.
+  if (isGeminiProvider(provider)) {
+    delete payload.web_search_options;
+    delete payload.thinking;
+    delete payload.think;
+    // store and logit_bias are OpenAI-only; Google's surface accepts neither.
+    // (frequency_penalty/presence_penalty/seed are supported, so they stay.)
+    delete payload.store;
+    delete payload.logit_bias;
+  }
   if (Array.isArray(payload.messages)) {
     payload.messages = sanitizeChatToolHistory(payload.messages, provider);
+  }
+  // An image here has bypassed the router's vision bridge. This forwarder sits
+  // *downstream* of the gateway -- every routed model's `api_base` points at it
+  // -- so Codex's own traffic arrives already bridged and never carries one.
+  // What reaches this line is a client talking to the gateway directly, and the
+  // provider's answer to an image part on a text-only model is a 400 naming a
+  // JSON variant rather than an image, which reads as a router bug.
+  //
+  // Reading it here is deliberately not the answer. The engine call would have
+  // to re-enter the gateway that is holding this very request open, so the fix
+  // for wanting images read is to send them through the router, which is where
+  // the bridge lives. Say that in the model's own turn instead of dropping the
+  // part or letting the provider refuse the whole conversation.
+  if (!supportsImageInput(model)) {
+    const textPartType = provider.protocol === "openai-responses" ? "input_text" : "text";
+    const reason =
+      `${model.displayName || model.gatewayModel} cannot read images, and an image sent ` +
+      "straight to the gateway skips the router's vision bridge";
+    for (const field of ["messages", "input"]) {
+      if (!Array.isArray(payload[field])) continue;
+      const stripped = stripImages(payload[field], reason, { textPartType });
+      if (!stripped.images) continue;
+      payload[field] = stripped.input;
+      // Never quieted: content the caller sent has been replaced, and an
+      // unattended service is exactly where that must not happen in silence.
+      console.error(
+        `[api-forwarder] model=${model.gatewayModel} stripped=${stripped.images} ` +
+          "image part(s) that bypassed the vision bridge",
+      );
+    }
   }
   if (model.requestProfile === "clinepass") {
     delete payload.reasoning_effort;
@@ -303,6 +380,14 @@ function normalizeBody(buffer, contentType, route) {
     delete payload.top_p;
     delete payload.presence_penalty;
     delete payload.frequency_penalty;
+    // DeepSeek rejects forced tool choices while thinking is enabled
+    // ("Thinking mode does not support this tool_choice"); downgrade to auto so
+    // tool calls stay available. Codex sends "required" for the compatibility
+    // probe and a function object for the subagent payload relay, so without
+    // this both tool calling and routed subagents fail on every thinking model.
+    if (payload.tool_choice !== undefined && payload.tool_choice !== "none") {
+      payload.tool_choice = "auto";
+    }
   } else if (model.requestProfile === "deepseek-nonthinking") {
     payload.thinking = { type: "disabled" };
     delete payload.reasoning_effort;
@@ -371,6 +456,28 @@ function normalizeBody(buffer, contentType, route) {
     // Chat Completions endpoint instead of reasoning_effort.
     delete payload.reasoning_effort;
     payload.thinking = { type: "adaptive" };
+  } else if (model.requestProfile === "auto-tool-choice") {
+    // Some models call tools happily under "auto" but reject being forced to,
+    // the way DeepSeek and Qwen do in thinking mode. Their vendor profiles
+    // above already handle it; this one exists for a model reached through a
+    // reseller (OpenRouter, Together, Fireworks, ...), where the restriction
+    // travels with the upstream model while the reseller's parameter surface
+    // is plain OpenAI. So it normalizes the tool choice and nothing else:
+    // borrowing qwen-plan for an OpenRouter-hosted Qwen would silently
+    // collapse the picked effort onto DashScope's two-tier ladder.
+    //
+    // Deliberately not applied provider-wide. OpenRouter reports tool_choice
+    // as a per-model entry in the `supported_parameters` of its own
+    // /api/v1/models listing (filterable with ?supported_parameters=tool_choice),
+    // and its default routing forwards a parameter an endpoint does not
+    // support rather than refusing the request, so a rejection is the
+    // upstream's and not the reseller's. Downgrading for every model behind
+    // one reseller would let models that honor "required" decline the
+    // compatibility probe and, worse, decline the forced function call the
+    // subagent payload relay depends on.
+    if (payload.tool_choice !== undefined && payload.tool_choice !== "none") {
+      payload.tool_choice = "auto";
+    }
   }
   return { body: Buffer.from(JSON.stringify(payload), "utf8"), model, provider };
 }

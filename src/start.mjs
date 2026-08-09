@@ -14,7 +14,7 @@ import {
   TARGET,
   loopback,
 } from "./paths.mjs";
-import { probeDelayMs } from "./health-backoff.mjs";
+import { waitForHealth as pollHealth } from "./health-probe.mjs";
 import { writeLiteLlmConfig } from "./litellm-config.mjs";
 
 const litellm =
@@ -54,6 +54,10 @@ const commonEnv = {
   MODEL_ROUTER_API_HEALTH_URL: loopback(PORTS.api, "/health"),
   MODEL_ROUTER_GATEWAY_HEALTH_URL: loopback(PORTS.gateway, "/health/liveliness"),
   MODEL_ROUTER_GATEWAY_PORT: String(PORTS.gateway),
+  // LiteLLM's ollama_chat provider talks to the daemon root, not the
+  // OpenAI-compatible /v1 surface the bridge uses for inference.
+  MODEL_ROUTER_LOCAL_BASE_URL_ROOT:
+    (process.env.MODEL_ROUTER_LOCAL_BASE_URL || "http://127.0.0.1:11434/v1").replace(/\/v1\/?$/, ""),
   MODEL_ROUTER_OAUTH_PORT: String(PORTS.oauth),
   MODEL_ROUTER_API_PORT: String(PORTS.api),
   MODEL_ROUTER_PORT: String(PORTS.router),
@@ -79,6 +83,10 @@ const commonEnv = {
   LITELLM_LOG: "ERROR",
   LITELLM_TELEMETRY: "False",
   NO_COLOR: "1",
+  // LiteLLM prints Unicode banners at startup; on a non-UTF-8 Windows code page
+  // (e.g. cp1252) that raises UnicodeEncodeError and the child never comes up.
+  PYTHONIOENCODING: "utf-8",
+  PYTHONUTF8: "1",
 };
 
 const children = [];
@@ -103,35 +111,18 @@ function waitForExit(child, label) {
   });
 }
 
-async function waitForHealth(label, url, headers = {}, timeoutMs = 30_000, expectedService, child) {
-  const deadline = Date.now() + timeoutMs;
-  let attempt = 0;
-  while (Date.now() < deadline) {
-    if (child && (child.exitCode !== null || child.signalCode !== null)) {
-      throw new Error(`${label} exited before becoming healthy.`);
-    }
-    if (shuttingDown) throw new Error("Service startup was interrupted.");
-    try {
-      const response = await fetch(url, {
-        headers,
-        signal: AbortSignal.timeout(1_000),
-      });
-      if (response.ok) {
-        if (!expectedService) return;
-        const payload = await response.json().catch(() => ({}));
-        if (payload.service === expectedService) return;
-      }
-    } catch {
-      // The service is still starting.
-    }
-    // Back off rather than hammering: the gateway is allowed a 300 second cold
-    // start, and at a flat interval every one of those probes is a gateway
-    // access-log line for a service that is plainly not up yet.
-    const wait = Math.min(probeDelayMs(attempt), Math.max(0, deadline - Date.now()));
-    attempt += 1;
-    await new Promise((resolve) => setTimeout(resolve, wait));
-  }
-  throw new Error(`Timed out waiting for ${label} to become healthy.`);
+// The probe loop lives in src/health-probe.mjs so it can be tested directly;
+// importing this file starts the whole service pipeline.
+function waitForHealth(label, url, headers = {}, timeoutMs = 30_000, expectedService, child) {
+  return pollHealth({
+    label,
+    url,
+    headers,
+    timeoutMs,
+    expectedService,
+    child,
+    isShuttingDown: () => shuttingDown,
+  });
 }
 
 function stopChildren() {

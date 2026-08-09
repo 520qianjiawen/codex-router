@@ -23,11 +23,15 @@ import { MODEL_BY_SLUG } from "./model-registry.mjs";
 import {
   applyMultiAgentSettings,
   readMultiAgentSettings,
+  subagentEligibleModels,
 } from "./multi-agent-state.mjs";
 import { readHiddenModels } from "./model-picker-state.mjs";
 import { buildNativeAliasAssignments } from "./native-alias.mjs";
-import { selectedConfiguredListedModels } from "./provider-selection.mjs";
+import { selectedConfiguredListedModels, configuredProviderIds } from "./provider-selection.mjs";
 import { assertStateOwnership } from "./state-owner.mjs";
+import { applyVisionBridge, resolveVisionEngine } from "./vision-bridge.mjs";
+import { readVisionBridgeSettings } from "./vision-bridge-state.mjs";
+import { nativeVisionEngines } from "./vision-engines.mjs";
 
 const refresh = process.argv.includes("--refresh-native");
 const bundled = process.argv.includes("--bundled-native");
@@ -408,6 +412,27 @@ function sortCatalogModels(models) {
   });
 }
 
+// Native entries carry upstream's static multi_agent_version, and upstream
+// still ships gpt-5.6-luna as "v1" even though it runs correctly on the v2
+// backend (openai/codex#35097, #36294). spawn_agent filters candidate child
+// models on that static value, so a v1 entry can never be delegated to by a v2
+// parent. applyMultiAgentSettings only reaches routed models, which is why
+// "all" mode never promoted the native slugs; apply the same opt-in here so the
+// subagent modes mean what the Settings tab says they mean.
+export function promoteNativeMultiAgent(models, settings, hidden = new Set()) {
+  const enabled = new Set(settings.enabled || []);
+  const disabled = new Set(settings.disabled || []);
+  return models.map((model) => {
+    const slug = String(model.slug);
+    if (model.visibility !== "list") return model;
+    if (hidden.has(slug) || disabled.has(slug)) return model;
+    if (settings.mode === "all" || (settings.mode === "selected" && enabled.has(slug))) {
+      return { ...model, multi_agent_version: "v2" };
+    }
+    return model;
+  });
+}
+
 export function buildMergedCatalog(native, routedModelsList, { includeNative = true } = {}) {
   const template =
     native.models.find((model) => model.slug === "gpt-5.5") ||
@@ -431,8 +456,19 @@ export function buildMergedCatalog(native, routedModelsList, { includeNative = t
 // models are republished under those slugs with their own names and reasoning
 // levels. Each aliased model keeps a hidden entry under its canonical slug so
 // routing, doctor checks, and existing configs keep resolving it.
+//
+// Only providers with a live credential may take a whitelist slot: the slot is
+// what a signed-out desktop picker offers, and a model whose provider cannot
+// authenticate would occupy it with requests that fail on the first turn. The
+// merged-catalog path filters through `selectedConfiguredListedModels()`; this
+// function keeps the same rule for the login-free path instead of trusting its
+// caller to pre-filter, so no future call site can publish dead slots again.
 export function buildLoginFreeCatalog(native, routedModelsList) {
-  const assignments = buildNativeAliasAssignments(native.models, routedModelsList);
+  const configured = new Set(configuredProviderIds());
+  const usableModels = routedModelsList.filter(
+    (model) => !model.provider || configured.has(model.provider),
+  );
+  const assignments = buildNativeAliasAssignments(native.models, usableModels);
   const aliasedSlugs = new Set(assignments.map(({ model }) => model.slug));
   const aliases = Object.fromEntries(
     assignments.map(({ nativeModel, model }) => [nativeModel.slug, model.slug]),
@@ -443,7 +479,7 @@ export function buildLoginFreeCatalog(native, routedModelsList) {
       slug: nativeModel.slug,
       priority: nativeModel.priority,
     })),
-    ...buildMergedCatalog(native, routedModelsList, { includeNative: false }).map(
+    ...buildMergedCatalog(native, usableModels, { includeNative: false }).map(
       (model) =>
         aliasedSlugs.has(model.slug) ? { ...model, visibility: "hide" } : model,
     ),
@@ -458,9 +494,11 @@ function main() {
   assertStateOwnership("write the Codex model catalog");
   const userSlugs = new Set(readUserModels().map((model) => String(model.slug)));
   const hiddenModels = readHiddenModels();
+  const selectedModels = selectedConfiguredListedModels();
+  const multiAgentSettings = readMultiAgentSettings();
   const allMultiAgentModels = applyMultiAgentSettings(
-    selectedConfiguredListedModels(),
-    readMultiAgentSettings(),
+    selectedModels,
+    multiAgentSettings,
     hiddenModels,
   );
   // Clamp before announcements and agent sync so every surface Codex reads —
@@ -472,7 +510,11 @@ function main() {
     userSlugs,
     Date.now(),
   );
-  const native = nativeCatalog();
+  const captured = nativeCatalog();
+  const native = {
+    ...captured,
+    models: promoteNativeMultiAgent(captured.models, multiAgentSettings, hiddenModels),
+  };
   // Dropping every native model is destructive, so only do it when Codex
   // actually answered that the session is signed out. If the probe could not
   // run at all we do not know, and guessing "signed out" is what silently
@@ -487,10 +529,34 @@ function main() {
   }
   const openaiAuthenticated = auth.authenticated;
   const loginFree = loginFreeConfigured();
+  // Advertised last, and only while an engine actually resolves: Codex gates
+  // the paste on `input_modalities`, so a bridge that has gone away must take
+  // the advertisement with it rather than leaving a paste that 400s. This runs
+  // after the announcement pass so a bridged model never announces "image
+  // input" as though it grew the capability itself.
+  //
+  // Native models join the candidate list only once the auth probe says the
+  // session can actually spend them. A login-free install routes every turn
+  // away from the native backend, so nominating a native engine there would
+  // promise image input the router cannot deliver.
+  // The one shared rule (`src/vision-engines.mjs`). This is the only caller
+  // that can name the gate from the probe itself: it is the process that runs
+  // the probe, and it is building the merged catalog every other caller reads
+  // the verdict back out of.
+  const nativeEngines = nativeVisionEngines({
+    models: captured.models,
+    hidden: hiddenModels,
+    authorized: openaiAuthenticated && !loginFree,
+  });
+  const visionEngine = resolveVisionEngine(
+    () => [...selectedModels, ...nativeEngines],
+    readVisionBridgeSettings(),
+  );
+  const catalogModels = applyVisionBridge(routedModels, visionEngine);
   const { models: merged, aliases } = loginFree
-    ? buildLoginFreeCatalog(native, routedModels)
+    ? buildLoginFreeCatalog(native, catalogModels)
     : {
-        models: buildMergedCatalog(native, routedModels, {
+        models: buildMergedCatalog(native, catalogModels, {
           includeNative: openaiAuthenticated,
         }),
         aliases: {},
@@ -504,13 +570,24 @@ function main() {
   });
   atomicJson(NATIVE_ALIAS_PATH, { version: 1, aliases });
   writeAnnouncedAt(announcedAt);
-  const routedAgents = syncRoutedCodexAgents(routedModels);
+  // Codex offers every file in the agents directory by name, so a model
+  // switched off as a subagent needs its definition gone as well. Without
+  // this, switching it off changes multi_agent_version and nothing else, and
+  // the model still answers when it is spawned by name.
+  const routedAgents = syncRoutedCodexAgents(
+    subagentEligibleModels(routedModels, multiAgentSettings),
+  );
   process.stdout.write(
     `${JSON.stringify({
       path: MERGED_CATALOG_PATH,
       models: merged.length,
       routed_models: routedModels.length,
-      routed_agents: routedAgents.length,
+      routed_agents: routedAgents.written.length,
+      removed_agents: routedAgents.removed.length,
+      vision_bridge_engine: visionEngine?.slug || null,
+      vision_bridged_models: catalogModels.filter(
+        (model) => model.visionBridgeEngine !== undefined,
+      ).length,
       native_models: !loginFree && openaiAuthenticated
         ? merged.filter((model) => !MODEL_BY_SLUG.has(String(model.slug))).length
         : 0,

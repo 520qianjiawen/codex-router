@@ -192,6 +192,33 @@ curation (conservative defaults otherwise), are skipped automatically if a
 later registry update ships the same model, and are removed by re-running
 the command and deselecting them.
 
+## A session ran past the context window instead of compacting
+
+Codex decides when to auto-compact from the `input_tokens` each response
+reports. A provider that answers a large prompt with `input_tokens: 0` leaves
+that counter flat: the context bar looks nearly empty right up to the point the
+provider itself rejects the turn for exceeding its context length.
+
+The router substitutes an estimate of the prompt it just sent when — and only
+when — a routed response explicitly reports zero prompt tokens for a request
+that plainly carried a large one. The estimate errs high, because compaction
+sits below the provider's hard limit and an estimate that lands too low would
+let the turn die anyway.
+
+Substitutions are recorded rather than hidden. The usage event keeps the
+provider's own numbers and adds `estimatedInputTokens`, and the router logs
+`estimated-input-tokens=<count>` on that turn, so a run of them means the
+provider is still not reporting. Count them in the state directory's
+`usage-events.jsonl`:
+
+```sh
+grep -c estimatedInputTokens "$CODEX_HOME/codex-router/usage-events.jsonl"
+```
+
+Report zero-token responses to the provider; only they can fix the source. To
+see the provider's own numbers in Codex again, set
+`CODEX_ROUTER_ZERO_INPUT_ESTIMATE=0` in the service environment.
+
 ## Native GPT models stopped working
 
 Temporarily return Codex to its native base URL:
@@ -247,6 +274,11 @@ Get-ScheduledTask -TaskName "Codex Router"
 ./codex-router.ps1 doctor --fix
 ```
 
+The task runs `start-codex-router-hidden.vbs` from the state directory under
+`wscript.exe`, which starts `start-codex-router.cmd` without a console window,
+so a missing window is not a sign that the router is down. Read `router.log` in
+the same directory for its output.
+
 Keep the repository at the absolute path used during installation. Rerun setup
 from the new path if it was moved.
 
@@ -259,8 +291,11 @@ Manual rollback is:
 ./bin/rollback
 ```
 
-Updates refuse dirty checkouts, non-`main` development branches, and unknown
-origin URLs rather than overwriting local work.
+Updates refuse edits to tracked files, non-`main` development branches, and
+unknown origin URLs rather than overwriting local work. Untracked files never
+block an update; the refusal names the tracked files that do, and re-running the
+same command with `--force` discards those edits without deleting anything
+untracked.
 
 Legacy migration rollback is separate:
 

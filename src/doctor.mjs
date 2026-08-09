@@ -11,7 +11,10 @@ import { detectLegacyInstallations } from "./legacy-migration.mjs";
 import { PROVIDERS } from "./model-registry.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
-import { readMultiAgentSettings } from "./multi-agent-state.mjs";
+import {
+  readMultiAgentSettings,
+  subagentEligibleModels,
+} from "./multi-agent-state.mjs";
 import { readHiddenModels } from "./model-picker-state.mjs";
 import { serviceFollowsHostApps } from "./presence-state.mjs";
 import { waitForRouterHealth } from "./router-health.mjs";
@@ -33,10 +36,64 @@ import {
   providerSelectionStatus,
   selectedConfiguredListedModels,
 } from "./provider-selection.mjs";
+import { resolveVisionEngine } from "./vision-bridge.mjs";
+import {
+  readVisionBridgeSettings,
+  visionBridgeConfigured,
+} from "./vision-bridge-state.mjs";
 
 const checks = [];
 const add = (status, name, detail, fix) => checks.push({ status, name, detail, fix });
 const jsonOutput = process.argv.includes("--json");
+
+// Asks Codex to load its own configuration and returns its complaint, if any.
+// `login status` exits non-zero merely for being signed out, so the exit code
+// says nothing here; only the load-error message does.
+function configLoadComplaint(binary, spawn) {
+  try {
+    const result = spawn(binary, ["login", "status"], { encoding: "utf8", timeout: 10_000 });
+    if (result.error) return undefined;
+    return `${result.stdout || ""}\n${result.stderr || ""}`
+      .split(/\r?\n/)
+      .find((candidate) => /Error loading configuration/i.test(candidate))
+      ?.trim();
+  } catch {
+    // A binary that cannot be spawned is already reported by its own check.
+    return undefined;
+  }
+}
+
+// The desktop app and the CLI on PATH are often different builds, and they do
+// not agree on what config they accept: a key the bundled binary reads happily
+// can abort the whole load in an older `codex` on PATH, leaving the app working
+// while every terminal command fails. Both are asked, and the failing one is
+// named -- checking only one is how that split goes unnoticed.
+export function codexConfigLoadError({
+  spawn = spawnSync,
+  binaries = [findCodexBinary(), commandOnPath("codex")],
+} = {}) {
+  const seen = new Set();
+  for (const binary of binaries) {
+    if (!binary || seen.has(binary)) continue;
+    seen.add(binary);
+    const complaint = configLoadComplaint(binary, spawn);
+    if (complaint) return `${complaint} (via ${binary})`;
+  }
+  return undefined;
+}
+
+function commandOnPath(name) {
+  try {
+    return execFileSync(process.platform === "win32" ? "where.exe" : "which", [name], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .trim()
+      .split(/\r?\n/)[0];
+  } catch {
+    return undefined;
+  }
+}
 
 function readableSecret(target, validator) {
   if (!existsSync(target)) return false;
@@ -184,6 +241,19 @@ add(
   CONFIG_PATH,
   "Start Codex once, then run ./bin/doctor --fix.",
 );
+// Every other check here can pass while Codex refuses to start, because a
+// single unparseable key aborts the whole config load -- no models, native or
+// routed. Codex's own loader is the only authority on that, and its error
+// names the file, line, and column, so it is worth quoting verbatim.
+const configLoad = codexConfigLoadError();
+add(
+  configLoad ? "fail" : "ok",
+  "Codex config loads",
+  configLoad || "Codex parses its configuration",
+  configLoad
+    ? "Codex cannot start until this line is fixed or removed; the message above names the file and line."
+    : undefined,
+);
 const configMode = existsSync(CONFIG_PATH)
   ? statSync(CONFIG_PATH).mode & 0o777
   : undefined;
@@ -214,6 +284,16 @@ try {
       : "none",
     "Run ./bin/setup --guided and choose at least one provider.",
   );
+  // The router no longer refuses to serve on a selection file it cannot fully
+  // resolve, so the damage has to be reported here instead of as a 502.
+  if (selection.degraded) {
+    add(
+      "warn",
+      "Provider selection file",
+      selection.degraded,
+      "Run ./bin/setup --guided, or ./bin/providers enable PROVIDER, to rewrite the selection with this build's provider ids.",
+    );
+  }
 } catch (error) {
   add(
     "fail",
@@ -269,13 +349,63 @@ add(
     : `${requiredRoutedModels.length} routed models`,
   "Run ./bin/doctor --fix from the owning checkout, then fully quit and reopen Codex.",
 );
-const agentStatus = routedCodexAgentStatus(requiredRoutedModels);
+// "Off" is a normal state and reports ok. Enabled with no resolvable engine is
+// the broken one: Codex would keep offering the paste while nothing could read
+// it, so the catalog drops the advertisement and this says why.
+//
+// Only for an operator who actually asked, though. The bridge is now on by
+// default, so a plain text-only install reaches this branch having configured
+// nothing and having lost nothing -- images degrade exactly as they did before
+// the bridge existed. Warning there would put a yellow line on every fresh
+// DeepSeek-only install for a feature nobody switched on. It still reports what
+// is true, just at the severity the situation has.
+//
+// This check sees routed models only, so a native (ChatGPT-plan) engine is
+// invisible to it and a signed-in install may well read images fine while this
+// says nothing resolves.
+const visionSettings = readVisionBridgeSettings();
+const visionEngine = resolveVisionEngine(() => requiredRoutedModels, visionSettings);
+if (visionSettings.enabled && !visionEngine) {
+  const asked = visionBridgeConfigured();
+  add(
+    asked ? "warn" : "ok",
+    "Vision bridge",
+    visionSettings.engine
+      ? `pinned engine ${visionSettings.engine} is not an enabled model that reads images`
+      : asked
+        ? "enabled, but no enabled provider offers a model that reads images"
+        : "on by default, but no enabled provider offers a model that reads images yet",
+    "Enable a provider with a vision model, sign in to ChatGPT, or run ./bin/model-router codex control vision-bridge setup for a local reader.",
+  );
+} else if (visionEngine?.local) {
+  add(
+    "ok",
+    "Vision bridge",
+    `text-only models read images via a local model (${visionEngine.gatewayModel} at ${visionEngine.baseUrl})`,
+    "Make sure the local server is running and the model is pulled, e.g. `ollama pull " +
+      `${visionEngine.gatewayModel}\`.`,
+  );
+} else {
+  add(
+    "ok",
+    "Vision bridge",
+    visionEngine ? `text-only models read images via ${visionEngine.slug}` : "off",
+    "Run ./bin/model-router codex control vision-bridge on to let text-only models read pasted images.",
+  );
+}
+// The same list the catalog writes definitions from, so a model switched off
+// as a subagent is expected to have no definition rather than a missing one.
+const agentStatus = routedCodexAgentStatus(
+  subagentEligibleModels(requiredRoutedModels, readMultiAgentSettings()),
+);
 add(
   agentStatus.ok ? "ok" : "fail",
   "Routed model agents",
   agentStatus.ok
     ? `${agentStatus.current} current definitions in ${CODEX_AGENTS_DIR}`
-    : `${agentStatus.current} of ${agentStatus.expected} current definitions in ${CODEX_AGENTS_DIR}`,
+    : agentStatus.extra.length && agentStatus.current === agentStatus.expected
+      ? `${agentStatus.extra.length} definitions in ${CODEX_AGENTS_DIR} for models that are switched off as subagents`
+      : `${agentStatus.current} of ${agentStatus.expected} current definitions in ${CODEX_AGENTS_DIR}`,
   "Run ./bin/doctor --fix, then fully quit Codex, reopen it, and create a new task.",
 );
 add(
@@ -375,13 +505,18 @@ for (const provider of PROVIDERS.values()) {
   if (provider.kind !== "openai-compatible") continue;
   const status = credentialStatus(provider, { persistent: true });
   const session = cliSessionDescriptor(provider);
+  // A keyless provider has no key to name, so calling its row a "key" and
+  // telling the operator to run `provider-key` sends them at a command that
+  // refuses them. What decides whether it works is its local runtime.
   add(
     status.configured ? "ok" : selection.providers.includes(provider.id) ? "fail" : "warn",
-    `${provider.displayName} key`,
+    provider.keyless ? `${provider.displayName} endpoint` : `${provider.displayName} key`,
     status.configured ? status.source : "not configured",
-    session
-      ? `Run ${session.loginCommand}, or ./bin/provider-key ${provider.id} set.`
-      : `Run ./bin/provider-key ${provider.id} set.`,
+    provider.keyless
+      ? "Start Ollama, then run ./bin/control local-models list."
+      : session
+        ? `Run ${session.loginCommand}, or ./bin/provider-key ${provider.id} set.`
+        : `Run ./bin/provider-key ${provider.id} set.`,
   );
   // A credential that resolves says nothing about whether the account's plan
   // may use the API. Only warn once the provider is actually selected, so the
@@ -396,8 +531,14 @@ for (const provider of PROVIDERS.values()) {
     add(
       "warn",
       `${provider.displayName} models`,
-      "key stored but no models curated; the picker stays empty",
-      `Run ./bin/curate-models ${provider.id} in an interactive terminal.`,
+      provider.keyless
+        ? "no local models are checked, so the picker stays empty"
+        : "key stored but no models curated; the picker stays empty",
+      // Local models are downloaded and checked, never curated from a remote
+      // catalog, so naming `curate-models` here points at the wrong command.
+      provider.keyless
+        ? `Download one with ./bin/control local-models install <tag>, then check it with ./bin/control local-models set <tag> on.`
+        : `Run ./bin/curate-models ${provider.id} in an interactive terminal.`,
     );
   }
 }

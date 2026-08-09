@@ -8,6 +8,7 @@
       "ownedBy": "clinepass",
       "baseUrl": "https://api.cline.bot/api/v1",
       "baseUrlEnv": "CLINE_API_BASE_URL",
+      "planNote": "Requires an active ClinePass subscription.",
       "credential": {
         "environment": [
           "CLINE_API_KEY"

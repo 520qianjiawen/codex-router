@@ -4,6 +4,19 @@ import { StringDecoder } from "node:string_decoder";
 export const COLLABORATION_NAMESPACE = "collaboration";
 export const COLLABORATION_TOOL_DELIMITER = "__";
 
+// Codex dispatches collaboration calls through the namespace runtime. Some
+// upstream models emit the plain tool name instead of the flattened
+// `collaboration__*` form, and Codex rejects those as unsupported unless the
+// router restores the namespace.
+const COLLABORATION_TOOLS = new Set([
+  "spawn_agent",
+  "wait_agent",
+  "send_message",
+  "followup_task",
+  "interrupt_agent",
+  "list_agents",
+]);
+
 function flattenToolName(namespace, name) {
   return `${namespace}${COLLABORATION_TOOL_DELIMITER}${name}`;
 }
@@ -41,19 +54,52 @@ export function flattenCollaborationNamespaceTools(tools) {
   return { tools: flattened, flattened: changed };
 }
 
+// Flattening only the tool list leaves the model reading two different names
+// for the same tool: `collaboration__spawn_agent` in its tools, but a bare
+// `spawn_agent` in its own call history, because LiteLLM's bridge drops the
+// `namespace` field when it converts stored function calls to Chat Completions
+// tool calls. The model imitates the history, emits the bare name, nothing
+// rewrites it, and Codex answers `unsupported call: spawn_agent` — permanently,
+// since every failure adds another bare example. Rename the history to match
+// the flattened tool list so both surfaces agree.
+export function flattenCollaborationHistory(input) {
+  if (!Array.isArray(input)) return input;
+  return input.map((item) => {
+    if (item?.type !== "function_call") return item;
+    if (item.namespace !== COLLABORATION_NAMESPACE) return item;
+    if (typeof item.name !== "string" || splitFlatToolName(item.name)) return item;
+    const { namespace, ...rest } = item;
+    return { ...rest, name: flattenToolName(COLLABORATION_NAMESPACE, item.name) };
+  });
+}
+
 function rewriteCollaborationFunctionCall(event) {
   const item = event?.item;
   if (!item || item.type !== "function_call") return undefined;
   const parsed = splitFlatToolName(item.name);
-  if (!parsed) return undefined;
-  return {
-    ...event,
-    item: {
-      ...item,
-      name: parsed.name,
-      namespace: parsed.namespace,
-    },
-  };
+  if (parsed) {
+    return {
+      ...event,
+      item: {
+        ...item,
+        name: parsed.name,
+        namespace: parsed.namespace,
+      },
+    };
+  }
+  // The model saw flattened `collaboration__*` tools but may still return the
+  // bare name. Restore the namespace so Codex's collaboration runtime accepts
+  // the call; without it the runtime answers "unsupported call".
+  if (COLLABORATION_TOOLS.has(item.name) && item.namespace === undefined) {
+    return {
+      ...event,
+      item: {
+        ...item,
+        namespace: COLLABORATION_NAMESPACE,
+      },
+    };
+  }
+  return undefined;
 }
 
 // Rewrites LiteLLM's flattened `collaboration__*` function calls back to the

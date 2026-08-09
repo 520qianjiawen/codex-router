@@ -5,14 +5,17 @@ import {
   brotliDecompressSync,
   gunzipSync,
   inflateSync,
+  zstdCompress,
   zstdDecompressSync,
 } from "node:zlib";
+import { promisify } from "node:util";
 
 import {
   assertCallerSecret,
   authenticatedRoute,
 } from "./caller-auth.mjs";
 import {
+  endStreamedResponse,
   HOP_BY_HOP_HEADERS,
   httpErrorStatus,
   pipeResponse,
@@ -29,15 +32,39 @@ import { MODEL_BY_SLUG, PROVIDERS, providerForModel } from "./model-registry.mjs
 import { createHealthCache } from "./health-cache.mjs";
 import { readNativeAliases } from "./native-alias.mjs";
 import { readNativeRedirect } from "./native-redirect.mjs";
-import { canonicalProviderId, readProviderSelection } from "./provider-selection.mjs";
-import { ResponseUsageTransform } from "./response-usage.mjs";
+import {
+  canonicalProviderId,
+  readProviderSelection,
+  selectedConfiguredListedModels,
+} from "./provider-selection.mjs";
+import {
+  estimateInputTokens,
+  ResponseUsageTransform,
+  tokenUsageFromPayload,
+} from "./response-usage.mjs";
+import { fetchWithRetry } from "./upstream-retry.mjs";
 import {
   CollaborationToolCallTransform,
+  flattenCollaborationHistory,
   flattenCollaborationNamespaceTools,
 } from "./collaboration-namespace.mjs";
 import { activityMetadataFromHeaders } from "./codex-session-names.mjs";
 import { translateGatewayError } from "./error-translation.mjs";
 import { recordUsageEvent } from "./usage-events.mjs";
+import {
+  describeImage,
+  evidenceCache,
+  hasNativeSession,
+  inputHasImage,
+  nativeAccountKey,
+  resolveVisionEngines,
+  stripImages,
+  substituteImages,
+  supportsImageInput,
+} from "./vision-bridge.mjs";
+import { readHiddenModels } from "./model-picker-state.mjs";
+import { readVisionBridgeSettings } from "./vision-bridge-state.mjs";
+import { installedNativeVisionEngines } from "./vision-engines.mjs";
 import { VERSION } from "./version.mjs";
 
 const LISTEN_HOST =
@@ -72,6 +99,11 @@ const INTERNAL_KEY =
 const CALLER_KEY = process.env.CODEX_ROUTER_CALLER_KEY;
 const QUIET =
   process.env.CODEX_ROUTER_QUIET === "1" || process.env.KIMI_PROXY_QUIET === "1";
+// Kill switch for the zero-prompt-token substitution (#95). It is on because a
+// provider that reports no prompt tokens breaks compaction outright, but an
+// operator who would rather see the provider's own numbers can turn it off
+// without downgrading the router.
+const ZERO_INPUT_ESTIMATE = process.env.CODEX_ROUTER_ZERO_INPUT_ESTIMATE !== "0";
 const ERROR_STATUS_DURATION_MS = 8_000;
 const configuredDecodedBodyBytes = Number(
   process.env.MODEL_ROUTER_MAX_DECODED_BODY_BYTES ||
@@ -92,6 +124,7 @@ const NATIVE_IMAGE_PATHS = new Set([
   "/v1/images/edits",
   "/v1/images/generations",
 ]);
+const NATIVE_SEARCH_PATHS = new Set(["/alpha/search", "/v1/alpha/search"]);
 const AGENT_PAYLOAD_RELAY_TOOL = "relay_external_agent_payload";
 const AGENT_PAYLOAD_CACHE_TTL_MS = 15 * 60 * 1_000;
 const AGENT_PAYLOAD_CACHE_MAX_BYTES = 8 * 1024 * 1024;
@@ -261,6 +294,32 @@ function decodeBody(body, contentEncoding) {
   return decoded;
 }
 
+// Codex compresses its own request bodies with zstd, and the Codex backend
+// accepts them. The router has to inflate one to route it, and a decoded body
+// cannot travel under the caller's Content-Encoding, so every turn used to go
+// up the link as full inflated JSON: 2.6x more bytes than the client sent,
+// measured across a week of real turns. Compressing it again costs about 10ms
+// off the event loop on a 2 MB turn. Small bodies are left alone, where a TLS
+// record or two is the whole payload and compression buys nothing.
+const MIN_COMPRESSED_BODY_BYTES = 16 * 1024;
+const compressBody = promisify(zstdCompress);
+
+async function compressedNativeBody(body, headers) {
+  if (body.length < MIN_COMPRESSED_BODY_BYTES) return body;
+  try {
+    const compressed = await compressBody(body);
+    // Incompressible payloads (base64 image data, mostly) would only pay the
+    // decode cost on the far side for nothing.
+    if (compressed.length >= body.length) return body;
+    headers["Content-Encoding"] = "zstd";
+    return compressed;
+  } catch {
+    // Compression is an optimization, never a requirement: the plain body is
+    // always a valid request, so a zstd failure must not fail the turn.
+    return body;
+  }
+}
+
 function nativeHeaders(request) {
   const headers = {
     "Content-Type": "application/json",
@@ -287,6 +346,41 @@ function routedHeaders() {
 function nativeTarget(pathname, search) {
   const withoutV1 = pathname.replace(/^\/v1(?=\/|$)/, "");
   return `${NATIVE_BASE}${withoutV1}${search}`;
+}
+
+// The safety line for an upstream retry: has the caller seen anything yet?
+//
+// `pipeResponse` assigns `response.statusCode` and calls `copyResponseHeaders`,
+// which only stages values with `setHeader` -- neither touches the socket.
+// Node flushes the head on the first body write, or on `end()` for a bodyless
+// upstream, and that is exactly when `headersSent` flips. So `headersSent` is
+// "at least the status line has been committed", which is the condition that
+// makes a retry unsafe: replaying then would append a second response to a
+// stream the client is already reading.
+//
+// `writableEnded`/`destroyed` cover the answers that never set headers through
+// this path (an early `writeJson`, a client that hung up). The structural
+// guarantee is stronger than the predicate: every retry happens inside
+// `fetchWithRetry`, which returns before any of this function's callers touch
+// `response` at all. This is the check that would notice if that ever stopped
+// being true.
+function nothingRelayed(response) {
+  return !response.headersSent && !response.writableEnded && !response.destroyed;
+}
+
+// Never gated on QUIET. A production LaunchAgent hard-sets `CODEX_ROUTER_QUIET=1`,
+// which suppresses the per-request status line, and a silent retry is worse
+// than no retry: a flaky upstream would look like an upstream that got better.
+// Response bodies are never logged, so a retry records the status or the
+// transport error's own name and code and nothing else.
+function logUpstreamRetry({ attempt, retries, status, error, delayMs }, model, routePath) {
+  const cause = status
+    ? `status=${status}`
+    : `error=${error?.name || "Error"}${error?.cause?.code ? `/${error.cause.code}` : ""}`;
+  console.error(
+    `[codex-router] native upstream retry ${attempt}/${retries} ${cause} ` +
+      `model=${model || "unknown"} path=${routePath} delayMs=${delayMs}`,
+  );
 }
 
 function catalogModels() {
@@ -424,6 +518,17 @@ function nativeAgentRelayModel() {
   }
 }
 
+// Every `encrypted_content` value OpenAI issues is a Fernet token: the version
+// byte 0x80 followed by a big-endian timestamp whose leading bytes stay zero
+// for the rest of the century, which base64url-encodes to the fixed `gAAAAA`
+// prefix over the base64url alphabet with no whitespace. This is the whole
+// detection predicate -- the plaintext is never inspected.
+const NATIVE_ENCRYPTED_TOKEN = /^gAAAAA[A-Za-z0-9_-]+={0,2}$/;
+
+function isNativeEncryptedToken(value) {
+  return typeof value === "string" && NATIVE_ENCRYPTED_TOKEN.test(value);
+}
+
 function encryptedAgentPayload(item) {
   if (!Array.isArray(item?.content)) return undefined;
   const visibleText = item.content
@@ -445,7 +550,7 @@ function encryptedAgentPayload(item) {
   if (!encrypted) return undefined;
   return {
     content: encrypted.encrypted_content,
-    native: /^gAAAAA[A-Za-z0-9_-]+={0,2}$/.test(encrypted.encrypted_content),
+    native: isNativeEncryptedToken(encrypted.encrypted_content),
   };
 }
 
@@ -656,6 +761,201 @@ async function normalizeRoutedAgentInput(request, input, signal) {
   return output;
 }
 
+// Which bill a bridged read lands on. A registry engine names its own provider;
+// a native engine spends the signed-in ChatGPT plan, which the tray already
+// calls `openai`; a local engine spends nothing but electricity.
+function visionEngineProvider(engine) {
+  if (engine.native) return "openai";
+  if (engine.local) return "local";
+  return engine.provider || "unknown";
+}
+
+// The cache only stops a *finished* read from being bought twice. Codex sends
+// concurrent requests, and one turn can carry the same image more than once, so
+// two reads of one screenshot were routinely in flight together -- both missing
+// the cache because neither had returned yet, and the engine charged twice for
+// one transcript. Seen in production: two overlapping reads of a single pasted
+// image, three seconds apart. Waiters share the first read's outcome, failure
+// included, because retrying an image the engine just refused buys the same
+// refusal again.
+const visionReadsInFlight = new Map();
+
+// Codex resends the whole conversation every turn, so the same screenshot
+// arrives again on every follow-up. Without the hash cache a five-turn
+// conversation about one image would buy the same transcript five times.
+async function visionEvidenceFor(url, engine, request, effort, question = "", retryDelaysMs) {
+  // A native engine is spent on the caller's own ChatGPT session, so it can
+  // only be reached with the headers this very request arrived with. The router
+  // never stores those.
+  const nativeCall = request
+    ? { baseUrl: NATIVE_BASE, headers: nativeHeaders(request) }
+    : undefined;
+  // For a native engine the account is part of the identity of a transcript
+  // too. That call is authorized by the caller's live session, and a cache hit
+  // skips the call along with every re-check that this session may still spend
+  // this model. Landing on an entry takes the identical image bytes, so this is
+  // an entitlement boundary rather than a confidentiality one -- but it is
+  // still a boundary. Gateway and local engines keep the key they had: neither
+  // is scoped to a caller.
+  const account = engine.native ? nativeAccountKey(nativeCall?.headers) : "";
+  // The effort is part of the identity of a transcript: raising it and pasting
+  // the same screenshot again must re-read it, not replay the cheaper pass.
+  // The question is part of that identity too -- the same screenshot read for
+  // "what is the total?" and for "which rows are overdue?" are different
+  // readings -- but the evidence cache keys on the question itself, so folding
+  // it into this string as well would only key it twice.
+  const key = `${engine.slug}\u0000${effort || "default"}\u0000${account}\u0000${url}`;
+  const cached = evidenceCache.get(key, question);
+  // A cache hit buys nothing, so it records nothing: the events file is a
+  // record of spend, not of calls the router avoided.
+  if (cached !== undefined) return cached;
+  const readKey = `${key} ${question}`;
+  const running = visionReadsInFlight.get(readKey);
+  if (running) return running;
+  // Deliberately not tied to the caller's AbortSignal. The read is shared, so
+  // one client's cancellation would abort a read another live request is
+  // waiting on and cost it an image it could have had. `describeImage` bounds
+  // itself with its own timeout, and an abandoned read still fills the cache
+  // for the retry that usually follows.
+  const read = readVisionEvidence({ url, engine, nativeCall, effort, question, key, retryDelaysMs });
+  visionReadsInFlight.set(readKey, read);
+  try {
+    return await read;
+  } finally {
+    visionReadsInFlight.delete(readKey);
+  }
+}
+
+// A bridged read is a request the operator never asked for by name, billed to
+// whichever engine won the ranking. It rides the same usage-events pipeline
+// every routed turn uses, so `usage-events.jsonl` and `control probe` show
+// that a vision call happened, against which model, and whether it worked --
+// otherwise the very first read on an install that enabled nothing would
+// leave no trace at all. Token counts are not available here (`describeImage`
+// returns the transcript, not the envelope), so the event carries what it
+// honestly has.
+async function readVisionEvidence({ url, engine, nativeCall, effort, question, key, retryDelaysMs }) {
+  const startedAt = Date.now();
+  let status = 0;
+  try {
+    const text = await describeImage({
+      engine,
+      imageUrl: url,
+      gatewayBase: GATEWAY_BASE,
+      headers: routedHeaders(),
+      nativeCall,
+      effort,
+      question,
+      ...(retryDelaysMs ? { retryDelaysMs } : {}),
+    });
+    status = 200;
+    return evidenceCache.set(key, question, text);
+  } finally {
+    recordUsageEvent({
+      model: engine.slug,
+      provider: visionEngineProvider(engine),
+      status,
+      durationMs: Date.now() - startedAt,
+    });
+  }
+}
+
+// Text-only models get their images read by a vision-capable model the
+// operator already enabled. Turns without images cost nothing here, and a
+// model that reads images itself is never touched.
+async function bridgeVisionInput(input, route, request) {
+  if (!inputHasImage(input)) return input;
+  if (supportsImageInput(route)) return input;
+  if (route.visionBridge === false) {
+    return stripImages(input, `${route.displayName || route.slug} cannot read images`).input;
+  }
+  const settings = readVisionBridgeSettings();
+  // Nothing below is evaluated unless `resolveVisionEngines` is actually going to
+  // rank candidates, which it is not when the bridge is off and not when the
+  // engine is pinned to `local`. Both of those used to pay for this list anyway:
+  // `selectedConfiguredListedModels()` probes every provider's credential
+  // synchronously, spawning `/usr/bin/security` once per provider per keychain
+  // service on macOS, and this runs inside the request handler -- so a bridge
+  // that was switched off still stalled the event loop for ~250ms on every
+  // pasted image, for every other in-flight request as well.
+  //
+  // The set itself is unchanged. It is still exactly the selected, credentialed,
+  // listed models, plus native candidates that need two things at once, neither
+  // sufficient alone. The shared helper (`src/vision-engines.mjs`) applies the
+  // same auth gate the catalog build and the tray apply -- this path used to
+  // read the capture off disk with no gate at all. But every on-disk artifact is
+  // reused across a failed probe by design, so a sign-out leaves them naming an
+  // engine nothing can call. The caller's live session is the evidence that
+  // cannot be stale, so it has to hold too: without one there is no native
+  // engine to nominate, and a pin naming one stops resolving on the very next
+  // paste rather than at the next catalog rebuild.
+  const engines = resolveVisionEngines(
+    () => [
+      ...selectedConfiguredListedModels(),
+      ...(request && hasNativeSession(nativeHeaders(request))
+        ? installedNativeVisionEngines({ hidden: readHiddenModels() })
+        : []),
+    ],
+    settings,
+  );
+  if (!engines.length) {
+    // The catalog only advertises image input while an engine resolves, so
+    // this is the race where one went away mid-conversation, or a client that
+    // attached an image regardless.
+    return stripImages(
+      input,
+      "the router's vision bridge is off or has no enabled vision model to read it with",
+    ).input;
+  }
+  const { effort } = settings;
+  let fellBack = 0;
+  // Each engine in turn until one reads the image. The first is the operator's
+  // choice and answers nearly always; the rest exist so a lapsed session or a
+  // provider outage costs a slower read rather than the whole image.
+  const readWithAnyEngine = async (url, question) => {
+    let lastError;
+    for (const [index, engine] of engines.entries()) {
+      // Retry the engine only when there is nothing else to try. Waiting out a
+      // 250ms + 1s ladder against an endpoint that is down, when a working
+      // engine is sitting right behind it, is how a fallback that works turns
+      // into a paste that takes half a minute -- measured at 30-52s before this
+      // line existed. Another provider beats another attempt.
+      const last = index === engines.length - 1;
+      try {
+        const text = await visionEvidenceFor(
+          url,
+          engine,
+          request,
+          effort,
+          question,
+          last ? undefined : [],
+        );
+        if (index) fellBack += 1;
+        return { text, engineName: engine.displayName || engine.slug };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    // Every engine refused, so the turn says what the last one said -- the
+    // operator's own engine is named first in the log line above it.
+    throw lastError;
+  };
+  const result = await substituteImages(input, (url, _ordinal, question) =>
+    readWithAnyEngine(url, question),
+  );
+  // Never gated on QUIET, for the same reason the retry line is not: a
+  // production LaunchAgent hard-sets `CODEX_ROUTER_QUIET=1`, and this is the
+  // one line that says the router spent an engine's quota on a paste nobody
+  // named. Silent automatic spending is the failure mode; the log carries a
+  // model, an engine, and counts -- never a transcript.
+  console.error(
+    `[codex-router] vision-bridge model=${route.slug} engine=${engines[0].slug} ` +
+      `images=${result.images} described=${result.described} failed=${result.failed}` +
+      (fellBack ? ` fellBack=${fellBack}` : ""),
+  );
+  return result.input;
+}
+
 // OpenAI-issued reasoning `encrypted_content` is an opaque token (Fernet-style,
 // e.g. "gAAAAAB...") with no whitespace. Some local Responses providers (notably
 // Ollama) mimic the reasoning-item shape but fill `encrypted_content` with the
@@ -675,11 +975,66 @@ function sanitizeReasoningForNative(item) {
   return rest;
 }
 
+// The mirror of normalizeRoutedAgentInput. When the parent agent is routed, its
+// turn never touches the native backend, so Codex has no opaque ciphertext to
+// put in a delegated task and stores the payload as plain text under
+// `encrypted_content`. A native child replays that item to OpenAI, which
+// rejects the whole request with "Encrypted function output content could not
+// be decrypted or decoded" and the subagent dies before returning an answer.
+// Inline the payload as ordinary text so the native child can read it.
+//
+// Codex renders every handoff between agents as an `agent_message`, whose
+// content schema accepts only `input_text`, `input_image`, and
+// `encrypted_content` -- so `output_text` is not an option, and the readable
+// handoff has nowhere else to live. Matching the collaboration envelope covers
+// only the four `Message Type:` headers whose visible text ends at `Payload:`;
+// any other rendering reached OpenAI unchanged and failed replay and
+// `/responses/compact` alike, so the conversation could neither continue nor
+// compact. Normalize at the schema level instead.
+//
+// Classify on the ciphertext format alone (`isNativeEncryptedToken`), never on
+// what the plaintext looks like. A value that fails that shape is one the
+// native backend would reject anyway, so rewriting it replaces a certain
+// failure; a value that passes is forwarded byte-identical. Keying off the
+// stored value rather than a router-written sentinel is deliberate: the router
+// never authors these items -- Codex does, from the routed model's
+// collaboration tool call -- so there is no write site to mark, and a marker
+// would in any case abandon the already-broken conversations this recovers.
+function normalizeAgentMessageForNative(item) {
+  if (item?.type !== "agent_message" || !Array.isArray(item.content)) return item;
+  let changed = false;
+  const content = item.content.map((part) => {
+    if (part?.type !== "encrypted_content") return part;
+    const value = part.encrypted_content;
+    if (typeof value !== "string" || value.length === 0) return part;
+    if (isNativeEncryptedToken(value)) return part;
+    changed = true;
+    return { type: "input_text", text: value };
+  });
+  return changed ? { ...item, content } : item;
+}
+
+function sanitizeCollaborationForNative(item) {
+  const normalized = normalizeAgentMessageForNative(item);
+  if (normalized !== item) return normalized;
+  // Anything outside an `agent_message` is only rewritten when it carries a
+  // recognizable collaboration envelope, which is where the payload belongs.
+  const payload = encryptedAgentPayload(item);
+  if (!payload || payload.native) return item;
+  return {
+    ...item,
+    content: [
+      ...item.content.filter((part) => part?.type !== "encrypted_content"),
+      { type: "input_text", text: payload.content },
+    ],
+  };
+}
+
 function normalizeNativeInput(input) {
   if (!Array.isArray(input)) return input;
   return input.map((item) => {
     if (item?.type === "reasoning") return sanitizeReasoningForNative(item);
-    if (item?.type !== "compaction") return item;
+    if (item?.type !== "compaction") return sanitizeCollaborationForNative(item);
     const summary = decodeSummary(item.encrypted_content);
     return summary === undefined
       ? item
@@ -750,18 +1105,31 @@ function extractResponseText(payload) {
   return text.join("\n");
 }
 
-async function summarize(payload, route, signal) {
+async function summarize(request, payload, route, signal) {
   const originalInput = Array.isArray(payload.input) ? payload.input : [];
+  // Compaction replays the whole conversation, so any image still in it would
+  // reach the text-only model unbridged and fail the compaction rather than
+  // the turn. The evidence is already cached from the turn that pasted it.
+  //
+  // It replays the collaboration items too, so the agent-payload resolution a
+  // routed turn performs has to happen here as well -- otherwise a compaction
+  // inside a `/goal` or subagent session summarizes opaque payloads. The relay
+  // is cached by ciphertext, so a conversation whose turns already resolved
+  // costs nothing extra here.
+  const bridged = await bridgeVisionInput(
+    await normalizeRoutedAgentInput(request, originalInput, signal),
+    route,
+    request,
+  );
   const body = {
     ...payload,
     model: route.gatewayModel,
     stream: false,
+    // An empty tool list already disables tool use on every forwarder, and
+    // xAI rejects tool_choice "none" paired with it, so the field is omitted
+    // rather than sent redundantly.
     tools: [],
-    tool_choice: "none",
-    input: [
-      ...normalizeRoutedInput(originalInput),
-      messageItem(COMPACT_PROMPT),
-    ],
+    input: [...bridged, messageItem(COMPACT_PROMPT)],
   };
   delete body.previous_response_id;
   delete body.client_metadata;
@@ -776,8 +1144,15 @@ async function summarize(payload, route, signal) {
     return { ok: false, status: 502, payload: { error: { message: "Compact response is too large." } } };
   }
   const parsed = JSON.parse(bytes.toString("utf8"));
-  if (!upstream.ok) return { ok: false, status: upstream.status, payload: parsed };
-  return { ok: true, summary: extractResponseText(parsed), input: originalInput };
+  // Compaction is a plain non-streaming call, so the usage block (when the
+  // provider sends one) is already in hand. `tokenUsageFromPayload` returns
+  // undefined when it is absent, and `recordUsageEvent` then omits the token
+  // fields entirely rather than metering an invented zero.
+  const usage = tokenUsageFromPayload(parsed);
+  if (!upstream.ok) {
+    return { ok: false, status: upstream.status, payload: parsed, usage };
+  }
+  return { ok: true, summary: extractResponseText(parsed), input: originalInput, usage };
 }
 
 function compactionSnapshot(model, item, status = "completed") {
@@ -818,11 +1193,13 @@ function writeCompactionSse(response, model, summary) {
   response.end("data: [DONE]\n\n");
 }
 
-async function handleRoutedCompaction(response, payload, route, signal, v2) {
-  const result = await summarize(payload, route, signal);
+// Returns what the request path needs to meter and log the compaction, so a
+// routed compaction leaves the same telemetry trail as any other routed turn.
+async function handleRoutedCompaction(request, response, payload, route, signal, v2) {
+  const result = await summarize(request, payload, route, signal);
   if (!result.ok) {
     writeJson(response, result.status, result.payload);
-    return;
+    return { status: result.status, usage: result.usage };
   }
   if (v2) {
     if (payload.stream === false) {
@@ -835,9 +1212,10 @@ async function handleRoutedCompaction(response, payload, route, signal, v2) {
     } else {
       writeCompactionSse(response, payload.model, result.summary);
     }
-    return;
+    return { status: 200, usage: result.usage };
   }
   writeJson(response, 200, { output: compactOutput(result.input, result.summary) });
+  return { status: 200, usage: result.usage };
 }
 
 async function handleModels(response) {
@@ -941,7 +1319,29 @@ async function handleResponses(request, response, requestUrl) {
     });
 
     if (route && (compactV1 || compactV2)) {
-      await handleRoutedCompaction(response, payload, route, controller.signal, compactV2);
+      const compaction = await handleRoutedCompaction(
+        request,
+        response,
+        payload,
+        route,
+        controller.signal,
+        compactV2,
+      );
+      // Compaction used to return here without metering or logging, so neither
+      // a successful nor a failed one appeared anywhere in the router's own
+      // telemetry. Mirror the ordinary request path exactly.
+      recordUsageEvent({
+        model: route.slug,
+        provider: canonicalProviderId(route.provider),
+        status: compaction.status,
+        durationMs: Date.now() - startedAt,
+        ...compaction.usage,
+      });
+      if (!QUIET) {
+        console.error(
+          `[codex-router] model=${requestedModel || "unknown"} provider=${route.provider} status=${compaction.status}`,
+        );
+      }
       return;
     }
 
@@ -950,10 +1350,10 @@ async function handleResponses(request, response, requestUrl) {
     let routedBody;
     let collaborationFlattened = false;
     if (route) {
-      const input = await normalizeRoutedAgentInput(
+      const input = await bridgeVisionInput(
+        await normalizeRoutedAgentInput(request, payload.input, controller.signal),
+        route,
         request,
-        payload.input,
-        controller.signal,
       );
       const provider = providerForModel(route);
       // LiteLLM's Responses -> Chat Completions bridge drops namespace tools.
@@ -967,11 +1367,22 @@ async function handleResponses(request, response, requestUrl) {
       const routed = {
         ...payload,
         model: route.gatewayModel,
-        input,
+        // The stored call history must use the same tool names as the tool
+        // list, or the model copies the bare names out of its own transcript.
+        input: collaborationFlattened ? flattenCollaborationHistory(input) : input,
       };
       // Native OpenAI traffic keeps client_metadata; routed providers do not
       // consume it and the strict ones reject the unknown field.
       delete routed.client_metadata;
+      // Codex sends reasoning as an object. LiteLLM's Ollama path tests that
+      // value for membership of a string set, which raises on a dict and fails
+      // the whole turn -- 210 of them here before this was caught. Ollama has
+      // no reasoning-effort concept to map it onto anyway, so drop it rather
+      // than translate it into something the model never asked for.
+      if (provider?.keyless) {
+        delete routed.reasoning;
+        delete routed.reasoning_effort;
+      }
       target = `${GATEWAY_BASE}/responses`;
       headers = routedHeaders();
       routedBody = Buffer.from(JSON.stringify(routed), "utf8");
@@ -983,15 +1394,35 @@ async function handleResponses(request, response, requestUrl) {
       if (!compactV1) delete native.previous_response_id;
       target = nativeTarget(requestUrl.pathname, requestUrl.search);
       headers = nativeHeaders(request);
-      routedBody = Buffer.from(JSON.stringify(native), "utf8");
+      routedBody = await compressedNativeBody(
+        Buffer.from(JSON.stringify(native), "utf8"),
+        headers,
+      );
     }
 
-    const upstream = await fetch(target, {
-      method: "POST",
-      headers,
-      body: routedBody,
-      signal: controller.signal,
-    });
+    // `routedBody` is a fully materialized Buffer -- plain JSON, or the zstd
+    // frame `compressedNativeBody` produced together with the matching
+    // `Content-Encoding` header. Both are computed once, above, so every
+    // attempt replays the identical bytes under the identical encoding. Nothing
+    // here consumes a stream, which is what makes the request replayable at
+    // all.
+    const { response: upstream, retries: upstreamRetries } = await fetchWithRetry(
+      target,
+      {
+        method: "POST",
+        headers,
+        body: routedBody,
+        signal: controller.signal,
+      },
+      {
+        // Routed traffic terminates at the local gateway, which has its own
+        // error translation and Retry-After handling below; leave it exactly
+        // as it was.
+        retries: route ? 0 : undefined,
+        canRetry: () => nothingRelayed(response),
+        onRetry: (event) => logUpstreamRetry(event, requestedModel, requestUrl.pathname),
+      },
+    );
     // Gateway error bodies leak LiteLLM's internal exception chain, which
     // reads like a router bug. Rewrite them to name the provider that failed.
     // Native traffic passes through untouched: OpenAI errors are already clear.
@@ -1029,8 +1460,23 @@ async function handleResponses(request, response, requestUrl) {
     }
     // Native OpenAI responses carry the same `usage` shape as routed ones, so
     // meter both paths; without this, native traffic reports zero tokens.
+    //
+    // A routed provider that answers a large prompt with `input_tokens: 0` is
+    // reporting something that cannot be true, and Codex reads exactly that
+    // number to decide when to compact -- opencode's Go endpoint did it for a
+    // whole model family and sessions ran past the context window and died
+    // (#95). The estimate below is offered only for those responses; the
+    // predicate is structural (this request, these bytes, an explicit zero),
+    // so it cannot fire on a provider that reports correctly and it disables
+    // itself the moment the upstream starts reporting again.
     const usageTransform = new ResponseUsageTransform(
       upstream.headers.get("content-type") || "",
+      {
+        estimatedInputTokens:
+          ZERO_INPUT_ESTIMATE && route
+            ? estimateInputTokens(routedBody, { contextWindow: route.contextWindow })
+            : undefined,
+      },
     );
     const transforms = [usageTransform];
     if (collaborationFlattened) {
@@ -1038,16 +1484,27 @@ async function handleResponses(request, response, requestUrl) {
     }
     await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, transforms);
     const usage = usageTransform?.tokenUsage();
+    const estimatedInputTokens = usageTransform?.substitutedInputTokens();
+    // `retries` separates "it never failed" from "it failed and the router
+    // absorbed it", both of which otherwise record a plain 200;
+    // `estimatedInputTokens` separates a count the provider sent from one the
+    // router had to invent. Neither is inferable from the rest of the event.
     recordUsageEvent({
       model: route?.slug || requestedModel,
       provider: route ? canonicalProviderId(route.provider) : "openai",
       status: upstream.status,
       durationMs: Date.now() - startedAt,
+      retries: upstreamRetries,
       ...usage,
+      estimatedInputTokens,
     });
     if (!QUIET) {
+      // The substitution is named in the log line as well as the usage event:
+      // a router that quietly invents token counts is its own trap.
       console.error(
-        `[codex-router] model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${upstream.status}`,
+        `[codex-router] model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${upstream.status}${
+          upstreamRetries ? ` retries=${upstreamRetries}` : ""
+        }${estimatedInputTokens ? ` estimated-input-tokens=${estimatedInputTokens}` : ""}`,
       );
     }
   } catch (error) {
@@ -1064,7 +1521,7 @@ async function handleResponses(request, response, requestUrl) {
   }
 }
 
-async function handleNativeImage(request, response, requestUrl) {
+async function handleNativeRequest(request, response, requestUrl, defaultModel) {
   const startedAt = Date.now();
   const activity = beginRequestActivity();
   let clientGone = false;
@@ -1074,7 +1531,7 @@ async function handleNativeImage(request, response, requestUrl) {
     const body = decodeBody(encoded, request.headers["content-encoding"]);
     const payload = parseBody(body);
     const requestedModel =
-      typeof payload.model === "string" ? payload.model : "gpt-image-2";
+      typeof payload.model === "string" ? payload.model : defaultModel;
     activity.setRoute({
       provider: "openai",
       model: requestedModel,
@@ -1093,13 +1550,30 @@ async function handleNativeImage(request, response, requestUrl) {
       }
     });
 
-    const upstream = await fetch(
+    const headers = nativeHeaders(request);
+    // Same replayable-Buffer rule as the turn path: encode once, outside the
+    // retry, so every attempt carries identical bytes under identical headers.
+    const imageBody = await compressedNativeBody(body, headers);
+    const { response: upstream, retries: upstreamRetries } = await fetchWithRetry(
       nativeTarget(requestUrl.pathname, requestUrl.search),
       {
         method: "POST",
-        headers: nativeHeaders(request),
-        body,
+        headers,
+        body: imageBody,
         signal: controller.signal,
+      },
+      {
+        // Images do not retry. The retryable statuses were chosen to mean "no
+        // response was obtained", but that is reasoning rather than something
+        // observable from here, and Cloudflare can emit 520 after reaching the
+        // origin. On a turn a wrong guess costs a duplicated request; on an
+        // image generation it costs the operator a second billed image. The
+        // failure this exists to absorb was reported on /v1/responses, so the
+        // turn path keeps the benefit and the billed path keeps the old
+        // behaviour until a captured 5xx proves it is safe.
+        retries: 0,
+        canRetry: () => nothingRelayed(response),
+        onRetry: (event) => logUpstreamRetry(event, requestedModel, requestUrl.pathname),
       },
     );
     await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS);
@@ -1108,10 +1582,11 @@ async function handleNativeImage(request, response, requestUrl) {
       provider: "openai",
       status: upstream.status,
       durationMs: Date.now() - startedAt,
+      retries: upstreamRetries,
     });
     if (!QUIET) {
       console.error(
-        `[codex-router] model=${requestedModel} provider=openai status=${upstream.status}`,
+        `[codex-router] model=${requestedModel} provider=openai status=${upstream.status}${upstreamRetries ? ` retries=${upstreamRetries}` : ""}`,
       );
     }
   } catch (error) {
@@ -1181,7 +1656,11 @@ async function handleRequest(request, response) {
     return;
   }
   if (request.method === "POST" && NATIVE_IMAGE_PATHS.has(requestUrl.pathname)) {
-    await handleNativeImage(request, response, requestUrl);
+    await handleNativeRequest(request, response, requestUrl, "gpt-image-2");
+    return;
+  }
+  if (request.method === "POST" && NATIVE_SEARCH_PATHS.has(requestUrl.pathname)) {
+    await handleNativeRequest(request, response, requestUrl, "web-search");
     return;
   }
   writeJson(response, 404, {
@@ -1192,7 +1671,14 @@ async function handleRequest(request, response) {
 const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
     const status = httpErrorStatus(error);
-    console.error("[codex-router] request failed");
+    // The bare string this used to log made every mid-stream failure
+    // indistinguishable in production. The cause belongs in the log; response
+    // bodies never do, so only the error's own message and code are recorded.
+    console.error(
+      `[codex-router] request failed: ${
+        error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+      }${error?.code ? ` (${error.code})` : ""}`,
+    );
     if (!response.headersSent) {
       writeJson(response, status, {
         error: {
@@ -1200,8 +1686,11 @@ const server = http.createServer((request, response) => {
           message: "The local router could not complete the request.",
         },
       });
-    } else if (!response.writableEnded) {
-      response.destroy();
+    } else {
+      // The body is already streaming, so there is no status left to change.
+      // Destroying here reset the socket and cost the chunked terminator,
+      // which the client reported only as a decode failure.
+      endStreamedResponse(response);
     }
   });
 });
@@ -1211,6 +1700,30 @@ server.on("upgrade", (_request, socket) => {
   socket.end(
     "HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
   );
+});
+// Without this an 'error' event is unhandled and the process exits silently.
+// Under a supervisor that reads as a crash loop with the port never bound and
+// nothing in the log saying why, so name the cause and use exit codes a
+// supervisor and a human can tell apart.
+server.on("error", (error) => {
+  if (error?.code === "EADDRINUSE") {
+    console.error(
+      `[codex-router] cannot listen: ${LISTEN_HOST}:${LISTEN_PORT} is already in use. Another router or an unrelated process holds it; stop that process, then start the service again.`,
+    );
+    process.exit(98);
+  }
+  if (error?.code === "EACCES") {
+    console.error(
+      `[codex-router] cannot listen: permission denied binding ${LISTEN_HOST}:${LISTEN_PORT}.`,
+    );
+    process.exit(97);
+  }
+  console.error(
+    `[codex-router] server error: ${
+      error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+    }${error?.code ? ` (${error.code})` : ""}`,
+  );
+  process.exit(96);
 });
 server.requestTimeout = 0;
 server.headersTimeout = 65_000;

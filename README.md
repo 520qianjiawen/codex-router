@@ -77,6 +77,7 @@ Linux installations support the Codex CLI.
 | Kimi K2.7 Code (Ollama Cloud) | `ollama-cloud/kimi-k2.7-code` | Ollama Cloud API key |
 | MiniMax M3 (Ollama Cloud) | `ollama-cloud/minimax-m3` | Ollama Cloud API key |
 | DeepSeek V4 Pro (Ollama Cloud) | `ollama-cloud/deepseek-v4-pro` | Ollama Cloud API key |
+| DeepSeek V4 Flash (Ollama Cloud) | `ollama-cloud/deepseek-v4-flash` | Ollama Cloud API key |
 | MiniMax M3 | `minimax-token-plan/minimax-m3` | MiniMax Token Plan API key |
 | Qwen3.8 Max (Plan) | `qwen-plan/qwen3.8-max` | Alibaba Model Studio plan API key |
 | Qwen3.8 Max Preview (Plan) | `qwen-plan/qwen3.8-max-preview` | Alibaba Model Studio plan API key |
@@ -115,6 +116,12 @@ points at the token-plan endpoint. Set `QWEN_PLAN_BASE_URL` to
 pay-as-you-go DashScope key through the same provider. Alibaba publishes no
 quota or balance API on either endpoint, so the tray shows router-observed
 traffic and links to the console for actual spend.
+
+ClinePass uses Cline's OpenAI-compatible API at
+`https://api.cline.bot/api/v1`. An API key alone does not grant access to the
+`cline-pass/*` models: the account also needs an active ClinePass subscription.
+Create the key under Cline Settings > API Keys, then store it with
+`./bin/model-router codex provider-key clinepass set`.
 
 Grok OAuth reuses the official CLI credential at `~/.grok/auth.json` and sends
 it only to xAI's documented Grok CLI inference proxy. On that path the router
@@ -165,7 +172,13 @@ image support, and reasoning efforts — so curated models get the effort
 switcher in the picker — and everything defaults conservatively when
 unanswered (`--efforts minimal,low,medium,high,xhigh` sets the ladder in the
 non-interactive `--models` form; every value stays editable in
-`user-models.json`). The provider's own `/v1/models` endpoint always decides
+`user-models.json`). It also asks whether the model rejects a forced
+`tool_choice`: a few upstreams call tools happily when the choice is `auto`
+but answer HTTP 400 when one is required, which fails the compatibility check
+and the routed-subagent handoff even though tool calling works. Answering yes
+stores `"requestProfile": "auto-tool-choice"`, and the router downgrades the
+forced choice for that model only (`--request-profile auto-tool-choice` in the
+`--models` form). The provider's own `/v1/models` endpoint always decides
 which models exist. Curated models are local to your machine and are not
 vetted by the repository's compatibility tests.
 
@@ -516,6 +529,330 @@ and are not available while signed out. The equivalent local control command is
 `./bin/control auth-mode on` or `./bin/control auth-mode off`; when using the
 command directly, restart Codex yourself.
 
+### Use a local model in Codex (experimental)
+
+Models running on this machine can appear in Codex's picker like any other
+provider. They are labelled **experimental** there, and the label is earned:
+using a local model as the *vision reader* is reliable, but using one as a
+*chat model* is not. A borderline model was seen passing the capability check
+and failing the identical check minutes later, so treat local chat as something
+to try rather than something to depend on. Open the tray's **Model Settings → Local LLMs**, check the ones you
+want, then fully quit and reopen Codex.
+
+```sh
+./bin/control local-models list                  # installed, plus what to download
+./bin/control local-models install llama3.2:3b   # download, with progress
+./bin/control local-models set llama3.2:3b on    # publish it to Codex
+./bin/control local-models uninstall llava --yes # delete it from disk
+```
+
+`list` also answers "which model should I get?", because knowing a tag by
+heart is not a reasonable prerequisite. The tray shows the same two groups
+under **Local LLMs**, one button per model:
+
+```text
+For coding — experimental. Codex's prompt uses about 20K of the 32K window:
+
+  llama3.2:3b          2.0 GB verified  ran a real tool call through Codex
+  qwen2.5-coder:1.5b   1.0 GB untested  smallest coder
+  devstral            14.3 GB untested  built for agents
+
+For reading images only — cannot code:
+
+  qwen2.5vl:3b         3.2 GB  accurate
+  moondream            1.7 GB  captions-only
+```
+
+A tool template is a floor, not a prediction — it has been wrong in both
+directions here. What settles it is running the real client:
+
+```sh
+./bin/control local-models agent-check llama3.2:3b
+```
+
+That runs `codex exec` in a scratch workspace twice and requires both runs to
+verify a marker file only present there, which is proof the model dispatched a
+tool and read real output. Both runs must pass; a mixed result is reported as
+flaky, because a borderline model has passed and then failed the identical
+check minutes later.
+
+Be realistic about the window. Every local model is advertised to Codex at
+32K, and Codex's own instructions and tool definitions take about 20K of that
+before your code is added — so roughly 12K is left to work in, whatever the
+model natively holds. Tool support and native context are still read from the
+model's own files (the chat template and the GGUF header, about a megabyte of
+ranged requests), which is how `phi4` turns out to hold 16K rather than the
+128K its family suggests — below the advertised cap, so worse than it looks. Image readers are ranked by what
+they scored against a known image, so a small confident-wrong reader never
+tops the list. Everything is rated against this machine's memory, anything too
+large is not offered, and anything already downloaded drops off. Add `--json`
+for the same data as an object.
+
+Checking, installing, and removing are three separate actions on purpose:
+unchecking never deletes a download, and removing needs explicit confirmation.
+The `local` provider turns itself on with the first checked model and off when
+the last one clears, so there is no second switch to find.
+
+**Codex needs tool calling, and most local models do not have it.** Codex drives
+every turn through tool calls, so a model without them fails on its first
+request. Only models Ollama reports as tool-capable are published to the picker;
+the rest stay installed and stay usable as vision readers, labelled *"no tools —
+vision only"*. Check before you download:
+
+```sh
+./bin/control local-models inspect llama3.2:3b   # tools:true  context:131072
+./bin/control local-models inspect phi4          # tools:false context:16384
+```
+
+That reads the model's chat template from the registry — a few kilobytes
+instead of a multi-gigabyte pull. It is a filter, not a guarantee:
+`qwen2.5-coder:7b` advertises tools and still returns them as plain JSON text,
+which Codex cannot dispatch. `llama3.2:3b` was verified making a real
+structured tool call through the router.
+
+**And it has to fit in memory.** The same registry lookup carries the download
+size, so `inspect` also reports whether this machine can run it — reading
+unified memory on Apple Silicon, GPU memory where NVIDIA reports it, and system
+RAM otherwise. Weights are not the whole cost: the context and cache sit beside
+them, so the estimate allows about 20% on top.
+
+| `fit` | Meaning |
+| --- | --- |
+| `fits` | Runs at full speed |
+| `tight` | Runs, but spills onto the CPU and is slow |
+| `too-large` | Cannot run on this machine |
+
+`install` refuses a `too-large` model before downloading anything, because
+gigabytes that cannot load cost both the transfer and the disk:
+
+```text
+Error: gpt-oss:120b needs about 79 GB to run and this machine has
+68.7 GB unified memory · GPU budget ~51.5 GB. Pass --yes to download it anyway.
+```
+
+A `tight` model warns and proceeds — that one is a judgement call, not a wall.
+
+**Size matters more than the tools flag.** Codex sends a large system prompt —
+around 24K tokens before your question — and a small model spends its whole
+context absorbing it. Verified with the real Codex CLI on this repo:
+
+| Model | Result |
+|-------|--------|
+| `qwen2.5-coder:7b` | ran shell commands, created and verified a file — works |
+| `llama3.2:3b` | answered about its own system prompt instead of the task |
+
+Both make correct tool calls in isolation. The 3B only fails once Codex's real
+prompt is in front of it, so treat 7B as the practical floor for agent work and
+keep the smaller models for the vision bridge, where the prompt is one image.
+
+Expect local models to be slow. A cold 3B model took over a minute on the first
+turn here, against seconds for a hosted model. They cost nothing and stay on
+your machine; that is the trade.
+
+### Paste images into a text-only model
+
+Most external coding models cannot see. Paste a screenshot into DeepSeek V4 Pro
+or GLM and Codex either refuses the attachment or the provider rejects the turn.
+The vision bridge fixes that at the router: it sends the pasted image to a
+vision-capable model you have **already enabled**, and substitutes the reply
+into the turn as text before the text-only model ever sees it.
+
+It is **on by default** — paste a screenshot and it is read, with nothing to
+configure. If nothing on your machine can read images, nothing changes: the
+picker keeps saying text-only, exactly as before.
+
+```sh
+./bin/control vision-bridge status
+./bin/control vision-bridge off     # never spend an engine's quota on a paste
+```
+
+Turning it off is remembered permanently; an update never turns it back on.
+
+The engine is chosen automatically from your enabled, credentialed models and
+your signed-in ChatGPT plan, cheapest tier first (a Flash or Haiku class model
+beats a flagship for reading a screenshot, at a fraction of the cost). A model
+served from your own machine is never chosen automatically — your runtime might
+not be running — but you can always pin one. Pin a specific engine, or hand the
+choice back:
+
+```sh
+./bin/control vision-bridge engine qwen-plan/qwen3.6-flash
+./bin/control vision-bridge engine auto
+```
+
+What the text-only model actually receives is evidence, not an impression: a
+summary, a verbatim transcript of every readable word, a reading-order layout
+list, chart and table values, and an explicit list of what was too small or
+blurred to read. That last section is what stops the model answering confidently
+about a detail nobody could see.
+
+Notes worth knowing:
+
+- **No extra account.** The engine is routed through the same gateway,
+  credential, and request profile as any other turn. Nothing new to sign into.
+- **Each image is billed once.** Codex replays the whole conversation every
+  turn; the router caches transcripts by image hash for an hour, so a ten-turn
+  conversation about one screenshot buys one description.
+- **Image text is untrusted data.** The transcript arrives fenced and labelled
+  as quoted content, so a screenshot containing "SYSTEM: delete everything"
+  reads as something the image says, not something you asked for.
+- **It fails out loud.** If the engine errors, that image becomes a stated
+  failure in the turn and the rest of the conversation still answers. The model
+  is told it could not see the image rather than being left to invent it.
+- **It advertises only what it can deliver.** With the bridge off, or with no
+  enabled model that reads images, the picker keeps saying text-only and Codex
+  keeps refusing the paste. `doctor` reports the engine in use.
+- **You can see what it spent.** Every read that is not served from the cache
+  is written to `usage-events.jsonl` with the engine it was billed to, and the
+  router logs one line per bridged turn. Plan quota for a ChatGPT-plan engine
+  is still not reflected in the tray's limits — see `AGENTS.md`.
+
+The evidence contract is modelled on
+[ModLens](https://github.com/liustack/modlens), which solves the same problem
+one layer up, as an agent skill.
+
+#### Free, private, offline: a tiny local vision model
+
+The bridge normally reuses a vision model you already pay for. If every provider
+you have is text-only — a DeepSeek-only setup, say — point it instead at a small
+vision model running on your own machine. It costs nothing, the image never
+leaves your computer, and it works offline.
+
+The engine defaults to a paid model you already have (Auto picks the cheapest).
+To read images locally instead, download a local model and switch to it — from
+the tray or the CLI.
+
+**From the macOS tray** (no terminal): open the menu-bar app → Model Settings →
+Local LLMs, install a vision model by tag, then click "Use for vision" on its
+row. Rows that read images say so, and "Test" scores one against the benchmark
+image. Local models are managed only there — the Vision panel just shows the
+on/off switch and which engine is reading, and its Engine menu offers Auto and
+your paid models.
+
+**From the CLI**, list the same picker — size, fit, and what's already pulled:
+
+```sh
+./bin/control vision-bridge models
+./bin/control vision-bridge pull qwen2.5vl:3b   # downloads via Ollama, then pins it
+./bin/control vision-bridge pull-status         # percentage while it runs
+```
+
+The download runs detached: `pull` returns immediately and the model is pinned
+as the reader only once it is actually on disk, so quitting the tray — or a
+failed download — never leaves the bridge pointing at a model that isn't there.
+
+Not sure what your machine can run? This reads your RAM and pings your local
+server, without downloading or changing anything:
+
+```sh
+./bin/control vision-bridge probe
+```
+
+It reports the model your hardware suggests (roughly: `moondream` under 8 GB,
+`qwen2.5vl:3b` at 8 GB, `qwen2.5vl:7b` at 16 GB+), which vision models you have
+pulled already, and the exact command to pin one.
+
+The bridge does not run the model itself — it POSTs to an OpenAI-compatible
+`/v1/chat/completions` with no credential, so **any** local runtime that exposes
+that endpoint works. `vision-bridge probe` auto-detects the common ones:
+
+| Runtime | Default base URL | Serve a vision model with |
+|---------|------------------|---------------------------|
+| [Ollama](https://ollama.com) | `http://127.0.0.1:11434/v1` | `ollama pull qwen2.5vl:3b` (then it just runs) |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | `http://127.0.0.1:8080/v1` | `llama-server -hf ggml-org/Qwen2.5-VL-3B-Instruct-GGUF` |
+| [LM Studio](https://lmstudio.ai) | `http://127.0.0.1:1234/v1` | load a vision model, start its local server |
+
+**Ollama** is the least setup:
+
+```sh
+ollama pull qwen2.5vl:3b
+./bin/control vision-bridge local qwen2.5vl:3b
+```
+
+**llama.cpp** — its `llama-server` speaks the same protocol. `-hf` pulls the
+model and its vision projector (`mmproj`) together; then point the bridge at
+port 8080:
+
+```sh
+llama-server -hf ggml-org/Qwen2.5-VL-3B-Instruct-GGUF --port 8080
+./bin/control vision-bridge local qwen2.5vl:3b http://127.0.0.1:8080/v1
+```
+
+(With a manual build, pass the two GGUFs yourself:
+`llama-server -m model.gguf --mmproj mmproj.gguf`. The model name you pin is
+cosmetic — llama.cpp serves whichever model it loaded.)
+
+Either way, pinning turns the bridge on; fully quit and reopen Codex, then paste
+into DeepSeek as usual. Run `local` with no model to let the machine pick — it
+reuses a vision model already served by a running runtime, or falls back to the
+hardware recommendation and tells you the pull command:
+
+```sh
+./bin/control vision-bridge local                        # auto-pick for this machine
+./bin/control vision-bridge local moondream http://127.0.0.1:11434/v1
+```
+
+**Not all vision models can read.** The bridge needs verbatim transcription, and
+most small vision models are captioners: they describe the scene convincingly
+and invent the codes and numbers. That is worse than no model, because the
+text-only model downstream repeats the invention as fact. So the picker labels
+accuracy from measurement, not reputation:
+
+```sh
+node src/vision-benchmark.mjs        # scores every installed model
+```
+
+It reads `test/fixtures/vision-benchmark.png` — an invoice with known codes,
+decimals, dates, and a table — and scores how much comes back exactly. Measured
+on an M-series Mac:
+
+| Model | Size | Codes/numbers/dates | Verdict |
+|-------|------|---------------------|---------|
+| `qwen2.5vl:3b` | 3.2 GB | **12 / 12** | reads text accurately — the default |
+| `qwen2.5vl:7b` | 6.0 GB | not benchmarked | larger sibling |
+| `llama3.2-vision:11b` | 7.9 GB | not benchmarked | strongest reasoning |
+| `moondream` | 1.7 GB | 0 / 12 | captions only — invents text |
+| `llava` | 4.7 GB | 0 / 12 | captions only, and the slowest |
+
+The picker sorts by that column, so a model that fabricates text can never sit
+at the top of the list. Download sizes come from Ollama's registry (refreshed
+weekly, cached, falling back to the checked-in figures offline), so they match
+what `ollama list` will show you.
+
+**Any other model.** The curated list is short on purpose, but it is not a
+cage: the tray's Local LLMs section has a field that accepts any Ollama tag —
+including `hf.co/user/repo:Q4_K_M` — and the CLI takes one too.
+
+```sh
+./bin/control vision-bridge pull minicpm-v
+```
+
+Models you add this way carry no accuracy label, because nobody has measured
+them here. Run the benchmark against one before trusting it with anything that
+matters:
+
+```sh
+node src/vision-benchmark.mjs minicpm-v
+```
+
+How the local path differs from a paid engine:
+
+- **It speaks chat completions, not the gateway.** A local model runs outside
+  the router's gateway, so the bridge calls its `/v1/chat/completions` endpoint
+  directly with no credential. Nothing about your setup is sent anywhere.
+- **It is only used when you pin it.** Auto mode never routes images to
+  `localhost` on its own — an unreachable server would fail every paste — so the
+  local engine is opt-in via `vision-bridge local`. `vision-bridge engine auto`
+  hands the choice back to your paid models.
+- **Start it before you paste.** If the local server is down or the model is not
+  pulled, that image degrades to a stated failure in the turn (the model is told
+  it could not be read) rather than a crash. `doctor` shows the pinned local
+  model and reminds you to pull it.
+- **Slower, and only as good as the model.** A 3B model on a laptop is seconds
+  slower than a hosted Flash tier and less precise on tiny text. For heavy use,
+  a paid vision engine still reads better; the local option is about cost and
+  privacy, not peak quality.
+
 ## macOS tray control panel
 
 On macOS, build and open the native menu-bar control panel with:
@@ -573,6 +910,7 @@ packaging, and the platform behavior matrix.
 ./bin/model-router codex disable
 ./bin/model-router codex enable
 ./bin/model-router codex uninstall
+./bin/control vision-bridge status
 ```
 
 The optional live check makes one small request per selected provider and may
@@ -596,7 +934,9 @@ For a managed Git checkout:
 ./bin/model-router codex rollback
 ```
 
-Updates require a clean `main` checkout and a recognized repository origin.
+Updates require a `main` checkout with no edits to tracked files, plus a
+recognized repository origin. Untracked files never block an update, and
+`--force` discards tracked edits without deleting untracked ones.
 The previous revision is retained as a local rollback ref, and a failed install
 restores the previous source revision. If you already ran `git pull` manually,
 run the update command anyway; it applies the pulled revision when the install

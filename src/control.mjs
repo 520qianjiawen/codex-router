@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,6 +55,16 @@ function codexConfigSnapshot() {
   }
 }
 
+// One list, three consumers: the probe the tray renders, the resolve that names
+// the current engine, and the validation that accepts a pin. They disagreed
+// once already -- the picker offered native models the setter then rejected --
+// so the criteria now live in one place for every surface (see
+// `src/vision-engines.mjs`).
+async function shippedNativeVisionEngines(hidden) {
+  const { installedNativeVisionEngines } = await import("./vision-engines.mjs");
+  return installedNativeVisionEngines({ hidden });
+}
+
 function nativeCodexModels(catalogPath, hiddenModels = new Set()) {
   if (!existsSync(catalogPath)) return [];
   try {
@@ -79,17 +89,29 @@ function nativeCodexModels(catalogPath, hiddenModels = new Set()) {
 // --- per-target probes (run with MODEL_ROUTER_TARGET set) -------------------
 
 async function emitProbe() {
-  const {
-    CONFIG_PATH,
-    NATIVE_CATALOG_PATH,
-    TARGET,
-    PROVIDER_SELECTION_PATH,
-  } = await import("./paths.mjs");
+  const { CONFIG_PATH, NATIVE_CATALOG_PATH, TARGET, PROVIDER_SELECTION_PATH } =
+    await import("./paths.mjs");
   const { canonicalProviderId, readProviderSelection } = await import("./provider-selection.mjs");
   const { LISTED_MODELS, PROVIDERS } = await import("./model-registry.mjs");
   const { readNativeAliases } = await import("./native-alias.mjs");
   const { subagentSettingsSnapshot } = await import("./multi-agent-state.mjs");
   const { modelPickerSnapshot } = await import("./model-picker-state.mjs");
+  const { readVisionBridgeSettings, visionBridgeSnapshot } = await import(
+    "./vision-bridge-state.mjs"
+  );
+  const { rankVisionEngines, resolveVisionEngine, visionEngineEfforts } = await import(
+    "./vision-bridge.mjs"
+  );
+  const { installedNativeVisionEngines } = await import("./vision-engines.mjs");
+  const { annotateLocalModels, hostVisionProfile, refreshVisionModelSizesIfStale } =
+    await import("./vision-host.mjs");
+  const { readVisionDownload } = await import("./vision-download.mjs");
+  const { readBenchmarkResults } = await import("./vision-benchmark.mjs");
+  const { localModelsSnapshot } = await import("./local-models.mjs");
+  const { selectedConfiguredListedModels } = await import("./provider-selection.mjs");
+  // Bounded and weekly: the tray reads this snapshot constantly, so a fresh
+  // cache costs nothing and a stale one costs one short, failure-tolerant pass.
+  if (TARGET === "codex") await refreshVisionModelSizesIfStale();
 
   const enabledProviders = readProviderSelection();
   const hiddenModels = new Set(modelPickerSnapshot().hidden);
@@ -141,6 +163,46 @@ async function emitProbe() {
             modelSettings: {
               subagents: subagentSettingsSnapshot(),
               picker: modelPickerSnapshot(),
+              localModels: localModelsSnapshot({ benchmarks: readBenchmarkResults() }),
+              visionBridge: (() => {
+                const candidates = selectedConfiguredListedModels();
+                // Only the native models that actually shipped into the picker.
+                // A signed-out or login-free install has none, and offering one
+                // there would pin an engine the router cannot reach. Same rule
+                // the catalog build and the request path apply, from the same
+                // helper, so the tray can never advertise an engine the setter
+                // or the router would then refuse.
+                const natives = installedNativeVisionEngines({ hidden: hiddenModels });
+                const resolved = resolveVisionEngine(
+                  () => [...candidates, ...natives],
+                  readVisionBridgeSettings(),
+                );
+                return {
+                  ...visionBridgeSnapshot(),
+                  resolvedEngine: resolved?.slug || null,
+                  resolvedEngineName: resolved?.displayName || null,
+                  hostMemGib: hostVisionProfile().memGib,
+                  // Cloud vision models the operator already pays for -- the
+                  // default engines. Auto picks the cheapest of these.
+                  paidEngines: rankVisionEngines(candidates).map((model) => ({
+                    slug: model.slug,
+                    displayName: model.displayName,
+                    efforts: visionEngineEfforts(model),
+                  })),
+                  // Vision models from the signed-in ChatGPT session. No extra
+                  // key, nothing to download: the plan is already being paid
+                  // for. Kept apart from the paid list so the operator can see
+                  // which bill a choice lands on.
+                  nativeEngines: rankVisionEngines(natives).map((model) => ({
+                    slug: model.slug,
+                    displayName: model.displayName,
+                    efforts: visionEngineEfforts(model),
+                  })),
+                  // The downloadable local picker, each with size + fit + state.
+                  localModels: annotateLocalModels({ benchmarks: readBenchmarkResults() }),
+                  download: readVisionDownload(),
+                };
+              })(),
             },
           }
         : {}),
@@ -435,7 +497,21 @@ function runDoctor(args) {
   process.stdout.write(`${JSON.stringify({ ok: true })}\n`);
 }
 
-function refreshModelSettingsCatalog() {
+function refreshModelSettingsCatalog({ routes = false } = {}) {
+  // The catalog decides what Codex offers; the gateway config decides what it
+  // can route. A change that adds or removes models has to write both, or the
+  // picker advertises a model whose request has nowhere to go -- the exact
+  // drift doctor's "Catalog matches gateway routes" check exists to catch.
+  if (routes) {
+    const rendered = spawnSync(
+      process.execPath,
+      ["-e", "import('./src/litellm-config.mjs').then((m) => m.writeLiteLlmConfig())"],
+      { cwd: REPO_ROOT, env: { ...process.env, MODEL_ROUTER_TARGET: "codex" }, stdio: "ignore" },
+    );
+    if (rendered.status !== 0) {
+      throw new Error("The gateway routing config could not be refreshed.");
+    }
+  }
   const result = spawnSync(
     process.execPath,
     [path.join(REPO_ROOT, "src", "catalog.mjs")],
@@ -511,6 +587,416 @@ async function handleSubagents(action, value, flag) {
   }
   refreshModelSettingsCatalog();
   process.stdout.write(`${JSON.stringify(subagentSettingsSnapshot())}\n`);
+}
+
+// The bridge changes what the picker advertises (image input on text-only
+// models), so every mutation rebuilds the catalog the way the subagent and
+// picker toggles do.
+// The fewest-steps local path. Downloads nothing without consent: a vision
+// model already served by a running runtime is pinned outright; a needed pull
+// happens only with --yes; a missing runtime prints one install line and stops.
+async function runVisionBridgeSetup({ consent }) {
+  const { readVisionBridgeSettings, setVisionBridgeLocal, setVisionBridgeEnabled } =
+    await import("./vision-bridge-state.mjs");
+  const { suggestLocalVisionSetup, ollamaAvailable, pullOllamaModel, OLLAMA_INSTALL_HINT } =
+    await import("./vision-host.mjs");
+
+  const suggestion = await suggestLocalVisionSetup(readVisionBridgeSettings());
+  const { chosen, baseUrl, needsPull, profile } = suggestion;
+
+  // A runtime is already serving a vision model: pin it, no download.
+  if (!needsPull) {
+    setVisionBridgeLocal({ model: chosen, baseUrl });
+    setVisionBridgeEnabled(true);
+    process.stderr.write(
+      `Vision bridge on: ${chosen} on ${suggestion.runningRuntimes.join(", ")} (already running, no download).\n`,
+    );
+    return;
+  }
+
+  // Nothing is serving one. Pulling is a multi-gigabyte download, so it needs
+  // both a runtime and explicit consent.
+  if (!ollamaAvailable()) {
+    process.stderr.write(
+      `No local vision runtime is running.\n` +
+        `Recommended for this machine (${profile.memGib} GB ${profile.arch}): ${chosen}.\n` +
+        `${OLLAMA_INSTALL_HINT}\n` +
+        `Prefer llama.cpp? Start it, then: ./bin/control vision-bridge local ${chosen} http://127.0.0.1:8080/v1\n`,
+    );
+    return;
+  }
+  if (!consent) {
+    process.stderr.write(
+      `Ready to download ${chosen} with Ollama (a few GB) for this ${profile.memGib} GB machine.\n` +
+        `Re-run with --yes to download and enable it: ./bin/control vision-bridge setup --yes\n`,
+    );
+    return;
+  }
+  process.stderr.write(`Downloading ${chosen} with Ollama…\n`);
+  pullOllamaModel(chosen);
+  setVisionBridgeLocal({ model: chosen, baseUrl });
+  setVisionBridgeEnabled(true);
+  process.stderr.write(`Vision bridge on: ${chosen} (local, via Ollama).\n`);
+}
+
+// "default" and an empty argument both mean "stop pinning a level", which is
+// how every install behaved before the level was selectable.
+function effortArgument(value, levels) {
+  const effort = String(value ?? "").trim().toLowerCase();
+  if (!effort || effort === "default" || effort === "auto") return null;
+  if (!levels.includes(effort)) {
+    throw new Error(`${effort} is not a reasoning effort. Choose one of: ${levels.join(", ")}, or "default".`);
+  }
+  return effort;
+}
+
+async function handleVisionBridge(action, value, extra) {
+  const {
+    readVisionBridgeSettings,
+    setVisionBridgeEnabled,
+    setVisionBridgeEffort,
+    setVisionBridgeEngine,
+    setVisionBridgeLocal,
+    visionBridgeSnapshot,
+    VISION_EFFORT_LEVELS,
+  } = await import("./vision-bridge-state.mjs");
+  const {
+    LOCAL_ENGINE_SLUG,
+    rankVisionEngines,
+    resolveVisionEngine,
+    visionEngineEfforts,
+  } = await import("./vision-bridge.mjs");
+  const { selectedConfiguredListedModels } = await import("./provider-selection.mjs");
+  const nativeEngines = await shippedNativeVisionEngines();
+  const snapshot = () => {
+    const candidates = [...selectedConfiguredListedModels(), ...nativeEngines];
+    const settings = readVisionBridgeSettings();
+    const resolved = resolveVisionEngine(() => candidates, settings);
+    return {
+      ...visionBridgeSnapshot(),
+      // The local engine is a real answer even when no paid vision model is
+      // enabled, so it is offered alongside the registry engines.
+      resolvedEngine: resolved?.slug || null,
+      resolvedEngineName: resolved?.displayName || null,
+      availableEngines: [
+        ...rankVisionEngines(candidates).map((model) => model.slug),
+        LOCAL_ENGINE_SLUG,
+      ],
+      // What the engine now in force will actually accept. Empty means it
+      // declares no levels, so the only honest answer is its own default.
+      availableEfforts: resolved ? visionEngineEfforts(resolved) : [],
+    };
+  };
+  if (action === "status") {
+    process.stdout.write(`${JSON.stringify(snapshot())}\n`);
+    return;
+  }
+  if (action === "probe") {
+    // Read-only: reports what the machine can run and what the local server
+    // already has, without pulling, pinning, or spending anything.
+    const { suggestLocalVisionSetup } = await import("./vision-host.mjs");
+    const suggestion = await suggestLocalVisionSetup(readVisionBridgeSettings());
+    process.stdout.write(`${JSON.stringify(suggestion)}\n`);
+    return;
+  }
+  if (action === "models") {
+    // The downloadable local-model picker: each curated model with its size,
+    // whether it fits this machine, and whether it is already pulled.
+    const { annotateLocalModels, hostVisionProfile, refreshVisionModelSizesIfStale } =
+      await import("./vision-host.mjs");
+    const { readBenchmarkResults } = await import("./vision-benchmark.mjs");
+    await refreshVisionModelSizesIfStale();
+    process.stdout.write(
+      `${JSON.stringify({
+        host: hostVisionProfile(),
+        models: annotateLocalModels({ benchmarks: readBenchmarkResults() }),
+      })}\n`,
+    );
+    return;
+  }
+  if (action === "pull") {
+    // Downloads a local vision model (gigabytes) with Ollama. The caller — a
+    // tray row that shows the size, or a deliberate CLI command — is the
+    // consent. Gigabytes take minutes, so the worker runs detached and this
+    // returns at once; progress is polled with `pull-status`. The model is
+    // pinned by the worker only after it lands.
+    const tag = String(value || "").trim();
+    if (!tag) throw new Error("Usage: control vision-bridge pull <model-tag>");
+    const { ollamaAvailable, OLLAMA_INSTALL_HINT } = await import("./vision-host.mjs");
+    if (!ollamaAvailable()) {
+      throw new Error(`Ollama is not installed. ${OLLAMA_INSTALL_HINT}`);
+    }
+    const { readVisionDownload, writeVisionDownload } = await import(
+      "./vision-download.mjs"
+    );
+    const active = readVisionDownload();
+    if (active?.status === "downloading" && active.tag !== tag) {
+      throw new Error(`${active.tag} is already downloading (${active.percent || 0}%).`);
+    }
+    // Seeded here rather than in the worker so a poll that lands before the
+    // child has started still sees the download, not a stale previous run.
+    writeVisionDownload({
+      version: 1,
+      tag,
+      status: "downloading",
+      detail: "starting",
+      percent: 0,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    const child = spawn(
+      process.execPath,
+      [path.join(REPO_ROOT, "src", "vision-download.mjs"), tag],
+      { detached: true, stdio: "ignore" },
+    );
+    child.unref();
+    process.stdout.write(`${JSON.stringify({ started: true, tag })}\n`);
+    return;
+  }
+  if (action === "benchmark") {
+    // Measures an installed model against the checked-in ground-truth image and
+    // stores the result, so a model the operator downloaded themselves can earn
+    // a label without touching the CLI or trusting a reputation.
+    const tag = String(value || "").trim();
+    if (!tag) throw new Error("Usage: control vision-bridge benchmark <model-tag>");
+    const { benchmarkModel, saveBenchmarkResult } = await import("./vision-benchmark.mjs");
+    const { probeLocalServer } = await import("./vision-host.mjs");
+    const server = await probeLocalServer();
+    if (!server.reachable) {
+      throw new Error(`No local runtime at ${server.baseUrl} (${server.error}).`);
+    }
+    const result = await benchmarkModel(tag, { baseUrl: server.baseUrl });
+    if (!result.ok) throw new Error(result.error);
+    // The transcript is only useful while debugging and would bloat the state
+    // file with a page of text per model.
+    const { transcript, ...stored } = result;
+    saveBenchmarkResult(tag, stored);
+    // No catalog rebuild: a score changes a label in this tray, not which
+    // models Codex is offered, so this stays runnable from any checkout.
+    process.stdout.write(`${JSON.stringify(stored)}\n`);
+    return;
+  }
+  if (action === "pull-status") {
+    const { readVisionDownload } = await import("./vision-download.mjs");
+    process.stdout.write(`${JSON.stringify(readVisionDownload() || { status: "idle" })}\n`);
+    return;
+  }
+  if (action === "setup") {
+    // One command that gets a local vision model working with the fewest
+    // steps. It downloads nothing without consent: a model already served by a
+    // running runtime is pinned outright; a needed pull requires --yes; and a
+    // missing runtime prints one install line rather than installing it.
+    const consent = value === "--yes" || value === "-y" || extra === "--yes";
+    await runVisionBridgeSetup({ consent });
+    refreshModelSettingsCatalog();
+    process.stdout.write(`${JSON.stringify(snapshot())}\n`);
+    return;
+  }
+  if (action === "on" || action === "off") {
+    setVisionBridgeEnabled(action === "on");
+  } else if (action === "local") {
+    // control vision-bridge local [model] [baseUrl] -- pins a local model and
+    // turns the bridge on in the same step. With no model, the machine picks
+    // one: an already-pulled vision model, else the hardware recommendation.
+    let model = String(value || "").trim();
+    let baseUrl = String(extra || "").trim() || undefined;
+    if (!model) {
+      const { suggestLocalVisionSetup } = await import("./vision-host.mjs");
+      const suggestion = await suggestLocalVisionSetup(readVisionBridgeSettings());
+      model = suggestion.chosen;
+      baseUrl = baseUrl || (suggestion.needsPull ? undefined : suggestion.baseUrl);
+      const where = suggestion.runningRuntimes.length
+        ? `on ${suggestion.runningRuntimes.join(", ")}`
+        : "no local runtime detected";
+      process.stderr.write(
+        `Selected ${model} for ${suggestion.profile.memGib} GB ${suggestion.profile.arch} (${where})` +
+          `${suggestion.needsPull ? ` — run: ${suggestion.pullCommand}` : " — already pulled"}\n`,
+      );
+    }
+    setVisionBridgeLocal({ model, baseUrl });
+    setVisionBridgeEnabled(true);
+  } else if (action === "engine") {
+    const slug = String(value || "").trim();
+    if (slug && slug !== "auto" && slug !== LOCAL_ENGINE_SLUG) {
+      // Must accept everything the picker offers. Validating against the routed
+      // models alone rejected every native slug, so choosing one from the tray
+      // silently left the previous engine in place.
+      const available = rankVisionEngines([
+        ...selectedConfiguredListedModels(),
+        ...nativeEngines,
+      ]);
+      if (!available.some((model) => model.slug === slug)) {
+        throw new Error(
+          `${slug} is not an enabled model that reads images. Choose one of: ${
+            available.map((model) => model.slug).join(", ") || "(none enabled)"
+          }, or "local" for a local vision model, or "auto".`,
+        );
+      }
+    }
+    setVisionBridgeEngine(slug && slug !== "auto" ? slug : null);
+    // The tray picks an engine and a level in one click, so the level rides
+    // along here. Left out, whatever was pinned before stays pinned.
+    if (extra !== undefined) setVisionBridgeEffort(effortArgument(extra, VISION_EFFORT_LEVELS));
+  } else if (action === "effort") {
+    setVisionBridgeEffort(effortArgument(value, VISION_EFFORT_LEVELS));
+  } else {
+    throw new Error(
+      "Usage: control vision-bridge status|probe|models|setup [--yes]|on|off|" +
+        "engine <model-slug|local|auto> [effort]|effort <level|default>|" +
+        "local [model] [baseUrl]|pull <model-tag>",
+    );
+  }
+  refreshModelSettingsCatalog();
+  process.stdout.write(`${JSON.stringify(snapshot())}\n`);
+}
+
+// Local models are managed as their own thing, not as a vision detail: the
+// operator installs, checks, and removes them here, and the vision bridge is
+// only one of the consumers.
+async function handleLocalModels(action, value, flag) {
+  const {
+    localModelsSnapshot,
+    removeLocalModel,
+    setLocalModelEnabled,
+  } = await import("./local-models.mjs");
+  const { readBenchmarkResults } = await import("./vision-benchmark.mjs");
+  const snapshot = () => localModelsSnapshot({ benchmarks: readBenchmarkResults() });
+  if (action === "list" || action === "status" || !action) {
+    const current = snapshot();
+    // The tray and any script read JSON; a person at a terminal was handed a
+    // single unbroken line, which only got worse once the snapshot grew a
+    // download list. Explicit `--json` keeps the machine contract, and a bare
+    // invocation is readable.
+    if (value === "--json" || flag === "--json" || !process.stdout.isTTY) {
+      process.stdout.write(`${JSON.stringify(current)}\n`);
+      return;
+    }
+    const { renderLocalModels } = await import("./local-models.mjs");
+    process.stdout.write(`${renderLocalModels(current)}\n`);
+    return;
+  }
+  if (action === "agent-check") {
+    // Runs the real Codex client against the model. Slow by design: every
+    // cheaper approximation tried here disagreed with reality.
+    const { checkAgentCapability } = await import("./agent-check.mjs");
+    const { readLocalModelSelection, saveAgentCheck } = await import("./local-models.mjs");
+    const tags = value ? [String(value).trim()] : readLocalModelSelection().enabled;
+    if (!tags.length) throw new Error("No local models are checked.");
+    const results = [];
+    for (const tag of tags) {
+      const result = checkAgentCapability(`local/${tag}`);
+      saveAgentCheck(tag, result);
+      results.push({ tag, ...result });
+    }
+    process.stdout.write(`${JSON.stringify({ results })}\n`);
+    return;
+  }
+  if (action === "inspect") {
+    // Answers "can Codex drive this?" for a few kilobytes instead of a
+    // multi-gigabyte download.
+    const tag = String(value || "").trim();
+    if (!tag) throw new Error("Usage: control local-models inspect <model-tag>");
+    const {
+      fetchRegistryCapabilities,
+      fetchRegistryContext,
+      describeMachine,
+      detectMachine,
+      rateModelFit,
+    } = await import("./local-models.mjs");
+    // Both are read from the model's own files rather than assumed: the chat
+    // template says whether it can call tools, the GGUF header says how much
+    // context it holds. One megabyte of ranged reads, no download.
+    const [info, context] = await Promise.all([
+      fetchRegistryCapabilities(tag),
+      fetchRegistryContext(tag),
+    ]);
+    // Whether the machine can run it is as decisive as whether Codex can
+    // drive it, and the manifest already carries the size.
+    const capacity = detectMachine();
+    process.stdout.write(
+      `${JSON.stringify(
+        info
+          ? {
+              ...info,
+              context: context ?? null,
+              fit: rateModelFit(info.sizeGb, capacity) ?? null,
+              machine: describeMachine(capacity),
+            }
+          : { tag, unknown: true, context: context ?? null, machine: describeMachine(capacity) },
+      )}\n`,
+    );
+    return;
+  }
+  if (action === "install") {
+    // Same detached worker the vision picker uses: gigabytes must not block.
+    const tag = String(value || "").trim();
+    if (!tag) throw new Error("Usage: control local-models install <model-tag>");
+    const { ollamaAvailable, OLLAMA_INSTALL_HINT } = await import("./vision-host.mjs");
+    if (!ollamaAvailable()) throw new Error(`Ollama is not installed. ${OLLAMA_INSTALL_HINT}`);
+    const { readVisionDownload, writeVisionDownload } = await import("./vision-download.mjs");
+    const active = readVisionDownload();
+    if (active?.status === "downloading" && active.tag !== tag) {
+      throw new Error(`${active.tag} is already downloading (${active.percent || 0}%).`);
+    }
+    const { fetchRegistryCapabilities, detectMachine, fitAdvisory, rateModelFit } =
+      await import("./local-models.mjs");
+    const advertised = await fetchRegistryCapabilities(tag);
+    // A missing tool template costs nothing to discover afterwards; gigabytes
+    // that cannot run cost the download and the disk. So the tool note stays
+    // advisory while a model too large for this machine is refused unless the
+    // operator overrides it deliberately.
+    const capacity = detectMachine();
+    const fit = advertised ? rateModelFit(advertised.sizeGb, capacity) : undefined;
+    if (fit === "too-large" && flag !== "--yes" && value !== "--yes") {
+      throw new Error(
+        `${fitAdvisory(tag, advertised.sizeGb, capacity)} Pass --yes to download it anyway.`,
+      );
+    }
+    writeVisionDownload({
+      version: 1,
+      tag,
+      status: "downloading",
+      detail: "starting",
+      percent: 0,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    spawn(process.execPath, [path.join(REPO_ROOT, "src", "vision-download.mjs"), tag], {
+      detached: true,
+      stdio: "ignore",
+    }).unref();
+    // Advisory, never blocking: the operator may well want a vision-only
+    // model, but they should know before the gigabytes land.
+    process.stdout.write(
+      `${JSON.stringify({ started: true, tag, tools: advertised?.tools ?? null, fit: fit ?? null })}\n`,
+    );
+    const fitNote = advertised ? fitAdvisory(tag, advertised.sizeGb, capacity) : undefined;
+    if (fitNote) process.stderr.write(`Note: ${fitNote}\n`);
+    if (advertised && !advertised.tools) {
+      process.stderr.write(
+        `Note: ${tag} does not advertise tool calling, so Codex cannot use it as a chat model. ` +
+          `It can still serve as a vision reader.\n`,
+      );
+    }
+    return;
+  }
+  if (action === "uninstall") {
+    const tag = String(value || "").trim();
+    if (!tag) throw new Error("Usage: control local-models uninstall <model-tag> --yes");
+    removeLocalModel(tag, { confirmed: flag === "--yes" || value === "--yes" });
+    refreshModelSettingsCatalog({ routes: true });
+  } else if (action === "set") {
+    if (!["on", "off"].includes(flag)) {
+      throw new Error("Usage: control local-models set <model-tag> <on|off>");
+    }
+    setLocalModelEnabled(value, flag === "on");
+    refreshModelSettingsCatalog({ routes: true });
+  } else {
+    throw new Error(
+      "Usage: control local-models list|install <tag>|uninstall <tag> --yes|set <tag> <on|off>",
+    );
+  }
+  process.stdout.write(`${JSON.stringify(snapshot())}\n`);
 }
 
 async function handlePicker(action, value, flag) {
@@ -668,6 +1154,10 @@ if (args.includes("--probe")) {
   await setLoginFreeModel(args[1]);
 } else if (args[0] === "subagents") {
   await handleSubagents(args[1], args[2], args[3]);
+} else if (args[0] === "local-models") {
+  await handleLocalModels(args[1], args[2], args[3]);
+} else if (args[0] === "vision-bridge") {
+  await handleVisionBridge(args[1] || "status", args[2], args[3]);
 } else if (args[0] === "picker") {
   await handlePicker(...pickerCommandArgs(args));
 } else if (args[0] === "service") {
