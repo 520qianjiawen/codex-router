@@ -16,6 +16,11 @@ function git(args, options = {}) {
 }
 
 function requireManagedCheckout() {
+  if (process.env.CODEX_ROUTER_PACKAGE_MANAGER === "homebrew") {
+    throw new Error(
+      "This installation is managed by Homebrew. Upgrade it with `brew upgrade codex-router`.",
+    );
+  }
   if (!existsSync(path.join(SOURCE_ROOT, ".git"))) {
     throw new Error(
       "This release is not a Git checkout. Re-run the installation command to upgrade it.",

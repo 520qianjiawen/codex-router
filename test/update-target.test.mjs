@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   checkForUpdate,
@@ -13,6 +15,8 @@ import {
   resolveCommand,
   trayRefreshRequired,
 } from "../src/update.mjs";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 test("checkout updates preserve the codex target on every platform", () => {
   const windowsCodex = currentCheckoutInstaller("win32", "codex");
@@ -29,6 +33,25 @@ test("a bare invocation updates and an explicit check stays read-only", () => {
   assert.equal(resolveCommand(["check"]), checkForUpdate);
   assert.notEqual(resolveCommand(["check"]), resolveCommand(["update"]));
   assert.equal(resolveCommand(["nonsense"]), undefined);
+});
+
+test("a Homebrew install sends updates back to Homebrew", () => {
+  const result = spawnSync(
+    process.execPath,
+    [path.join(repoRoot, "src", "update.mjs"), "check"],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CODEX_ROUTER_PACKAGE_MANAGER: "homebrew",
+        CODEX_ROUTER_SOURCE_ROOT: repoRoot,
+      },
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /brew upgrade codex-router/);
+  assert.doesNotMatch(result.stderr, /not a Git checkout/);
 });
 
 test("an update reinstalls a revision pulled outside the updater", () => {

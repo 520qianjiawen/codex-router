@@ -14,10 +14,18 @@ if (!supportedTargets.has(TARGET)) {
 }
 
 export const TARGET_DISPLAY_NAME = "Codex Router";
-export const SOURCE_ROOT = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "..",
-);
+const configuredSourceRoot = process.env.CODEX_ROUTER_SOURCE_ROOT;
+if (configuredSourceRoot && !path.isAbsolute(configuredSourceRoot)) {
+  throw new Error("CODEX_ROUTER_SOURCE_ROOT must be an absolute path.");
+}
+// Package managers install each release into a versioned prefix and expose a
+// stable `opt` symlink. Persisting the versioned path in launchd/systemd makes
+// the service disappear on the next package cleanup, so packaged launchers may
+// explicitly provide that stable root. Checkout installs keep deriving it from
+// this module's location exactly as before.
+export const SOURCE_ROOT = configuredSourceRoot
+  ? path.normalize(configuredSourceRoot)
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const CODEX_HOME =
   process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 

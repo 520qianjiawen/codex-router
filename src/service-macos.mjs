@@ -31,6 +31,10 @@ const domain = `gui/${userId}`;
 const service = `${domain}/${SERVICE_LABEL}`;
 const launchctl = "/bin/launchctl";
 const launchctlRetryWait = new Int32Array(new SharedArrayBuffer(4));
+const nodeBinary = process.env.CODEX_ROUTER_NODE_BIN || process.execPath;
+if (!path.isAbsolute(nodeBinary)) {
+  throw new Error("CODEX_ROUTER_NODE_BIN must be an absolute path.");
+}
 
 function xml(value) {
   return String(value)
@@ -59,6 +63,15 @@ function environmentEntries() {
     CODEX_ROUTER_OAUTH_PORT: String(PORTS.oauth),
     CODEX_ROUTER_PORT: String(PORTS.router),
     CODEX_ROUTER_API_PORT: String(PORTS.api),
+    ...(process.env.CODEX_ROUTER_SOURCE_ROOT
+      ? { CODEX_ROUTER_SOURCE_ROOT: SOURCE_ROOT }
+      : {}),
+    ...(process.env.CODEX_ROUTER_NODE_BIN
+      ? { CODEX_ROUTER_NODE_BIN: nodeBinary }
+      : {}),
+    ...(process.env.CODEX_ROUTER_PACKAGE_MANAGER
+      ? { CODEX_ROUTER_PACKAGE_MANAGER: process.env.CODEX_ROUTER_PACKAGE_MANAGER }
+      : {}),
   };
   if (process.env.KIMI_CODE_HOME) values.KIMI_CODE_HOME = process.env.KIMI_CODE_HOME;
   return Object.entries(values)
@@ -76,7 +89,7 @@ function plist() {
   <string>${xml(SERVICE_LABEL)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${xml(process.execPath)}</string>
+    <string>${xml(nodeBinary)}</string>
     <string>${xml(start)}</string>
   </array>
   <key>WorkingDirectory</key>

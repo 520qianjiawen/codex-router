@@ -36,6 +36,7 @@ function serviceCommand(
   command = "render",
   target = "codex",
   sourceRoot = root,
+  env = {},
 ) {
   const nodeArgs = sourceRoot === root ? [] : ["--preserve-symlinks", "--preserve-symlinks-main"];
   return execFileSync(
@@ -44,7 +45,7 @@ function serviceCommand(
     {
       cwd: sourceRoot,
       encoding: "utf8",
-      env: serviceEnv(platform, testRoot, target),
+      env: { ...serviceEnv(platform, testRoot, target), ...env },
     },
   );
 }
@@ -79,6 +80,47 @@ test("background service definitions render for macOS, Linux, and Windows", () =
     // console code page is not UTF-8 (see service-windows.mjs).
     assert.match(windows, /set "PYTHONIOENCODING=utf-8"/);
     assert.match(windows, /set "PYTHONUTF8=1"/);
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
+test("packaged services persist stable source and Node paths", () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-packaged-service-"));
+  const stableRoot = path.join(testRoot, "opt", "codex-router", "libexec");
+  const stableNode = path.join(testRoot, "opt", "node", "bin", "node");
+  const env = {
+    CODEX_ROUTER_SOURCE_ROOT: stableRoot,
+    CODEX_ROUTER_NODE_BIN: stableNode,
+    CODEX_ROUTER_PACKAGE_MANAGER: "homebrew",
+  };
+  try {
+    const launchd = serviceCommand(
+      "service-macos.mjs",
+      "darwin",
+      testRoot,
+      "render",
+      "codex",
+      root,
+      env,
+    );
+    assert.match(launchd, new RegExp(stableNode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(launchd, /<key>CODEX_ROUTER_SOURCE_ROOT<\/key>/);
+    assert.match(launchd, /<key>CODEX_ROUTER_NODE_BIN<\/key>/);
+    assert.match(launchd, /<string>homebrew<\/string>/);
+
+    const systemd = serviceCommand(
+      "service-linux.mjs",
+      "linux",
+      testRoot,
+      "render",
+      "codex",
+      root,
+      env,
+    );
+    assert.ok(systemd.includes(`WorkingDirectory=${stableRoot}`));
+    assert.ok(systemd.includes(`ExecStart="${stableNode}"`));
+    assert.ok(systemd.includes(`Environment="CODEX_ROUTER_PACKAGE_MANAGER=homebrew"`));
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }

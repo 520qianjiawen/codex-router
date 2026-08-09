@@ -23,6 +23,10 @@ import {
 
 const effectivePlatform = process.env.CODEX_ROUTER_SERVICE_PLATFORM || process.platform;
 const command = process.argv[2] || "status";
+const nodeBinary = process.env.CODEX_ROUTER_NODE_BIN || process.execPath;
+if (!path.isAbsolute(nodeBinary)) {
+  throw new Error("CODEX_ROUTER_NODE_BIN must be an absolute path.");
+}
 const unitName = "codex-router.service";
 const unitPath = path.join(
   process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
@@ -60,6 +64,15 @@ function unit() {
     CODEX_ROUTER_PORT: String(PORTS.router),
     CODEX_ROUTER_API_PORT: String(PORTS.api),
     ...(process.env.KIMI_CODE_HOME ? { KIMI_CODE_HOME: process.env.KIMI_CODE_HOME } : {}),
+    ...(process.env.CODEX_ROUTER_SOURCE_ROOT
+      ? { CODEX_ROUTER_SOURCE_ROOT: SOURCE_ROOT }
+      : {}),
+    ...(process.env.CODEX_ROUTER_NODE_BIN
+      ? { CODEX_ROUTER_NODE_BIN: nodeBinary }
+      : {}),
+    ...(process.env.CODEX_ROUTER_PACKAGE_MANAGER
+      ? { CODEX_ROUTER_PACKAGE_MANAGER: process.env.CODEX_ROUTER_PACKAGE_MANAGER }
+      : {}),
   };
   return `[Unit]
 Description=${TARGET_DISPLAY_NAME}
@@ -69,7 +82,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${String(SOURCE_ROOT).replaceAll("%", "%%")}
-ExecStart=${systemdQuote(process.execPath)} ${systemdQuote(start)}
+ExecStart=${systemdQuote(nodeBinary)} ${systemdQuote(start)}
 Restart=always
 RestartSec=5
 ${Object.entries(environment)

@@ -73,6 +73,7 @@ export function recordInstall() {
     sourceRoot: SOURCE_ROOT,
     target: TARGET,
     platform: process.platform,
+    packageManager: process.env.CODEX_ROUTER_PACKAGE_MANAGER || null,
     providers: providerSelectionStatus().providers,
   };
   const previousEntry = previous?.current;
