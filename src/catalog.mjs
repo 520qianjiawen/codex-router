@@ -27,7 +27,7 @@ import {
 } from "./multi-agent-state.mjs";
 import { readHiddenModels } from "./model-picker-state.mjs";
 import { buildNativeAliasAssignments } from "./native-alias.mjs";
-import { selectedConfiguredListedModels } from "./provider-selection.mjs";
+import { selectedConfiguredListedModels, configuredProviderIds } from "./provider-selection.mjs";
 import { assertStateOwnership } from "./state-owner.mjs";
 import { applyVisionBridge, resolveVisionEngine } from "./vision-bridge.mjs";
 import { readVisionBridgeSettings } from "./vision-bridge-state.mjs";
@@ -451,8 +451,19 @@ export function buildMergedCatalog(native, routedModelsList, { includeNative = t
 // models are republished under those slugs with their own names and reasoning
 // levels. Each aliased model keeps a hidden entry under its canonical slug so
 // routing, doctor checks, and existing configs keep resolving it.
+//
+// Only providers with a live credential may take a whitelist slot: the slot is
+// what a signed-out desktop picker offers, and a model whose provider cannot
+// authenticate would occupy it with requests that fail on the first turn. The
+// merged-catalog path filters through `selectedConfiguredListedModels()`; this
+// function keeps the same rule for the login-free path instead of trusting its
+// caller to pre-filter, so no future call site can publish dead slots again.
 export function buildLoginFreeCatalog(native, routedModelsList) {
-  const assignments = buildNativeAliasAssignments(native.models, routedModelsList);
+  const configured = new Set(configuredProviderIds());
+  const usableModels = routedModelsList.filter(
+    (model) => !model.provider || configured.has(model.provider),
+  );
+  const assignments = buildNativeAliasAssignments(native.models, usableModels);
   const aliasedSlugs = new Set(assignments.map(({ model }) => model.slug));
   const aliases = Object.fromEntries(
     assignments.map(({ nativeModel, model }) => [nativeModel.slug, model.slug]),
@@ -463,7 +474,7 @@ export function buildLoginFreeCatalog(native, routedModelsList) {
       slug: nativeModel.slug,
       priority: nativeModel.priority,
     })),
-    ...buildMergedCatalog(native, routedModelsList, { includeNative: false }).map(
+    ...buildMergedCatalog(native, usableModels, { includeNative: false }).map(
       (model) =>
         aliasedSlugs.has(model.slug) ? { ...model, visibility: "hide" } : model,
     ),
