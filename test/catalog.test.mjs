@@ -19,6 +19,7 @@ import {
   codexEffortVocabulary,
   nativeCatalogIsReusable,
   promoteNativeMultiAgent,
+  routedCatalogConfigured,
   routedModel,
 } from "../src/catalog.mjs";
 
@@ -54,6 +55,15 @@ const grok = {
   compHash: "grok-oauth-grok-4-5-v1",
   multiAgentVersion: "v2",
 };
+
+test("routed catalog is exposed only when the active provider reaches the router", () => {
+  assert.equal(routedCatalogConfigured(""), true);
+  assert.equal(routedCatalogConfigured('model_provider = "openai"\n'), true);
+  assert.equal(routedCatalogConfigured('model_provider = "codex-router-signed"\n'), true);
+  assert.equal(routedCatalogConfigured('model_provider = "custom"\n'), false);
+  assert.equal(routedCatalogConfigured('model_provider = "custom"\n', "1"), true);
+  assert.equal(routedCatalogConfigured('model_provider = "codex-router-signed"\n', "0"), false);
+});
 
 test("routed models rewrite GPT identity text to the external model name", () => {
   const model = routedModel(template, grok);

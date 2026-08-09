@@ -520,7 +520,12 @@ test("config manager adopts the exact legacy router-owned provider table", () =>
     assert.equal((migrated.match(/\[model_providers\.codex-router\]/g) || []).length, 1);
     assert.match(migrated, /# BEGIN codex-router-provider-managed/);
     assert.match(migrated, /name = "Codex Router \(external models\)"/);
-    assert.doesNotMatch(migrated, /extra providers|requires_openai_auth/);
+    assert.doesNotMatch(migrated, /extra providers/);
+    const loginFreeProvider = migrated.match(
+      /\[model_providers\.codex-router\][\s\S]*?# END codex-router-provider-managed/,
+    )?.[0];
+    assert.ok(loginFreeProvider);
+    assert.doesNotMatch(loginFreeProvider, /requires_openai_auth/);
   } finally {
     rmSync(codexHome, { recursive: true, force: true });
   }
@@ -783,6 +788,58 @@ test("config manager adopts and restores a prepared user-owned native catalog", 
       existsSync(path.join(stateDir, "native-catalog-source.json")),
       false,
     );
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("signed routing preserves and exactly restores an existing provider", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-signed-provider-"));
+  const stateDir = path.join(codexHome, "router-state");
+  const configPath = path.join(codexHome, "config.toml");
+  const original = `model = "gpt-5.6-sol"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "CC Switch"
+base_url = "https://example.invalid/v1"
+wire_api = "responses"
+`;
+  writeFileSync(configPath, original, { mode: 0o600 });
+
+  try {
+    const enabled = run("signed-enable", codexHome, stateDir);
+    assert.equal(enabled.signed_routing, true);
+    assert.equal(enabled.signed_routing_managed, true);
+    const configured = readFileSync(configPath, "utf8");
+    assert.match(configured, /^model_provider = "codex-router-signed"$/m);
+    assert.match(configured, /\[model_providers\.custom\]/);
+    assert.match(configured, /\[model_providers\.codex-router-signed\]/);
+    assert.match(configured, /requires_openai_auth = true/);
+    assert.match(configured, /supports_websockets = false/);
+    assert.equal(
+      privateFileIsProtected(path.join(stateDir, "signed-provider-mode.json")),
+      true,
+    );
+
+    const disabled = run("signed-disable", codexHome, stateDir);
+    assert.equal(disabled.model_provider, "custom");
+    assert.equal(disabled.signed_provider_state_present, false);
+    assert.match(readFileSync(configPath, "utf8"), /\[model_providers\.custom\]/);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("signed routing restores an originally unset provider", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-signed-unset-"));
+  const stateDir = path.join(codexHome, "router-state");
+  const configPath = path.join(codexHome, "config.toml");
+  writeFileSync(configPath, 'model = "gpt-5.6-sol"\n', { mode: 0o600 });
+  try {
+    run("signed-enable", codexHome, stateDir);
+    run("signed-disable", codexHome, stateDir);
+    assert.doesNotMatch(readFileSync(configPath, "utf8"), /^model_provider\s*=/m);
   } finally {
     rmSync(codexHome, { recursive: true, force: true });
   }

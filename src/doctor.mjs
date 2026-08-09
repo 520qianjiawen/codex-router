@@ -576,6 +576,21 @@ try {
         : "OpenAI login available",
     "Use the tray toggle to switch modes, or run ./bin/doctor --fix.",
   );
+  const signedModeOk = config.signed_routing
+    ? config.signed_routing_managed
+    : !config.signed_provider_state_present;
+  add(
+    signedModeOk ? "ok" : "fail",
+    "Signed router coexistence",
+    config.signed_routing
+      ? config.signed_routing_managed
+        ? "active; native GPT and external models share the authenticated router"
+        : "active without managed restore state"
+      : config.signed_provider_state_present
+        ? `ownership drift; active provider is ${config.model_provider}`
+        : `off; active provider is ${config.model_provider}`,
+    "Use the tray toggle to restore the previous provider before changing configuration managers.",
+  );
 } catch (error) {
   add(
     "fail",

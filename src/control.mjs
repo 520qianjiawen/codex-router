@@ -154,6 +154,8 @@ async function emitProbe() {
         ? {
             loginFree: Boolean(codexConfig.login_free),
             loginFreeManaged: Boolean(codexConfig.login_free_managed),
+            signedRouting: Boolean(codexConfig.signed_routing),
+            signedRoutingManaged: Boolean(codexConfig.signed_routing_managed),
           }
         : {}),
       ...(TARGET === "codex"
@@ -442,6 +444,50 @@ async function setLoginFreeMode(desired) {
   );
   if (result.status !== 0) {
     throw new Error((result.stderr || "Codex provider mode could not be changed.").trim());
+  }
+  process.stdout.write(result.stdout);
+}
+
+async function setSignedRouting(desired) {
+  if (desired !== "on" && desired !== "off") {
+    throw new Error("Usage: control signed-routing <on|off>");
+  }
+  if (desired === "on") {
+    const { selectedConfiguredListedModels } = await import("./provider-selection.mjs");
+    if (selectedConfiguredListedModels().length === 0) {
+      throw new Error(
+        "Connect and enable at least one external provider before turning on signed routing.",
+      );
+    }
+  }
+  const catalog = spawnSync(
+    process.execPath,
+    [path.join(REPO_ROOT, "src", "catalog.mjs")],
+    {
+      cwd: REPO_ROOT,
+      env: {
+        ...process.env,
+        MODEL_ROUTER_TARGET: "codex",
+        MODEL_ROUTER_SIGNED_ROUTING: desired === "on" ? "1" : "0",
+      },
+      encoding: "utf8",
+    },
+  );
+  if (catalog.status !== 0) {
+    throw new Error((catalog.stderr || "Codex model catalog could not be refreshed.").trim());
+  }
+  const command = desired === "on" ? "signed-enable" : "signed-disable";
+  const result = spawnSync(
+    process.execPath,
+    [path.join(REPO_ROOT, "src", "config-manager.mjs"), command],
+    {
+      cwd: REPO_ROOT,
+      env: { ...process.env, MODEL_ROUTER_TARGET: "codex" },
+      encoding: "utf8",
+    },
+  );
+  if (result.status !== 0) {
+    throw new Error((result.stderr || "Signed router mode could not be changed.").trim());
   }
   process.stdout.write(result.stdout);
 }
@@ -1150,6 +1196,8 @@ if (args.includes("--probe")) {
   }
 } else if (args[0] === "auth-mode") {
   await setLoginFreeMode(args[1]);
+} else if (args[0] === "signed-routing") {
+  await setSignedRouting(args[1]);
 } else if (args[0] === "model-set") {
   await setLoginFreeModel(args[1]);
 } else if (args[0] === "subagents") {

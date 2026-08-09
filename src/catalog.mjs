@@ -215,6 +215,25 @@ function loginFreeConfigured() {
   return root.match(/^\s*model_provider\s*=\s*["\']([^"\']+)["\']/m)?.[1] === "codex-router";
 }
 
+// A merged catalog is useful only when the selected Codex transport reaches
+// this router. The built-in OpenAI provider uses the managed root base URL;
+// the dedicated signed provider carries the same URL explicitly. Any other
+// custom provider (for example a configuration switcher) owns the endpoint and
+// would make external picker entries misleading.
+export function routedCatalogConfigured(contents, override = process.env.MODEL_ROUTER_SIGNED_ROUTING) {
+  if (override === "1") return true;
+  if (override === "0") return false;
+  const firstTable = String(contents || "").search(/^\s*\[/m);
+  const root = firstTable === -1 ? String(contents || "") : String(contents || "").slice(0, firstTable);
+  const provider = root.match(/^\s*model_provider\s*=\s*["\']([^"\']+)["\']/m)?.[1];
+  return !provider || provider === "openai" || provider === "codex-router-signed";
+}
+
+function routedCatalogActive() {
+  const contents = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf8") : "";
+  return routedCatalogConfigured(contents);
+}
+
 function identityName(model) {
   const displayName = String(model.displayName || "").trim();
   if (displayName) {
@@ -555,6 +574,7 @@ function main() {
   }
   const openaiAuthenticated = auth.authenticated;
   const loginFree = loginFreeConfigured();
+  const routedCatalog = routedCatalogActive();
   // Advertised last, and only while an engine actually resolves: Codex gates
   // the paste on `input_modalities`, so a bridge that has gone away must take
   // the advertisement with it rather than leaving a paste that 400s. This runs
@@ -582,7 +602,7 @@ function main() {
   const { models: merged, aliases } = loginFree
     ? buildLoginFreeCatalog(native, catalogModels)
     : {
-        models: buildMergedCatalog(native, catalogModels, {
+        models: buildMergedCatalog(native, routedCatalog ? catalogModels : [], {
           includeNative: openaiAuthenticated,
         }),
         aliases: {},
@@ -601,7 +621,9 @@ function main() {
   // this, switching it off changes multi_agent_version and nothing else, and
   // the model still answers when it is spawned by name.
   const routedAgents = syncRoutedCodexAgents(
-    subagentEligibleModels(routedModels, multiAgentSettings),
+    routedCatalog || loginFree
+      ? subagentEligibleModels(routedModels, multiAgentSettings)
+      : [],
   );
   process.stdout.write(
     `${JSON.stringify({
@@ -619,6 +641,7 @@ function main() {
         : 0,
       aliased_models: Object.keys(aliases).length,
       login_free: loginFree,
+      routed_catalog_active: routedCatalog || loginFree,
       openai_authenticated: openaiAuthenticated,
       openai_auth_reason: auth.reason,
       selected_model: selectedModel() || null,
