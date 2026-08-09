@@ -532,10 +532,12 @@ test("the evidence cache is keyed on the image and on the question pasted with i
   }
 });
 
-// Pasting a handful of screenshots at once is ordinary. `substituteImages`
-// awaits each read in turn, so the wait the operator sees is the sum, not the
-// max -- and none of it overlaps the routed turn, which has not started yet.
-test("images in one turn are read one after another, not together", async () => {
+// Pasting a handful of screenshots at once is ordinary, and none of the reading
+// overlaps the routed turn -- that has not started yet, so the operator waits
+// for all of it. Reads therefore run together, bounded by
+// `VISION_READ_CONCURRENCY` so a whole album does not arrive at a rate-limited
+// account as one burst. The wait is the slowest read, not the sum of them.
+test("images in one turn are read together, not one after another", async () => {
   const upstreams = await bridgeUpstreams();
   const router = await startBridgedRouter(upstreams);
 
@@ -559,8 +561,8 @@ test("images in one turn are read one after another, not together", async () => 
     assert.equal(upstreams.state.visionRequests.length, 3);
     report(`3 images in one turn: ${result.ms.toFixed(0)}ms for 3 x ${VISION_DELAY_MS}ms reads`);
     assert.ok(
-      result.ms >= VISION_DELAY_MS * 2.5,
-      `3 reads finished in ${result.ms.toFixed(0)}ms, which is faster than serial`,
+      result.ms < VISION_DELAY_MS * 2.5,
+      `3 reads finished in ${result.ms.toFixed(0)}ms, which is no better than serial`,
     );
     const evidence = textParts(upstreams.state.gatewayRequests.at(-1).input).filter((text) =>
       text.includes("<<<IMAGE EVIDENCE"),
@@ -575,11 +577,12 @@ test("images in one turn are read one after another, not together", async () => 
   }
 });
 
-// The cache is checked and filled around an await, with nothing recording that
-// a read is already in flight. Two turns that overlap -- a subagent alongside
-// its parent, a client retry, two panes of the same conversation -- therefore
-// both miss and both buy the transcript.
-test("two overlapping turns on the same image each buy their own transcript", async () => {
+// Two turns that overlap -- a subagent alongside its parent, a client retry,
+// two panes of the same conversation -- are the case the cache alone cannot
+// serve, because it only knows about reads that have already finished. Asking
+// the same thing now waits on the read already in flight; asking something
+// different is a different transcript and is bought as one.
+test("overlapping turns share a read only when they ask the same thing", async () => {
   const upstreams = await bridgeUpstreams();
   const router = await startBridgedRouter(upstreams);
 
@@ -598,6 +601,20 @@ test("two overlapping turns on the same image each buy their own transcript", as
     // conversation looks like.
     await turn(router.port, imageTurn({ question: "First reader." }));
     assert.equal(upstreams.state.visionRequests.length, 2);
+
+    // The same image and the same question, in flight at the same time: one
+    // read, shared. This is the shape Codex actually produces, and it was
+    // charging the engine twice for a single pasted screenshot.
+    const both = await Promise.all([
+      turn(router.port, imageTurn({ question: "Same reader.", image: IMAGE_B })),
+      turn(router.port, imageTurn({ question: "Same reader.", image: IMAGE_B })),
+    ]);
+    assert.deepEqual(
+      both.map((result) => result.status),
+      [200, 200],
+    );
+    report(`reads for 2 overlapping turns asking the same thing: ${upstreams.state.visionRequests.length - 2}`);
+    assert.equal(upstreams.state.visionRequests.length, 3);
   } finally {
     await router.stop();
     await closeServer(upstreams.server);
