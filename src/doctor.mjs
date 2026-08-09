@@ -21,6 +21,7 @@ import { waitForRouterHealth } from "./router-health.mjs";
 import {
   CALLER_SECRET_PATH,
   CODEX_AGENTS_DIR,
+  CODEX_HOME,
   CONFIG_PATH,
   INTERNAL_SECRET_PATH,
   LITELLM_CONFIG_PATH,
@@ -28,6 +29,13 @@ import {
   PORTS,
   SOURCE_ROOT,
 } from "./paths.mjs";
+import { CODEX_APP_TOOLS } from "./codex-app-tools.mjs";
+import {
+  codexSkillsDir,
+  installedSkillsFresh,
+  managedSkillNames,
+  packSkillNames,
+} from "./skills-install.mjs";
 import { cliSessionDescriptor } from "./cli-session-credential.mjs";
 import { credentialLabel, credentialStatus } from "./provider-credentials.mjs";
 import { providerNeedsCuration } from "./provider-onboarding.mjs";
@@ -633,6 +641,69 @@ add(
       : `not ready on 127.0.0.1:${PORTS.router} after ${serviceLoaded ? 30 : 2} seconds; ${health.error}`,
   "Run ./bin/doctor --fix. If it still fails, create a support bundle.",
 );
+
+// The skill pack that teaches custom routed models the native tools. Checks
+// are read-only; the fixes re-run ./bin/install, which refreshes exactly the
+// marker-owned directories.
+{
+  const pack = packSkillNames();
+  const managed = managedSkillNames(CODEX_HOME);
+  const missing = pack.filter((name) => !managed.includes(name));
+  add(
+    missing.length === 0 ? "ok" : "fail",
+    "Codex skill pack",
+    missing.length === 0
+      ? `${managed.length} skill(s) installed`
+      : `missing: ${missing.join(", ")}`,
+    "./bin/install",
+  );
+  const { fresh, stale } = installedSkillsFresh(CODEX_HOME);
+  add(
+    fresh ? "ok" : "warn",
+    "Codex skill pack freshness",
+    fresh ? "matches the checkout" : `differs from the checkout: ${stale.join(", ")}`,
+    "./bin/install (replaces managed skills)",
+  );
+  const collisions = pack.filter(
+    (name) =>
+      existsSync(path.join(codexSkillsDir(CODEX_HOME), name)) &&
+      !existsSync(path.join(codexSkillsDir(CODEX_HOME), name, ".codex-router-managed")),
+  );
+  if (collisions.length > 0) {
+    add(
+      "warn",
+      "Codex skill pack collisions",
+      `existing skills not managed by codex-router: ${collisions.join(", ")}`,
+      "rename or remove the conflicting skills, then run ./bin/install",
+    );
+  }
+  // The skills hard-code the wire shapes the app validates. When the app
+  // changes a shape and the snapshot is re-captured, this check flags that
+  // the skills and the snapshot disagree so they are co-revised in one commit.
+  const expectedRequired = {
+    create_thread: ["prompt", "target"],
+    read_thread: ["threadId"],
+    send_message_to_thread: ["threadId", "prompt"],
+  };
+  const codexApp = CODEX_APP_TOOLS.find((entry) => entry.name === "codex_app");
+  const toolsByName = new Map((codexApp?.tools || []).map((fn) => [fn.name, fn]));
+  const drift = [];
+  for (const [name, expected] of Object.entries(expectedRequired)) {
+    const fn = toolsByName.get(name);
+    const have = [...(fn?.inputSchema?.required || [])].sort();
+    if (!fn || JSON.stringify(have) !== JSON.stringify([...expected].sort())) {
+      drift.push(`${name} (snapshot requires [${have.join(", ")}])`);
+    }
+  }
+  add(
+    drift.length === 0 ? "ok" : "warn",
+    "Codex skill pack schema match",
+    drift.length === 0
+      ? "skills match the app toolset snapshot"
+      : `skill shapes drifted from the snapshot: ${drift.join("; ")}`,
+    "co-revise the skill pack together with src/codex-app-tools.mjs",
+  );
+}
 
 if (codex && catalogOk) {
   try {

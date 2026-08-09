@@ -6,9 +6,12 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { CODEX_APP_TOOLS } from "../src/codex-app-tools.mjs";
 import {
+  installedSkillsFresh,
   installSkills,
   managedSkillNames,
+  packSkillNames,
   uninstallSkills,
 } from "../src/skills-install.mjs";
 
@@ -151,6 +154,76 @@ test("install skips hidden directories and dirs without SKILL.md", () => {
     rmSync(fakeSource, { recursive: true, force: true });
   }
 });
+
+test("packSkillNames lists exactly the shipped pack", () => {
+  const names = packSkillNames();
+  assert.deepEqual(names, [...PACK].sort());
+});
+
+test("installedSkillsFresh is true after install and false after a manual edit", () => {
+  const home = tempCodexHome();
+  try {
+    installSkills(home, { quiet: true });
+    assert.deepEqual(installedSkillsFresh(home), { fresh: true, stale: [] });
+    // A user edits a managed skill: freshness must flag it.
+    const target = path.join(home, "skills", "codex-app-threads", "SKILL.md");
+    writeFileSync(target, `${readFileSync(target, "utf8")}\n# local edit\n`);
+    const { fresh, stale } = installedSkillsFresh(home);
+    assert.equal(fresh, false);
+    assert.ok(stale.includes("codex-app-threads"));
+    // Re-install restores freshness.
+    installSkills(home, { quiet: true });
+    assert.equal(installedSkillsFresh(home).fresh, true);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("installedSkillsFresh flags a missing managed skill", () => {
+  const home = tempCodexHome();
+  try {
+    installSkills(home, { quiet: true });
+    rmSync(path.join(home, "skills", "codex-router"), { recursive: true, force: true });
+    const { fresh, stale } = installedSkillsFresh(home);
+    assert.equal(fresh, false);
+    assert.ok(stale.includes("codex-router"));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("the skills teach exactly the required fields the app snapshot enforces", () => {
+  // The doctor schema-match check reads this same data. If the app changes a
+  // wire shape and the snapshot is re-captured, this test fails until the
+  // skill pack is co-revised -- that is the drift tripwire.
+  const codexApp = CODEX_APP_TOOLS.find((entry) => entry.name === "codex_app");
+  assert.ok(codexApp, "codex_app namespace present in snapshot");
+  const byName = new Map(codexApp.tools.map((fn) => [fn.name, fn]));
+  const expected = {
+    create_thread: ["prompt", "target"],
+    read_thread: ["threadId"],
+    send_message_to_thread: ["threadId", "prompt"],
+  };
+  for (const [name, want] of Object.entries(expected)) {
+    const fn = byName.get(name);
+    assert.ok(fn, `snapshot carries ${name}`);
+    assert.deepEqual(
+      [...(fn.inputSchema?.required || [])].sort(),
+      [...want].sort(),
+      `${name} required fields match the skill pack`,
+    );
+  }
+  // The skills text must actually say create_thread needs prompt AND target.
+  const threadsSkill = readFileSync(
+    path.join(skillsRoot(), "codex-app-threads", "SKILL.md"),
+    "utf8",
+  );
+  assert.match(threadsSkill, /requires TWO fields: `prompt` \(string\) and `target`/);
+});
+
+function skillsRoot() {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "skills");
+}
 
 test("every pack skill has valid frontmatter, a trigger description, and stays short", () => {
   const skillsRoot = path.resolve(

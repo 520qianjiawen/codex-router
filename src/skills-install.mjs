@@ -14,6 +14,7 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -33,6 +34,22 @@ export function codexSkillsDir(codexHome) {
   return path.join(codexHome, "skills");
 }
 
+// The pack names this checkout ships: source directories with a SKILL.md,
+// excluding hidden directories.
+export function packSkillNames() {
+  const sourceRoot = skillsSource();
+  if (!existsSync(sourceRoot)) return [];
+  return readdirSync(sourceRoot, { withFileTypes: true })
+    .filter(
+      (entry) =>
+        entry.isDirectory() &&
+        !entry.name.startsWith(".") &&
+        existsSync(path.join(sourceRoot, entry.name, "SKILL.md")),
+    )
+    .map((entry) => entry.name)
+    .sort();
+}
+
 export function managedSkillNames(codexHome) {
   const dir = codexSkillsDir(codexHome);
   if (!existsSync(dir)) return [];
@@ -40,6 +57,48 @@ export function managedSkillNames(codexHome) {
     .filter((entry) => entry.isDirectory() && existsSync(path.join(dir, entry.name, MARKER)))
     .map((entry) => entry.name)
     .sort();
+}
+
+// Compare the installed pack against the checkout. Returns the names of
+// managed skills whose installed content differs from the source (missing,
+// changed, or extra files). The marker file is ignored in the comparison.
+export function installedSkillsFresh(codexHome) {
+  const sourceRoot = skillsSource();
+  if (!existsSync(sourceRoot)) return { fresh: true, stale: [] };
+  const stale = [];
+  for (const name of packSkillNames()) {
+    if (!sameDirContent(path.join(sourceRoot, name), path.join(codexSkillsDir(codexHome), name))) {
+      stale.push(name);
+    }
+  }
+  return { fresh: stale.length === 0, stale };
+}
+
+function sameDirContent(source, target) {
+  if (!existsSync(target)) return false;
+  const visible = (entries) =>
+    entries
+      .filter((entry) => !entry.name.startsWith("."))
+      .map((entry) => entry.name)
+      .sort();
+  const a = readdirSync(source, { withFileTypes: true });
+  const b = readdirSync(target, { withFileTypes: true });
+  if (JSON.stringify(visible(a)) !== JSON.stringify(visible(b))) return false;
+  for (const entry of a) {
+    if (entry.name.startsWith(".")) continue;
+    const pa = path.join(source, entry.name);
+    const pb = path.join(target, entry.name);
+    if (entry.isDirectory()) {
+      if (!sameDirContent(pa, pb)) return false;
+    } else {
+      try {
+        if (!readFileSync(pa).equals(readFileSync(pb))) return false;
+      } catch {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 export function installSkills(codexHome, { quiet = false } = {}) {
