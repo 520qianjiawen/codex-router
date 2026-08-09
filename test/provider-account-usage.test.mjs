@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  chutesBalanceMetrics,
   deepSeekBalanceMetrics,
   githubCopilotQuotaMetrics,
   grokCreditsMetrics,
@@ -66,6 +67,17 @@ test("GitHub Copilot ignores null and unlimited quota placeholders", () => {
       chat: { entitlement: 100, remaining: -1, percent_remaining: 100 },
     },
   }), []);
+});
+
+test("normalizes the Chutes API balance", () => {
+  assert.deepEqual(chutesBalanceMetrics({ balance: "42.75" }), [{
+    kind: "balance",
+    label: "API balance",
+    value: 42.75,
+    currency: "USD",
+    detail: "Chutes credits remaining",
+    available: true,
+  }]);
 });
 
 test("normalizes Kimi weekly and five-hour quota windows", () => {
@@ -155,6 +167,35 @@ test("Command Code usage degrades to the Studio link without an account API", as
     assert.equal(snapshot.commandcode.dashboardUrl, "https://commandcode.ai/studio");
   } finally {
     delete process.env.COMMAND_CODE_API_KEY;
+  }
+});
+
+test("Chutes usage reads the official account balance with Bearer auth", async () => {
+  const saved = process.env.CHUTES_API_KEY;
+  process.env.CHUTES_API_KEY = "TEST_CHUTES_USAGE_KEY";
+  try {
+    const requests = [];
+    const snapshot = await providerAccountUsageSnapshot({
+      providerIds: ["chutes"],
+      fetchImpl: async (url, options) => {
+        requests.push({ url: String(url), auth: options?.headers?.Authorization });
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ balance: 18.5 }),
+        };
+      },
+    });
+    assert.deepEqual(requests, [{
+      url: "https://api.chutes.ai/users/me",
+      auth: "Bearer TEST_CHUTES_USAGE_KEY",
+    }]);
+    assert.equal(snapshot.chutes.status, "available");
+    assert.equal(snapshot.chutes.metrics[0].value, 18.5);
+    assert.equal(snapshot.chutes.dashboardUrl, "https://chutes.ai/app");
+  } finally {
+    if (saved === undefined) delete process.env.CHUTES_API_KEY;
+    else process.env.CHUTES_API_KEY = saved;
   }
 });
 

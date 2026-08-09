@@ -941,11 +941,12 @@ private struct ProviderIcon: View {
     if providerID == "anthropic-api" { return "anthropic" }
     if providerID.hasPrefix("commandcode") { return "commandcode" }
     if providerID == "github-copilot" { return "github-copilot" }
+    if providerID == "chutes" { return "chutes" }
     return nil
   }
 
   private var assetExtension: String {
-    providerID == "github-copilot" ? "svg" : "png"
+    ["github-copilot", "chutes"].contains(providerID) ? "svg" : "png"
   }
 
   private var providerName: String {
@@ -960,6 +961,7 @@ private struct ProviderIcon: View {
     if providerID.hasPrefix("commandcode") { return "Command Code" }
     if providerID == "github-copilot" { return "GitHub Copilot" }
     if providerID == "clinepass" { return "ClinePass" }
+    if providerID == "chutes" { return "Chutes" }
     return "Model provider"
   }
 }

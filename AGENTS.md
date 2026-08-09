@@ -41,7 +41,7 @@ user.
    key or a `command-code login` browser sign-in — see step 5). The
    catalog-only providers `groq`, `openrouter`, `together`, `fireworks`,
    `cerebras`, `mistral`, `nvidia-nim`, `siliconflow`, `huggingface`,
-   `gemini-api`, and `github-copilot` are also selectable, but they ship no
+   `gemini-api`, `github-copilot`, and `chutes` are also selectable, but they ship no
    preselected models: after
    the credential is stored, the user must run `bin/curate-models PROVIDER` in an
    interactive terminal to choose models. If they did not specify and

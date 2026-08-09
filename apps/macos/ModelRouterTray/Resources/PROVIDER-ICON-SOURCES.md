@@ -14,5 +14,6 @@ blue accent and DeepSeek's original blue mark are preserved.
 | Anthropic | https://www.anthropic.com/ | https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/681d52619fec35886a7f1a70_favicon.png |
 | Command Code | https://commandcode.ai/ | https://commandcode.ai/apple-touch-icon.png |
 | GitHub Copilot | https://github.com/features/copilot | https://github.com/primer/octicons/blob/main/icons/copilot-24.svg (MIT) |
+| Chutes | https://chutes.ai/ | Inline SVG mark from the official site header |
 
 The marks remain trademarks of their respective owners.
