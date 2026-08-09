@@ -92,6 +92,18 @@ Linux installations support the Codex CLI.
 | Muse Spark 1.2 (Meta) | `meta/muse-spark-1.2` | Meta Model API key |
 | Muse Spark 1.2 Contributor (Meta) | `meta/muse-spark-1.2-contributor` | Meta Model API key |
 | Muse Spark 1.1 (Meta) | `meta/muse-spark-1.1` | Meta Model API key |
+| GLM-5.2 (ClinePass) | `clinepass/glm-5.2` | ClinePass API key |
+| Kimi K3 (ClinePass) | `clinepass/kimi-k3` | ClinePass API key |
+| Kimi K2.7 Code (ClinePass) | `clinepass/kimi-k2.7-code` | ClinePass API key |
+| Kimi K2.6 (ClinePass) | `clinepass/kimi-k2.6` | ClinePass API key |
+| DeepSeek V4 Pro (ClinePass) | `clinepass/deepseek-v4-pro` | ClinePass API key |
+| DeepSeek V4 Flash (ClinePass) | `clinepass/deepseek-v4-flash` | ClinePass API key |
+| MiMo-V2.5 (ClinePass) | `clinepass/mimo-v2.5` | ClinePass API key |
+| MiMo-V2.5-Pro (ClinePass) | `clinepass/mimo-v2.5-pro` | ClinePass API key |
+| MiniMax M3 (ClinePass) | `clinepass/minimax-m3` | ClinePass API key |
+| Qwen3.7 Max (ClinePass) | `clinepass/qwen3.7-max` | ClinePass API key |
+| Qwen3.7 Plus (ClinePass) | `clinepass/qwen3.7-plus` | ClinePass API key |
+| Qwen3.8 Max (ClinePass) | `clinepass/qwen3.8-max` | ClinePass API key |
 
 The Codex catalog is credential-aware. It includes models only from enabled
 external providers with a stored API key or valid OAuth session. Native GPT
@@ -104,6 +116,12 @@ points at the token-plan endpoint. Set `QWEN_PLAN_BASE_URL` to
 pay-as-you-go DashScope key through the same provider. Alibaba publishes no
 quota or balance API on either endpoint, so the tray shows router-observed
 traffic and links to the console for actual spend.
+
+ClinePass uses Cline's OpenAI-compatible API at
+`https://api.cline.bot/api/v1`. An API key alone does not grant access to the
+`cline-pass/*` models: the account also needs an active ClinePass subscription.
+Create the key under Cline Settings > API Keys, then store it with
+`./bin/model-router codex provider-key clinepass set`.
 
 Grok OAuth reuses the official CLI credential at `~/.grok/auth.json` and sends
 it only to xAI's documented Grok CLI inference proxy. On that path the router

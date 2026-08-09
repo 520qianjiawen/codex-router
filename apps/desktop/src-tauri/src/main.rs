@@ -991,6 +991,7 @@ mod tests {
     #[test]
     fn accepts_only_registry_shaped_provider_ids() {
         assert!(validate_provider("kimi-oauth").is_ok());
+        assert!(validate_provider("clinepass").is_ok());
         // Providers the registry gained after this file was written must keep
         // working without a code change here.
         assert!(validate_provider("local").is_ok());
@@ -1001,6 +1002,8 @@ mod tests {
         assert!(validate_provider("Grok API").is_err());
         assert!(validate_provider_kind("deepseek", ProviderKind::Api).is_ok());
         assert!(validate_provider_kind("deepseek", ProviderKind::Oauth).is_err());
+        assert!(validate_provider_kind("clinepass", ProviderKind::Api).is_ok());
+        assert!(validate_provider_kind("clinepass", ProviderKind::Oauth).is_err());
     }
 
     #[test]
