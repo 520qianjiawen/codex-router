@@ -201,18 +201,22 @@ export async function fetchRegistryCapabilities(tag, { fetchImpl = fetch, timeou
     const layers = Array.isArray(parsed?.layers) ? parsed.layers : [];
     const template = layers.find((layer) => layer?.mediaType?.endsWith(".template"));
     const bytes = layers.reduce((sum, layer) => sum + (layer?.size || 0), 0);
-    if (!template?.digest) return { tag, tools: false, sizeGb: bytes / 1e9 };
+    // One tenth of a gigabyte on every path: the two early returns used to
+    // hand back the raw quotient, so a model whose template could not be read
+    // reported "18.556700222 GB" in the tray while its neighbours read "18.6".
+    const sizeGb = Math.round((bytes / 1e9) * 10) / 10;
+    if (!template?.digest) return { tag, tools: false, sizeGb };
     // Blob URLs redirect to a CDN, so the fetch has to follow them.
     const blob = await fetchImpl(`${base}/blobs/${template.digest}`, {
       redirect: "follow",
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!blob.ok) return { tag, tools: false, sizeGb: bytes / 1e9 };
+    if (!blob.ok) return { tag, tools: false, sizeGb };
     const text = await blob.text();
     return {
       tag,
       tools: /\{\{[^}]*\.Tools/i.test(text),
-      sizeGb: Math.round((bytes / 1e9) * 10) / 10,
+      sizeGb,
     };
   } catch {
     // Offline or an unknown tag: the install proceeds unannotated rather than
@@ -407,6 +411,10 @@ export function localModelsSnapshot({
       agentCapable: agentChecks[entry.tag]?.agentCapable,
     };
   });
+  // Without this the only way to install a model was to already know its tag,
+  // which is no help to anyone who has never installed one. Rated for this
+  // machine so the list cannot suggest something that will not run here.
+  const available = suggestedLocalModels({ installed: models });
   return {
     path: LOCAL_MODELS_STATE_PATH,
     installed: models.length,
@@ -414,6 +422,8 @@ export function localModelsSnapshot({
     usableAsChat: models.filter((model) => model.tools).length,
     totalGb: Math.round(models.reduce((sum, model) => sum + model.sizeGb, 0) * 10) / 10,
     models,
+    available,
+    machine: describeMachine(detectMachine()),
   };
 }
 
@@ -523,4 +533,96 @@ export function fitAdvisory(tag, sizeGb, capacity = detectMachine()) {
     return `${tag} needs about ${Math.ceil(sizeGb * OVERHEAD_FACTOR)} GB to run and this machine has ${describeMachine(capacity)}.`;
   }
   return undefined;
+}
+
+// --- what is worth downloading ---------------------------------------------
+
+// Nothing in the tray or the CLI answered "which models exist?", so the only
+// way to install one was to already know its tag. This is a starting list, not
+// a catalog: `tools` and `sizeGb` below were read from the registry manifests
+// on 2026-08-09 with fetchRegistryCapabilities, and the live lookup still runs
+// at install time, so a republished tag corrects itself there rather than
+// silently disagreeing here.
+//
+// `tools` decides everything. Codex drives every turn through tool calls, so a
+// model without them can only ever be a vision reader — and several popular
+// coding models turn out not to have them.
+export const SUGGESTED_LOCAL_MODELS = Object.freeze(
+  [
+    {
+      tag: "qwen2.5-coder:1.5b",
+      sizeGb: 1,
+      tools: true,
+      note: "Smallest coder; for machines with little to spare",
+    },
+    {
+      tag: "llama3.2:3b",
+      sizeGb: 2,
+      tools: true,
+      note: "Verified making a real tool call through the router",
+    },
+    {
+      tag: "qwen2.5-coder:3b",
+      sizeGb: 1.9,
+      tools: true,
+      note: "Small coder",
+    },
+    {
+      tag: "gemma3:4b",
+      sizeGb: 3.3,
+      tools: false,
+      note: "No tools — vision reader only",
+    },
+    {
+      tag: "mistral:7b",
+      sizeGb: 4.4,
+      tools: true,
+      note: "General purpose",
+    },
+    {
+      tag: "qwen2.5-coder:7b",
+      sizeGb: 4.7,
+      tools: true,
+      note: "Advertises tools but has returned them as plain text",
+    },
+    {
+      tag: "llama3.1:8b",
+      sizeGb: 4.9,
+      tools: true,
+      note: "General purpose baseline",
+    },
+    {
+      tag: "qwen2.5-coder:14b",
+      sizeGb: 9,
+      tools: true,
+      note: "Stronger coder",
+    },
+    {
+      tag: "gpt-oss:20b",
+      sizeGb: 13.8,
+      tools: true,
+      note: "Open thinking model",
+    },
+    {
+      tag: "devstral",
+      sizeGb: 14.3,
+      tools: true,
+      note: "Built for agentic coding",
+    },
+  ].map((entry) => Object.freeze(entry)),
+);
+
+// Rated for this machine and filtered against what is already downloaded, so
+// the list only ever offers something the operator does not have and can run.
+export function suggestedLocalModels({
+  capacity = detectMachine(),
+  installed = [],
+  includeUnusable = false,
+} = {}) {
+  const have = new Set(installed.map((entry) => String(entry?.tag ?? entry)));
+  return SUGGESTED_LOCAL_MODELS
+    .map((entry) => ({ ...entry, fit: rateModelFit(entry.sizeGb, capacity) }))
+    .filter((entry) => !have.has(entry.tag) && !have.has(`${entry.tag}:latest`))
+    .filter((entry) => includeUnusable || entry.fit !== "too-large")
+    .sort((left, right) => left.sizeGb - right.sizeGb);
 }

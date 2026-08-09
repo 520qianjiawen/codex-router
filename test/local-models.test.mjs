@@ -21,6 +21,7 @@ const {
   readLocalModelSelection,
   removeLocalModel,
   setLocalModelEnabled,
+  suggestedLocalModels,
 } = await import("../src/local-models.mjs");
 
 const LIST = `NAME                ID              SIZE      MODIFIED
@@ -245,4 +246,36 @@ test("a machine description says which memory the number refers to", () => {
     describeMachine(machineCapacity({ totalMemoryBytes: 32e9, gpuMemoryBytes: 24e9 })),
     /24\.0 GB GPU memory/,
   );
+});
+
+test("the download list is rated, filtered, and ordered by size", () => {
+  const laptop = machineCapacity({ totalMemoryBytes: 8e9, platform: "linux" });
+  const suggestions = suggestedLocalModels({ capacity: laptop });
+
+  // Nothing that cannot run here is ever offered for download.
+  assert.ok(suggestions.length > 0);
+  assert.ok(suggestions.every((entry) => entry.fit !== "too-large"));
+  assert.deepEqual(
+    suggestions.map((entry) => entry.sizeGb),
+    [...suggestions.map((entry) => entry.sizeGb)].sort((a, b) => a - b),
+  );
+
+  // Tool support decides whether Codex can drive a model, so every entry
+  // carries it rather than leaving it to be discovered after the download.
+  assert.ok(suggestions.every((entry) => typeof entry.tools === "boolean"));
+
+  // A model already downloaded is not offered again, with or without the
+  // implicit :latest Ollama reports.
+  const withInstalled = suggestedLocalModels({
+    capacity: laptop,
+    installed: [{ tag: "llama3.2:3b" }],
+  });
+  assert.equal(withInstalled.some((entry) => entry.tag === "llama3.2:3b"), false);
+});
+
+test("a machine too small for everything still gets an honest empty list", () => {
+  const tiny = machineCapacity({ totalMemoryBytes: 1e9, platform: "linux" });
+  assert.deepEqual(suggestedLocalModels({ capacity: tiny }), []);
+  // Asking for the unusable ones is explicit, never the default.
+  assert.ok(suggestedLocalModels({ capacity: tiny, includeUnusable: true }).length > 0);
 });

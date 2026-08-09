@@ -1686,6 +1686,21 @@ struct LocalModelsSnapshot: Decodable {
   let usableAsChat: Int?
   let totalGb: Double
   let models: [InstalledLocalModel]
+  // Optional so a tray built against this snapshot keeps decoding one from an
+  // older router that has no suggestions to offer.
+  let available: [AvailableLocalModel]?
+  let machine: String?
+}
+
+/// A model worth downloading, already rated against this machine's memory by
+/// the router. Nothing that cannot run here reaches the tray.
+struct AvailableLocalModel: Decodable, Identifiable, Equatable {
+  let tag: String
+  let sizeGb: Double
+  let tools: Bool
+  let note: String
+  let fit: String
+  var id: String { tag }
 }
 
 struct InstalledLocalModel: Decodable, Identifiable, Equatable {
@@ -2419,7 +2434,7 @@ private struct TrayView: View {
           .font(.system(size: 9))
           .foregroundStyle(routerMuted)
         if sortedLocalModels.isEmpty {
-          Text("Nothing installed yet. Add one below, or install Ollama first.")
+          Text("Nothing installed yet. Pick one below to download, or type any tag.")
             .font(.system(size: 9))
             .foregroundStyle(routerMutedStrong)
         } else {
@@ -2439,6 +2454,28 @@ private struct TrayView: View {
           VStack(spacing: 7) {
             ForEach(sortedLocalModels) { model in
               installedLocalRow(model)
+            }
+          }
+        }
+        // Knowing a tag by heart is not a reasonable prerequisite for trying a
+        // local model, and the text field below was the only way in. These are
+        // rated against this machine's memory, so nothing offered here is
+        // something it cannot run.
+        if !suggestedLocalModels.isEmpty {
+          Divider().padding(.vertical, 2)
+          HStack(spacing: 4) {
+            Text("AVAILABLE TO DOWNLOAD")
+            Spacer()
+            if let machine = localModels?.machine {
+              Text(machine).lineLimit(1).truncationMode(.tail)
+            }
+          }
+          .font(.system(size: 8, weight: .semibold))
+          .foregroundStyle(routerMuted)
+          .padding(.horizontal, 2)
+          VStack(spacing: 6) {
+            ForEach(suggestedLocalModels) { model in
+              availableLocalRow(model)
             }
           }
         }
@@ -2463,6 +2500,48 @@ private struct TrayView: View {
           downloadBar(tag: download.tag, percent: download.percent)
         }
       }
+    }
+
+    @ViewBuilder private func availableLocalRow(_ model: AvailableLocalModel) -> some View {
+      HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 1) {
+          Text(model.tag)
+            .font(.system(size: 10, weight: .medium))
+            .lineLimit(1)
+          // Tool support decides whether Codex can drive it at all, so it is
+          // stated on the row rather than discovered after the download.
+          Text(model.tools ? model.note : "\(model.note) · no tools, vision only")
+            .font(.system(size: 8))
+            .foregroundStyle(model.tools ? routerMuted : routerYellow.opacity(0.9))
+            .lineLimit(1)
+            .truncationMode(.tail)
+        }
+        Spacer()
+        if model.fit == "tight" {
+          Text("tight")
+            .font(.system(size: 8, weight: .medium))
+            .foregroundStyle(routerYellow)
+        }
+        Text(String(format: "%.1f GB", model.sizeGb))
+          .font(.system(size: 9))
+          .foregroundStyle(routerMuted)
+          .monospacedDigit()
+        Button("Download") {
+          Task { await store.downloadLocalVisionModel(model.tag) }
+        }
+        .buttonStyle(.borderless)
+        .font(.system(size: 9, weight: .medium))
+        .foregroundStyle(canDownloadSuggestion ? routerMint : routerMutedStrong)
+        .disabled(!canDownloadSuggestion)
+      }
+    }
+
+    private var canDownloadSuggestion: Bool {
+      !busy && store.visionDownload?.isRunning != true
+    }
+
+    private var suggestedLocalModels: [AvailableLocalModel] {
+      localModels?.available ?? []
     }
 
     private static let checkColumnWidth: CGFloat = 38
