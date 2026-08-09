@@ -59,6 +59,12 @@ unknown provider kinds, duplicate provider IDs, duplicate public slugs,
 duplicate gateway model IDs, missing credential metadata, and incomplete picker
 metadata.
 
+Models may declare `serviceTiers` as `{ id, name, description? }` entries only
+when the upstream is verified to honor those request values. The catalog
+exposes them as opt-in choices and always keeps standard service as the
+default. User-curated entries can add the same field directly in
+`user-models.json`; duplicate tier IDs are rejected.
+
 Set `listed: false` for compatibility aliases that must remain routable but
 should not appear in the app picker. Every model, listed or hidden, receives a
 generated LiteLLM route.

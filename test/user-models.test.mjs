@@ -50,12 +50,14 @@ test("curation metadata can set sizing and the effort ladder", () => {
         { effort: "high", description: "Deep reasoning" },
       ],
       defaultEffort: "medium",
+      serviceTiers: [{ id: "priority", name: "Fast" }],
     },
   });
   assert.equal(entry.contextWindow, 262144);
   assert.deepEqual(entry.inputModalities, ["text", "image"]);
   assert.equal(entry.reasoningLevels.length, 3);
   assert.equal(entry.defaultEffort, "medium");
+  assert.deepEqual(entry.serviceTiers, [{ id: "priority", name: "Fast" }]);
 });
 
 test("curation metadata cannot replace identity or routing fields", () => {

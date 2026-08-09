@@ -38,6 +38,7 @@ const template = {
     },
   },
   apply_patch_tool_type: "freeform",
+  default_service_tier: "priority",
 };
 
 const grok = {
@@ -109,6 +110,23 @@ test("routed models advertise search and image detail only when the registry opt
   });
   assert.equal(capable.supports_search_tool, true);
   assert.equal(capable.supports_image_detail_original, true);
+});
+
+test("routed service tiers are explicit and never inherit a paid default", () => {
+  const plain = routedModel(template, grok);
+  assert.deepEqual(plain.service_tiers, []);
+  assert.equal(plain.default_service_tier, null);
+
+  const tiered = routedModel(template, {
+    ...grok,
+    serviceTiers: [
+      { id: " priority ", name: " Fast ", description: " Guaranteed throughput. " },
+    ],
+  });
+  assert.deepEqual(tiered.service_tiers, [
+    { id: "priority", name: "Fast", description: "Guaranteed throughput." },
+  ]);
+  assert.equal(tiered.default_service_tier, null);
 });
 
 test("routed models inherit apply_patch unless the registry opts out", () => {

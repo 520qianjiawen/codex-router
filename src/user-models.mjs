@@ -27,6 +27,7 @@ const METADATA_FIELDS = new Set([
   "inputModalities",
   "reasoningLevels",
   "defaultEffort",
+  "serviceTiers",
   "availabilityNux",
   "upgradeTo",
 ]);

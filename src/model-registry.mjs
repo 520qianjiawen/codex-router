@@ -339,6 +339,28 @@ function modelProblem(model, providers, slugs, gatewayModels) {
   ) {
     return `model ${model.slug} has an invalid searchTool`;
   }
+  if (model.serviceTiers !== undefined) {
+    if (
+      !Array.isArray(model.serviceTiers) ||
+      model.serviceTiers.some(
+        (tier) =>
+          !tier ||
+          typeof tier !== "object" ||
+          Array.isArray(tier) ||
+          typeof tier.id !== "string" ||
+          !tier.id.trim() ||
+          typeof tier.name !== "string" ||
+          !tier.name.trim() ||
+          (tier.description !== undefined && typeof tier.description !== "string"),
+      )
+    ) {
+      return `model ${model.slug} has invalid serviceTiers`;
+    }
+    const ids = model.serviceTiers.map((tier) => tier.id.trim());
+    if (new Set(ids).size !== ids.length) {
+      return `model ${model.slug} has duplicate serviceTiers`;
+    }
+  }
   if (
     model.defaultReasoningSummary !== undefined &&
     !["auto", "concise", "detailed"].includes(model.defaultReasoningSummary)

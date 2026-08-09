@@ -261,7 +261,19 @@ export function routedModel(template, model) {
     input_modalities: model.inputModalities,
     comp_hash: model.compHash,
     additional_speed_tiers: [],
-    service_tiers: [],
+    service_tiers: Array.isArray(model.serviceTiers)
+      ? model.serviceTiers.map((tier) => ({
+          id: tier.id.trim(),
+          name: tier.name.trim(),
+          ...(typeof tier.description === "string" && tier.description.trim()
+            ? { description: tier.description.trim() }
+            : {}),
+        }))
+      : [],
+    // Never inherit a native template's paid tier as the routed default.
+    // Declared tiers are opt-in choices; standard provider service stays the
+    // default until a separate, validated default is intentionally supported.
+    default_service_tier: null,
     // Codex surfaces this once per slug (up to its own show cap) as the
     // "Introducing {model}" announcement; absent copy must stay null so the
     // client never renders an empty card.
