@@ -438,6 +438,49 @@ minutes later. Do not quietly drop the label because a check happened to pass.
   directories.
 - Do not restart or quit the Codex App from the installation task.
 
+## Upstream retries are legal only before the first relayed byte
+
+`src/upstream-retry.mjs` retries a native upstream request a bounded number of
+times. One rule governs it, and breaking it corrupts responses rather than
+merely failing them.
+
+1. A retry is legal only while **nothing has been relayed**. The loop lives
+   entirely before its callers touch their `ServerResponse`, and the `canRetry`
+   predicate (`response.headersSent`, checked again before every retry) is the
+   backstop. `copyResponseHeaders` only stages values with `setHeader`, so
+   `headersSent` flips when Node flushes the head — on the first body write, or
+   on `end()` for a bodyless upstream. Never move a retry around
+   `pipeResponse`: an upstream that dies mid-stream has already delivered
+   bytes, and replaying it appends a second response to a stream the client is
+   reading. `test/native-retry.test.mjs` asserts the caller received the partial
+   stream exactly once.
+2. Only failures where an intermediary never obtained a response qualify: 502,
+   503, 504, Cloudflare's 520-524, and connect-level socket errors. Do not add
+   429 — it is rate limiting, its `Retry-After` is relayed, and sleeping for the
+   upstream's suggested delay is the hang the bound exists to prevent. Do not
+   add 4xx, and do not add 500, where the origin ran and a repeat risks a second
+   execution.
+3. Keep the bound small. Codex retries roughly five times on its own and the
+   two loops multiply, so the router's share (2 retries, 250ms then 750ms) has
+   to keep the product a fast failure. A retry is also only *started* while the
+   request has been cheap so far — a five-second budget, because a 504 the edge
+   spent half a minute producing, or a connect timeout, must not be tripled.
+   `CODEX_ROUTER_NATIVE_RETRIES`, `CODEX_ROUTER_NATIVE_RETRY_BACKOFF_MS`, and
+   `CODEX_ROUTER_NATIVE_RETRY_BUDGET_MS` tune it; `0` disables it.
+4. The request body must stay replayable: encode it into a Buffer once, above
+   the retry, so every attempt sends identical bytes under the identical
+   `Content-Encoding`. Never hand the loop a stream, and never re-run
+   `compressedNativeBody` per attempt — headers and body would be free to
+   disagree.
+5. An abort stops everything at once, backoff included. Pass the caller's signal
+   through to both the fetch and the wait.
+6. A silent retry is worse than no retry: it makes a flaky upstream look
+   healthy. The retry log line is never gated on `CODEX_ROUTER_QUIET`, which a
+   production LaunchAgent hard-sets, and the usage event carries `retries` so a
+   turn the router rescued is distinguishable from one that never failed. Log
+   the status or the transport error's own name and code — never a response
+   body, and never the caller capability path.
+
 ## Routed subagent regression prevention
 
 - A normal `/responses` smoke test does not cover Codex collaboration. Current

@@ -38,6 +38,7 @@ import {
   selectedConfiguredListedModels,
 } from "./provider-selection.mjs";
 import { ResponseUsageTransform, tokenUsageFromPayload } from "./response-usage.mjs";
+import { fetchWithRetry } from "./upstream-retry.mjs";
 import {
   CollaborationToolCallTransform,
   flattenCollaborationHistory,
@@ -331,6 +332,41 @@ function routedHeaders() {
 function nativeTarget(pathname, search) {
   const withoutV1 = pathname.replace(/^\/v1(?=\/|$)/, "");
   return `${NATIVE_BASE}${withoutV1}${search}`;
+}
+
+// The safety line for an upstream retry: has the caller seen anything yet?
+//
+// `pipeResponse` assigns `response.statusCode` and calls `copyResponseHeaders`,
+// which only stages values with `setHeader` -- neither touches the socket.
+// Node flushes the head on the first body write, or on `end()` for a bodyless
+// upstream, and that is exactly when `headersSent` flips. So `headersSent` is
+// "at least the status line has been committed", which is the condition that
+// makes a retry unsafe: replaying then would append a second response to a
+// stream the client is already reading.
+//
+// `writableEnded`/`destroyed` cover the answers that never set headers through
+// this path (an early `writeJson`, a client that hung up). The structural
+// guarantee is stronger than the predicate: every retry happens inside
+// `fetchWithRetry`, which returns before any of this function's callers touch
+// `response` at all. This is the check that would notice if that ever stopped
+// being true.
+function nothingRelayed(response) {
+  return !response.headersSent && !response.writableEnded && !response.destroyed;
+}
+
+// Never gated on QUIET. A production LaunchAgent hard-sets `CODEX_ROUTER_QUIET=1`,
+// which suppresses the per-request status line, and a silent retry is worse
+// than no retry: a flaky upstream would look like an upstream that got better.
+// Response bodies are never logged, so a retry records the status or the
+// transport error's own name and code and nothing else.
+function logUpstreamRetry({ attempt, retries, status, error, delayMs }, model, routePath) {
+  const cause = status
+    ? `status=${status}`
+    : `error=${error?.name || "Error"}${error?.cause?.code ? `/${error.cause.code}` : ""}`;
+  console.error(
+    `[codex-router] native upstream retry ${attempt}/${retries} ${cause} ` +
+      `model=${model || "unknown"} path=${routePath} delayMs=${delayMs}`,
+  );
 }
 
 function catalogModels() {
@@ -1207,12 +1243,29 @@ async function handleResponses(request, response, requestUrl) {
       );
     }
 
-    const upstream = await fetch(target, {
-      method: "POST",
-      headers,
-      body: routedBody,
-      signal: controller.signal,
-    });
+    // `routedBody` is a fully materialized Buffer -- plain JSON, or the zstd
+    // frame `compressedNativeBody` produced together with the matching
+    // `Content-Encoding` header. Both are computed once, above, so every
+    // attempt replays the identical bytes under the identical encoding. Nothing
+    // here consumes a stream, which is what makes the request replayable at
+    // all.
+    const { response: upstream, retries: upstreamRetries } = await fetchWithRetry(
+      target,
+      {
+        method: "POST",
+        headers,
+        body: routedBody,
+        signal: controller.signal,
+      },
+      {
+        // Routed traffic terminates at the local gateway, which has its own
+        // error translation and Retry-After handling below; leave it exactly
+        // as it was.
+        retries: route ? 0 : undefined,
+        canRetry: () => nothingRelayed(response),
+        onRetry: (event) => logUpstreamRetry(event, requestedModel, requestUrl.pathname),
+      },
+    );
     // Gateway error bodies leak LiteLLM's internal exception chain, which
     // reads like a router bug. Rewrite them to name the provider that failed.
     // Native traffic passes through untouched: OpenAI errors are already clear.
@@ -1259,16 +1312,19 @@ async function handleResponses(request, response, requestUrl) {
     }
     await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, transforms);
     const usage = usageTransform?.tokenUsage();
+    // `retries` is what separates "it never failed" from "it failed and the
+    // router absorbed it", both of which otherwise record a plain 200.
     recordUsageEvent({
       model: route?.slug || requestedModel,
       provider: route ? canonicalProviderId(route.provider) : "openai",
       status: upstream.status,
       durationMs: Date.now() - startedAt,
+      retries: upstreamRetries,
       ...usage,
     });
     if (!QUIET) {
       console.error(
-        `[codex-router] model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${upstream.status}`,
+        `[codex-router] model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${upstream.status}${upstreamRetries ? ` retries=${upstreamRetries}` : ""}`,
       );
     }
   } catch (error) {
@@ -1315,13 +1371,29 @@ async function handleNativeImage(request, response, requestUrl) {
     });
 
     const headers = nativeHeaders(request);
-    const upstream = await fetch(
+    // Same replayable-Buffer rule as the turn path: encode once, outside the
+    // retry, so every attempt carries identical bytes under identical headers.
+    const imageBody = await compressedNativeBody(body, headers);
+    const { response: upstream, retries: upstreamRetries } = await fetchWithRetry(
       nativeTarget(requestUrl.pathname, requestUrl.search),
       {
         method: "POST",
         headers,
-        body: await compressedNativeBody(body, headers),
+        body: imageBody,
         signal: controller.signal,
+      },
+      {
+        // Images do not retry. The retryable statuses were chosen to mean "no
+        // response was obtained", but that is reasoning rather than something
+        // observable from here, and Cloudflare can emit 520 after reaching the
+        // origin. On a turn a wrong guess costs a duplicated request; on an
+        // image generation it costs the operator a second billed image. The
+        // failure this exists to absorb was reported on /v1/responses, so the
+        // turn path keeps the benefit and the billed path keeps the old
+        // behaviour until a captured 5xx proves it is safe.
+        retries: 0,
+        canRetry: () => nothingRelayed(response),
+        onRetry: (event) => logUpstreamRetry(event, requestedModel, requestUrl.pathname),
       },
     );
     await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS);
@@ -1330,10 +1402,11 @@ async function handleNativeImage(request, response, requestUrl) {
       provider: "openai",
       status: upstream.status,
       durationMs: Date.now() - startedAt,
+      retries: upstreamRetries,
     });
     if (!QUIET) {
       console.error(
-        `[codex-router] model=${requestedModel} provider=openai status=${upstream.status}`,
+        `[codex-router] model=${requestedModel} provider=openai status=${upstream.status}${upstreamRetries ? ` retries=${upstreamRetries}` : ""}`,
       );
     }
   } catch (error) {

@@ -16,6 +16,15 @@ function safeTokenCount(value) {
   return Number.isFinite(number) && number >= 0 ? Math.round(number) : undefined;
 }
 
+// Retries are recorded only when there were any, so an ordinary event keeps the
+// exact shape it always had. A transparently absorbed upstream failure records
+// a 200 like any other turn, and this field is the only thing that says the
+// upstream is flaky rather than healthy.
+function safeRetryCount(value) {
+  const count = safeTokenCount(value);
+  return count ? count : undefined;
+}
+
 export function recordUsageEvent({
   model,
   provider,
@@ -24,6 +33,7 @@ export function recordUsageEvent({
   inputTokens,
   outputTokens,
   totalTokens,
+  retries,
   at = Date.now(),
 }) {
   const event = {
@@ -33,6 +43,7 @@ export function recordUsageEvent({
     provider: safeText(provider, "unknown"),
     status: Number.isInteger(status) ? status : 0,
     durationMs: Number.isFinite(durationMs) ? Math.max(0, Math.round(durationMs)) : 0,
+    ...(safeRetryCount(retries) !== undefined ? { retries: safeRetryCount(retries) } : {}),
     ...(safeTokenCount(inputTokens) !== undefined
       ? { inputTokens: safeTokenCount(inputTokens) }
       : {}),
@@ -82,6 +93,7 @@ export function recentUsageEvents({ sinceMs = 24 * 60 * 60 * 1000, limit = 1_000
         const inputTokens = safeTokenCount(event.inputTokens);
         const outputTokens = safeTokenCount(event.outputTokens);
         const totalTokens = safeTokenCount(event.totalTokens);
+        const retries = safeRetryCount(event.retries);
         return {
           ...(event.meteringVersion === 1 ? { meteringVersion: 1 } : {}),
           at: event.at,
@@ -94,6 +106,7 @@ export function recentUsageEvents({ sinceMs = 24 * 60 * 60 * 1000, limit = 1_000
           durationMs: Number.isFinite(event.durationMs)
             ? Math.max(0, Math.round(event.durationMs))
             : 0,
+          ...(retries !== undefined ? { retries } : {}),
           ...(inputTokens !== undefined ? { inputTokens } : {}),
           ...(outputTokens !== undefined ? { outputTokens } : {}),
           ...(totalTokens !== undefined ? { totalTokens } : {}),

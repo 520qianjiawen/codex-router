@@ -18,6 +18,27 @@
   subagent relay's forced function call. The probe itself still sends
   `required`. Thanks to @jepgambardella for the report.
 
+- **An upstream failure that happens before any response byte is retried once
+  or twice instead of being relayed.** ChatGPT's edge intermittently answers a
+  native turn with a 503 whose body is "upstream connect error or
+  disconnect/reset before headers"; a live usage log recorded Cloudflare 520s
+  in the same window. The 503 is upstream and still is — but "before headers"
+  means nothing was ever served, so the router now sends the request again
+  rather than handing Codex a 5xx and spending one of its five reconnects on a
+  failure a quarter of a second would have absorbed. Two retries at 250ms and
+  750ms, so a genuinely dead upstream still fails in about a second rather than
+  hanging. Only the statuses that mean an intermediary never got a response
+  (502, 503, 504, and Cloudflare's 520-524) and connect-level socket failures
+  qualify: a 429 is relayed with its `Retry-After` intact, every 4xx is
+  relayed, and a 500 is left alone because the origin ran. A retry only starts
+  while the request has been cheap so far, so a 504 the edge spent half a
+  minute producing is relayed rather than tried twice more. Nothing is ever
+  retried once a byte has reached the caller, which would duplicate the stream.
+  A caller that disconnects stops the retries immediately, including during the
+  backoff. Retries are logged whether or not the service is quiet, and recorded
+  on the usage event, so an upstream that is being papered over still looks
+  flaky in the telemetry instead of healthy.
+
 - **Windows no longer opens a console window at logon.** The scheduled task ran
   the CMD wrapper through `cmd.exe`, so a console window appeared at every logon
   and stayed for the router's lifetime, reappearing on each watchdog restart.
