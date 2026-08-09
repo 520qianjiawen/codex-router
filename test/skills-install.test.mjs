@@ -36,7 +36,13 @@ test("install copies every pack skill with its SKILL.md and the marker", () => {
     for (const name of PACK) {
       const dir = path.join(home, "skills", name);
       assert.ok(existsSync(path.join(dir, "SKILL.md")), `${name}/SKILL.md installed`);
-      assert.ok(existsSync(path.join(dir, ".codex-router-managed")), `${name} marker present`);
+      const marker = path.join(dir, ".codex-router-managed");
+      assert.ok(existsSync(marker), `${name} marker present`);
+      assert.match(
+        readFileSync(marker, "utf8"),
+        /^codex-router( \S+)? @ \S+/,
+        `${name} marker carries version @ commit provenance`,
+      );
     }
     assert.deepEqual(managedSkillNames(home).sort(), [...PACK].sort());
   } finally {

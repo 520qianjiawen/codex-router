@@ -9,6 +9,7 @@
 // only the directories codex-router already owns.
 //
 // CLI: node src/skills-install.mjs install|uninstall
+import { execFileSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -28,6 +29,32 @@ const MARKER = ".codex-router-managed";
 // The pack source directory. Overridable for tests via the environment.
 function skillsSource() {
   return process.env.CODEX_ROUTER_SKILLS_DIR || path.join(SOURCE_ROOT, "skills");
+}
+
+// Marker provenance is observability, not a freshness mechanism: the doctor
+// check compares content, never the marker stamp. Best effort -- a missing
+// package.json or git tree falls back to the plain name.
+function markerContent() {
+  let version = "";
+  try {
+    version =
+      JSON.parse(readFileSync(path.join(SOURCE_ROOT, "package.json"), "utf8")).version || "";
+  } catch {
+    // fall through to the plain name
+  }
+  let commit = "";
+  try {
+    commit = execFileSync("git", ["-C", SOURCE_ROOT, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    // fall through to the version-only stamp
+  }
+  const stamp = `${version ? `codex-router ${version}` : "codex-router"}${
+    commit ? ` @ ${commit}` : ""
+  }`;
+  return `${stamp}\nInstalled by codex-router. Remove this directory to uninstall the skill.\n`;
 }
 
 export function codexSkillsDir(codexHome) {
@@ -138,10 +165,7 @@ export function installSkills(codexHome, { quiet = false } = {}) {
     }
     rmSync(dest, { recursive: true, force: true });
     cpSync(source, dest, { recursive: true });
-    writeFileSync(
-      path.join(dest, MARKER),
-      "Installed by codex-router. Remove this directory to uninstall the skill.\n",
-    );
+    writeFileSync(path.join(dest, MARKER), markerContent());
     installed += 1;
   }
   // Prune managed directories the pack no longer ships, so the installed set
