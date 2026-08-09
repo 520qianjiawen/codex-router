@@ -54,13 +54,17 @@ import { recordUsageEvent } from "./usage-events.mjs";
 import {
   describeImage,
   evidenceCache,
+  hasNativeSession,
   inputHasImage,
+  nativeAccountKey,
   resolveVisionEngine,
   stripImages,
   substituteImages,
   supportsImageInput,
 } from "./vision-bridge.mjs";
+import { readHiddenModels } from "./model-picker-state.mjs";
 import { readVisionBridgeSettings } from "./vision-bridge-state.mjs";
+import { installedNativeVisionEngines } from "./vision-engines.mjs";
 import { VERSION } from "./version.mjs";
 
 const LISTEN_HOST =
@@ -759,30 +763,62 @@ async function normalizeRoutedAgentInput(request, input, signal) {
 // Codex resends the whole conversation every turn, so the same screenshot
 // arrives again on every follow-up. Without the hash cache a five-turn
 // conversation about one image would buy the same transcript five times.
-async function visionEvidenceFor(url, engine, signal) {
-  const cached = evidenceCache.get(url);
+async function visionEvidenceFor(url, engine, signal, request, effort) {
+  // A native engine is spent on the caller's own ChatGPT session, so it can
+  // only be reached with the headers this very request arrived with. The router
+  // never stores those.
+  const nativeCall = request
+    ? { baseUrl: NATIVE_BASE, headers: nativeHeaders(request) }
+    : undefined;
+  // For a native engine the account is part of the identity of a transcript
+  // too. That call is authorized by the caller's live session, and a cache hit
+  // skips the call along with every re-check that this session may still spend
+  // this model. Landing on an entry takes the identical image bytes, so this is
+  // an entitlement boundary rather than a confidentiality one -- but it is
+  // still a boundary. Gateway and local engines keep the key they had: neither
+  // is scoped to a caller.
+  const account = engine.native ? nativeAccountKey(nativeCall?.headers) : "";
+  // The effort is part of the identity of a transcript: raising it and pasting
+  // the same screenshot again must re-read it, not replay the cheaper pass.
+  const key = `${engine.slug}\u0000${effort || "default"}\u0000${account}\u0000${url}`;
+  const cached = evidenceCache.get(key);
   if (cached !== undefined) return cached;
   const text = await describeImage({
     engine,
     imageUrl: url,
     gatewayBase: GATEWAY_BASE,
     headers: routedHeaders(),
+    nativeCall,
+    effort,
     signal,
   });
-  return evidenceCache.set(url, text);
+  return evidenceCache.set(key, text);
 }
 
 // Text-only models get their images read by a vision-capable model the
 // operator already enabled. Turns without images cost nothing here, and a
 // model that reads images itself is never touched.
-async function bridgeVisionInput(input, route, signal) {
+async function bridgeVisionInput(input, route, signal, request) {
   if (!inputHasImage(input)) return input;
   if (supportsImageInput(route)) return input;
   if (route.visionBridge === false) {
     return stripImages(input, `${route.displayName || route.slug} cannot read images`).input;
   }
+  // Native candidates need two things at once, and neither is sufficient alone.
+  // The shared helper (`src/vision-engines.mjs`) applies the same auth gate the
+  // catalog build and the tray apply -- this path used to read the capture off
+  // disk with no gate at all. But every on-disk artifact is reused across a
+  // failed probe by design, so a sign-out leaves them naming an engine nothing
+  // can call. The caller's live session is the evidence that cannot be stale,
+  // so it has to hold too: without one there is no native engine to nominate,
+  // and a pin naming one stops resolving on the very next paste rather than at
+  // the next catalog rebuild.
+  const nativeEngines =
+    request && hasNativeSession(nativeHeaders(request))
+      ? installedNativeVisionEngines({ hidden: readHiddenModels() })
+      : [];
   const engine = resolveVisionEngine(
-    selectedConfiguredListedModels(),
+    [...selectedConfiguredListedModels(), ...nativeEngines],
     readVisionBridgeSettings(),
   );
   if (!engine) {
@@ -795,8 +831,9 @@ async function bridgeVisionInput(input, route, signal) {
     ).input;
   }
   const engineName = engine.displayName || engine.slug;
+  const { effort } = readVisionBridgeSettings();
   const result = await substituteImages(input, async (url) => ({
-    text: await visionEvidenceFor(url, engine, signal),
+    text: await visionEvidenceFor(url, engine, signal, request, effort),
     engineName,
   }));
   if (!QUIET) {
@@ -972,6 +1009,7 @@ async function summarize(request, payload, route, signal) {
     await normalizeRoutedAgentInput(request, originalInput, signal),
     route,
     signal,
+    request,
   );
   const body = {
     ...payload,
@@ -1206,6 +1244,7 @@ async function handleResponses(request, response, requestUrl) {
         await normalizeRoutedAgentInput(request, payload.input, controller.signal),
         route,
         controller.signal,
+        request,
       );
       const provider = providerForModel(route);
       // LiteLLM's Responses -> Chat Completions bridge drops namespace tools.
