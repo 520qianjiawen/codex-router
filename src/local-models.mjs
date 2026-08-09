@@ -626,3 +626,51 @@ export function suggestedLocalModels({
     .filter((entry) => includeUnusable || entry.fit !== "too-large")
     .sort((left, right) => left.sizeGb - right.sizeGb);
 }
+
+// A snapshot is the tray's data contract, not something a person can read at a
+// terminal. This renders the same object for the operator: what is installed,
+// what each model can actually do, and what is worth downloading next.
+export function renderLocalModels(snapshot) {
+  const lines = [`Local models · ${snapshot.machine || "this machine"}`, ""];
+  if (snapshot.models.length === 0) {
+    lines.push("Installed: none yet");
+  } else {
+    lines.push(`Installed: ${snapshot.installed} · ${snapshot.totalGb} GB · ${snapshot.usableAsChat ?? 0} usable as chat models`);
+    lines.push("");
+    const width = Math.max(...snapshot.models.map((model) => model.tag.length));
+    for (const model of snapshot.models) {
+      // The checkbox is what offers a model to Codex, so it leads the row.
+      const role = model.tools
+        ? model.vision
+          ? "chat + vision"
+          : "chat"
+        : model.vision
+          ? "vision only (no tools)"
+          : "no tools";
+      lines.push(
+        `  ${model.enabled ? "[x]" : "[ ]"} ${model.tag.padEnd(width)} ` +
+          `${`${model.sizeGb.toFixed(1)} GB`.padStart(8)}  ${role}${model.running ? "  · loaded" : ""}`,
+      );
+    }
+  }
+  const available = snapshot.available || [];
+  if (available.length) {
+    lines.push("", "Available to download:", "");
+    const width = Math.max(...available.map((entry) => entry.tag.length));
+    for (const entry of available) {
+      const flags = [entry.tools ? undefined : "no tools", entry.fit === "tight" ? "tight" : undefined]
+        .filter(Boolean)
+        .join(", ");
+      lines.push(
+        `  ${entry.tag.padEnd(width)} ${`${entry.sizeGb.toFixed(1)} GB`.padStart(8)}  ` +
+          `${entry.note}${flags ? ` (${flags})` : ""}`,
+      );
+    }
+    lines.push(
+      "",
+      `  ./bin/control local-models install ${available[0].tag}`,
+      `  ./bin/control local-models set ${available[0].tag} on`,
+    );
+  }
+  return lines.join("\n");
+}

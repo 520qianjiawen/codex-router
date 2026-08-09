@@ -20,6 +20,7 @@ const {
   rateModelFit,
   readLocalModelSelection,
   removeLocalModel,
+  renderLocalModels,
   setLocalModelEnabled,
   suggestedLocalModels,
 } = await import("../src/local-models.mjs");
@@ -278,4 +279,35 @@ test("a machine too small for everything still gets an honest empty list", () =>
   assert.deepEqual(suggestedLocalModels({ capacity: tiny }), []);
   // Asking for the unusable ones is explicit, never the default.
   assert.ok(suggestedLocalModels({ capacity: tiny, includeUnusable: true }).length > 0);
+});
+
+test("the listing renders for a person, not only for the tray", () => {
+  const snapshot = localModelsSnapshot({
+    inventory: parseOllamaList(
+      "NAME  ID  SIZE  MODIFIED\nllama3.2:3b  aaa  2.0 GB  1 hour ago\ngemma3:4b  bbb  3.3 GB  1 hour ago\n",
+    ),
+    running: ["llama3.2:3b"],
+    selection: { version: 1, enabled: ["llama3.2:3b"] },
+    capabilities: {
+      "llama3.2:3b": ["completion", "tools"],
+      "gemma3:4b": ["completion", "vision"],
+    },
+  });
+  const rendered = renderLocalModels(snapshot);
+
+  // The checkbox is what offers a model to Codex, so it leads each row.
+  assert.match(rendered, /\[x\] llama3\.2:3b\s+2\.0 GB\s+chat\s+· loaded/);
+  // A model Codex cannot drive must say so where the choice is made.
+  assert.match(rendered, /\[ \] gemma3:4b\s+3\.3 GB\s+vision only \(no tools\)/);
+  assert.match(rendered, /Available to download:/);
+  assert.match(rendered, /control local-models install /);
+});
+
+test("an empty machine reads as empty rather than as a broken table", () => {
+  const rendered = renderLocalModels(
+    localModelsSnapshot({ inventory: [], running: [], selection: { version: 1, enabled: [] } }),
+  );
+  assert.match(rendered, /Installed: none yet/);
+  // The whole point of the empty state is that it says what to do next.
+  assert.match(rendered, /Available to download:/);
 });

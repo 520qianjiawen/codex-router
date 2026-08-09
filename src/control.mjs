@@ -862,7 +862,17 @@ async function handleLocalModels(action, value, flag) {
   const { readBenchmarkResults } = await import("./vision-benchmark.mjs");
   const snapshot = () => localModelsSnapshot({ benchmarks: readBenchmarkResults() });
   if (action === "list" || action === "status" || !action) {
-    process.stdout.write(`${JSON.stringify(snapshot())}\n`);
+    const current = snapshot();
+    // The tray and any script read JSON; a person at a terminal was handed a
+    // single unbroken line, which only got worse once the snapshot grew a
+    // download list. Explicit `--json` keeps the machine contract, and a bare
+    // invocation is readable.
+    if (value === "--json" || flag === "--json" || !process.stdout.isTTY) {
+      process.stdout.write(`${JSON.stringify(current)}\n`);
+      return;
+    }
+    const { renderLocalModels } = await import("./local-models.mjs");
+    process.stdout.write(`${renderLocalModels(current)}\n`);
     return;
   }
   if (action === "agent-check") {

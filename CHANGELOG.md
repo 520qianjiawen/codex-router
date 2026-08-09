@@ -82,6 +82,17 @@
   the turn logs `estimated-input-tokens=<count>`, so estimated turns can never
   be mistaken for the provider having recovered.
 
+- **You can now see which local models to download.** Installing one required
+  knowing its tag by heart: the tray's only entry point was a free-text field,
+  and every command took a tag as an argument, so anyone who had never
+  installed a local model had nowhere to start. `local-models list` and the
+  tray's Local LLMs panel now offer a shortlist rated against this machine's
+  memory, with tool support stated per entry — it decides whether Codex can
+  drive the model at all, and several popular coding models turn out not to
+  have it. Anything already downloaded drops off the list. `list` also renders
+  for a person now instead of printing one long JSON line; `--json` keeps the
+  machine-readable form.
+
 - **A local model is now checked against the machine before it downloads.**
   Installing one asked whether Codex could drive it but never whether the
   machine could run it, so a 65 GB pull could finish on a laptop that can never

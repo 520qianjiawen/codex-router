@@ -521,11 +521,32 @@ to try rather than something to depend on. Open the tray's **Model Settings → 
 want, then fully quit and reopen Codex.
 
 ```sh
-./bin/control local-models list                  # what is installed
+./bin/control local-models list                  # installed, plus what to download
 ./bin/control local-models install llama3.2:3b   # download, with progress
 ./bin/control local-models set llama3.2:3b on    # publish it to Codex
 ./bin/control local-models uninstall llava --yes # delete it from disk
 ```
+
+`list` also answers "which model should I get?", because knowing a tag by
+heart is not a reasonable prerequisite for trying one. The tray shows the same
+list under **Local LLMs → Available to download**, one button per model:
+
+```text
+Local models · 68.7 GB unified memory · GPU budget ~51.5 GB
+
+Installed: none yet
+
+Available to download:
+
+  qwen2.5-coder:1.5b   1.0 GB  Smallest coder; for machines with little to spare
+  llama3.2:3b          2.0 GB  Verified making a real tool call through the router
+  gemma3:4b            3.3 GB  No tools — vision reader only (no tools)
+  ...
+```
+
+Every entry is rated against this machine's memory, so nothing offered there
+is something it cannot run, and anything already downloaded drops off. Add
+`--json` for the same data as an object.
 
 Checking, installing, and removing are three separate actions on purpose:
 unchecking never deletes a download, and removing needs explicit confirmation.
