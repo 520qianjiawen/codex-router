@@ -59,10 +59,18 @@ const grok = {
 test("routed catalog is exposed only when the active provider reaches the router", () => {
   assert.equal(routedCatalogConfigured(""), true);
   assert.equal(routedCatalogConfigured('model_provider = "openai"\n'), true);
-  assert.equal(routedCatalogConfigured('model_provider = "codex-router-signed"\n'), true);
   assert.equal(routedCatalogConfigured('model_provider = "custom"\n'), false);
+  assert.equal(
+    routedCatalogConfigured(`model_provider = "custom"
+
+[model_providers.custom]
+base_url = "http://127.0.0.1:4102/_codex-router/test-caller-secret-with-sufficient-length/v1"
+wire_api = "responses"
+`),
+    true,
+  );
   assert.equal(routedCatalogConfigured('model_provider = "custom"\n', "1"), true);
-  assert.equal(routedCatalogConfigured('model_provider = "codex-router-signed"\n', "0"), false);
+  assert.equal(routedCatalogConfigured('model_provider = "custom"\n', "0"), false);
 });
 
 test("routed models rewrite GPT identity text to the external model name", () => {

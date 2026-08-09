@@ -589,7 +589,7 @@ try {
       : config.signed_provider_state_present
         ? `ownership drift; active provider is ${config.model_provider}`
         : `off; active provider is ${config.model_provider}`,
-    "Use the tray toggle to restore the previous provider before changing configuration managers.",
+    "Use the tray toggle to restore the previous provider table before changing configuration managers.",
   );
 } catch (error) {
   add(

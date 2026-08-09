@@ -2246,8 +2246,8 @@ private struct TrayView: View {
     settingRow(
       title: "Use Router with ChatGPT",
       detail: store.signedRouting
-        ? "Native GPT + external models · restart Codex"
-        : "Keep ChatGPT login and add external models",
+        ? "Native GPT + external models · task history preserved"
+        : "Keep ChatGPT login and the current task history",
       isOn: Binding(
         get: { store.signedRouting },
         set: { enabled in Task { await store.setSignedRouting(enabled) } }

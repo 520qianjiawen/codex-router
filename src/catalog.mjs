@@ -9,6 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { protectPrivateFile } from "./file-security.mjs";
+import { isManagedCallerBaseUrl } from "./caller-auth.mjs";
 import {
   ANNOUNCED_MODELS_PATH,
   CONFIG_PATH,
@@ -226,7 +227,20 @@ export function routedCatalogConfigured(contents, override = process.env.MODEL_R
   const firstTable = String(contents || "").search(/^\s*\[/m);
   const root = firstTable === -1 ? String(contents || "") : String(contents || "").slice(0, firstTable);
   const provider = root.match(/^\s*model_provider\s*=\s*["\']([^"\']+)["\']/m)?.[1];
-  return !provider || provider === "openai" || provider === "codex-router-signed";
+  if (!provider || provider === "openai") return true;
+
+  const providerId = provider.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const header = new RegExp(
+    `^\\s*\\[\\s*model_providers\\.(?:${providerId}|["']${providerId}["'])\\s*\\]\\s*(?:#.*)?$`,
+    "m",
+  );
+  const match = header.exec(String(contents || ""));
+  if (!match) return false;
+  const rest = String(contents || "").slice(match.index + match[0].length);
+  const nextTable = rest.search(/^\s*\[/m);
+  const table = nextTable === -1 ? rest : rest.slice(0, nextTable);
+  const baseUrl = table.match(/^\s*base_url\s*=\s*["']([^"']+)["']/m)?.[1];
+  return Boolean(baseUrl && isManagedCallerBaseUrl(baseUrl));
 }
 
 function routedCatalogActive() {

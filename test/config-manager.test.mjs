@@ -793,7 +793,7 @@ test("config manager adopts and restores a prepared user-owned native catalog", 
   }
 });
 
-test("signed routing preserves and exactly restores an existing provider", () => {
+test("signed routing preserves the active provider identity and exactly restores its table", () => {
   const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-signed-provider-"));
   const stateDir = path.join(codexHome, "router-state");
   const configPath = path.join(codexHome, "config.toml");
@@ -812,9 +812,11 @@ wire_api = "responses"
     assert.equal(enabled.signed_routing, true);
     assert.equal(enabled.signed_routing_managed, true);
     const configured = readFileSync(configPath, "utf8");
-    assert.match(configured, /^model_provider = "codex-router-signed"$/m);
+    assert.match(configured, /^model_provider = "custom"$/m);
+    assert.match(configured, /# BEGIN codex-router-signed-provider-managed/);
     assert.match(configured, /\[model_providers\.custom\]/);
-    assert.match(configured, /\[model_providers\.codex-router-signed\]/);
+    assert.doesNotMatch(configured, /\[model_providers\.codex-router-signed\]/);
+    assert.match(configured, new RegExp(`base_url = "http://127\\.0\\.0\\.1:46192/_codex-router/${CALLER_KEY}/v1"`));
     assert.match(configured, /requires_openai_auth = true/);
     assert.match(configured, /supports_websockets = false/);
     assert.equal(
@@ -825,7 +827,11 @@ wire_api = "responses"
     const disabled = run("signed-disable", codexHome, stateDir);
     assert.equal(disabled.model_provider, "custom");
     assert.equal(disabled.signed_provider_state_present, false);
-    assert.match(readFileSync(configPath, "utf8"), /\[model_providers\.custom\]/);
+    const restored = readFileSync(configPath, "utf8");
+    assert.match(restored, /\[model_providers\.custom\]/);
+    assert.match(restored, /name = "CC Switch"/);
+    assert.match(restored, /base_url = "https:\/\/example\.invalid\/v1"/);
+    assert.doesNotMatch(restored, /codex-router-signed-provider-managed/);
   } finally {
     rmSync(codexHome, { recursive: true, force: true });
   }
@@ -838,8 +844,40 @@ test("signed routing restores an originally unset provider", () => {
   writeFileSync(configPath, 'model = "gpt-5.6-sol"\n', { mode: 0o600 });
   try {
     run("signed-enable", codexHome, stateDir);
+    assert.doesNotMatch(readFileSync(configPath, "utf8"), /^model_provider\s*=/m);
     run("signed-disable", codexHome, stateDir);
     assert.doesNotMatch(readFileSync(configPath, "utf8"), /^model_provider\s*=/m);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("signed routing refuses to overwrite provider-table ownership drift", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-signed-drift-"));
+  const stateDir = path.join(codexHome, "router-state");
+  const configPath = path.join(codexHome, "config.toml");
+  writeFileSync(
+    configPath,
+    `model_provider = "custom"
+
+[model_providers.custom]
+name = "CC Switch"
+wire_api = "responses"
+`,
+    { mode: 0o600 },
+  );
+  try {
+    run("signed-enable", codexHome, stateDir);
+    const drifted = readFileSync(configPath, "utf8").replace(
+      /^base_url = ".*"$/m,
+      'base_url = "https://changed.invalid/v1"',
+    );
+    writeFileSync(configPath, drifted, { mode: 0o600 });
+    assert.throws(
+      () => run("signed-disable", codexHome, stateDir),
+      /lost ownership|Refusing to replace/i,
+    );
+    assert.match(readFileSync(configPath, "utf8"), /changed\.invalid/);
   } finally {
     rmSync(codexHome, { recursive: true, force: true });
   }

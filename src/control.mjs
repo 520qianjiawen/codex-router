@@ -460,7 +460,17 @@ async function setSignedRouting(desired) {
       );
     }
   }
-  const catalog = spawnSync(
+  const command = desired === "on" ? "signed-enable" : "signed-disable";
+  const runConfig = () => spawnSync(
+    process.execPath,
+    [path.join(REPO_ROOT, "src", "config-manager.mjs"), command],
+    {
+      cwd: REPO_ROOT,
+      env: { ...process.env, MODEL_ROUTER_TARGET: "codex" },
+      encoding: "utf8",
+    },
+  );
+  const runCatalog = () => spawnSync(
     process.execPath,
     [path.join(REPO_ROOT, "src", "catalog.mjs")],
     {
@@ -473,21 +483,37 @@ async function setSignedRouting(desired) {
       encoding: "utf8",
     },
   );
+  // Enabling routes the transport first, so a partially completed operation
+  // can only hide external models. Disabling hides them first, so they can
+  // never escape through the restored direct provider endpoint.
+  let result;
+  let catalog;
+  if (desired === "on") {
+    result = runConfig();
+    if (result.status === 0) catalog = runCatalog();
+  } else {
+    catalog = runCatalog();
+    if (catalog.status === 0) result = runConfig();
+  }
+  if (result && result.status !== 0) {
+    throw new Error((result.stderr || "Signed router mode could not be changed.").trim());
+  }
   if (catalog.status !== 0) {
+    if (desired === "on") {
+      spawnSync(
+        process.execPath,
+        [path.join(REPO_ROOT, "src", "config-manager.mjs"), "signed-disable"],
+        {
+          cwd: REPO_ROOT,
+          env: { ...process.env, MODEL_ROUTER_TARGET: "codex" },
+          encoding: "utf8",
+        },
+      );
+    }
     throw new Error((catalog.stderr || "Codex model catalog could not be refreshed.").trim());
   }
-  const command = desired === "on" ? "signed-enable" : "signed-disable";
-  const result = spawnSync(
-    process.execPath,
-    [path.join(REPO_ROOT, "src", "config-manager.mjs"), command],
-    {
-      cwd: REPO_ROOT,
-      env: { ...process.env, MODEL_ROUTER_TARGET: "codex" },
-      encoding: "utf8",
-    },
-  );
-  if (result.status !== 0) {
-    throw new Error((result.stderr || "Signed router mode could not be changed.").trim());
+  if (!result) {
+    throw new Error("Signed router mode could not be changed.");
   }
   process.stdout.write(result.stdout);
 }
