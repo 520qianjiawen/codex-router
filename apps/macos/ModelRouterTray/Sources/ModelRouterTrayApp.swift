@@ -1926,8 +1926,21 @@ private struct TrayView: View {
   @State private var providersExpanded = true
 
   private var target: RouterTarget? { store.snapshot.targets["codex"] }
+  // Rows come from the registry snapshot, not from the models in the picker.
+  // Deriving them from models hid every provider that ships none until its
+  // models were curated — which is backwards, because the row is where the
+  // operator sets a provider up. That left the ten catalog-only services and
+  // the keyless local provider invisible in the one place built to configure
+  // them. The model-derived list survives only for routers that predate the
+  // snapshot's `providers` field.
   private var providers: [(id: String, enabled: Bool)] {
     guard let target else { return [] }
+    if let registry = target.providers, !registry.isEmpty {
+      let enabled = Set(target.enabledProviders)
+      return registry
+        .map { (id: $0.id, enabled: enabled.contains($0.id)) }
+        .sorted { $0.id < $1.id }
+    }
     return Dictionary(grouping: target.models.filter { $0.provider != "openai" }, by: \.provider)
       .map { (id: $0.key, enabled: $0.value.contains(where: \.enabled)) }
       .sorted { $0.id < $1.id }

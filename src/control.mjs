@@ -886,9 +886,19 @@ async function handleLocalModels(action, value, flag) {
     // multi-gigabyte download.
     const tag = String(value || "").trim();
     if (!tag) throw new Error("Usage: control local-models inspect <model-tag>");
-    const { fetchRegistryCapabilities } = await import("./local-models.mjs");
+    const { fetchRegistryCapabilities, describeMachine, detectMachine, rateModelFit } =
+      await import("./local-models.mjs");
     const info = await fetchRegistryCapabilities(tag);
-    process.stdout.write(`${JSON.stringify(info || { tag, unknown: true })}\n`);
+    // Whether the machine can run it is as decisive as whether Codex can
+    // drive it, and the manifest already carries the size.
+    const capacity = detectMachine();
+    process.stdout.write(
+      `${JSON.stringify(
+        info
+          ? { ...info, fit: rateModelFit(info.sizeGb, capacity) ?? null, machine: describeMachine(capacity) }
+          : { tag, unknown: true, machine: describeMachine(capacity) },
+      )}\n`,
+    );
     return;
   }
   if (action === "install") {
@@ -902,8 +912,20 @@ async function handleLocalModels(action, value, flag) {
     if (active?.status === "downloading" && active.tag !== tag) {
       throw new Error(`${active.tag} is already downloading (${active.percent || 0}%).`);
     }
-    const { fetchRegistryCapabilities } = await import("./local-models.mjs");
+    const { fetchRegistryCapabilities, detectMachine, fitAdvisory, rateModelFit } =
+      await import("./local-models.mjs");
     const advertised = await fetchRegistryCapabilities(tag);
+    // A missing tool template costs nothing to discover afterwards; gigabytes
+    // that cannot run cost the download and the disk. So the tool note stays
+    // advisory while a model too large for this machine is refused unless the
+    // operator overrides it deliberately.
+    const capacity = detectMachine();
+    const fit = advertised ? rateModelFit(advertised.sizeGb, capacity) : undefined;
+    if (fit === "too-large" && flag !== "--yes" && value !== "--yes") {
+      throw new Error(
+        `${fitAdvisory(tag, advertised.sizeGb, capacity)} Pass --yes to download it anyway.`,
+      );
+    }
     writeVisionDownload({
       version: 1,
       tag,
@@ -920,8 +942,10 @@ async function handleLocalModels(action, value, flag) {
     // Advisory, never blocking: the operator may well want a vision-only
     // model, but they should know before the gigabytes land.
     process.stdout.write(
-      `${JSON.stringify({ started: true, tag, tools: advertised?.tools ?? null })}\n`,
+      `${JSON.stringify({ started: true, tag, tools: advertised?.tools ?? null, fit: fit ?? null })}\n`,
     );
+    const fitNote = advertised ? fitAdvisory(tag, advertised.sizeGb, capacity) : undefined;
+    if (fitNote) process.stderr.write(`Note: ${fitNote}\n`);
     if (advertised && !advertised.tools) {
       process.stderr.write(
         `Note: ${tag} does not advertise tool calling, so Codex cannot use it as a chat model. ` +

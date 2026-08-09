@@ -12,8 +12,12 @@ const NO_OLLAMA = { capabilitiesFor: () => ["completion", "tools"] };
 process.env.CODEX_ROUTER_STATE_DIR = stateDir;
 
 const {
+  describeMachine,
+  fitAdvisory,
   localModelsSnapshot,
+  machineCapacity,
   parseOllamaList,
+  rateModelFit,
   readLocalModelSelection,
   removeLocalModel,
   setLocalModelEnabled,
@@ -192,5 +196,53 @@ test("tool support is read from the registry template before downloading", async
   assert.equal(
     await fetchRegistryCapabilities("x", { fetchImpl: async () => { throw new Error("offline"); } }),
     undefined,
+  );
+});
+
+test("model fit is rated against the machine, not a fixed list", () => {
+  const laptop = machineCapacity({ totalMemoryBytes: 8e9, platform: "linux" });
+  const workstation = machineCapacity({
+    totalMemoryBytes: 32e9,
+    gpuMemoryBytes: 24e9,
+    platform: "linux",
+  });
+  const mac = machineCapacity({ totalMemoryBytes: 16e9, unifiedMemory: true, platform: "darwin" });
+
+  // Sizes come from the registry manifest, so any tag can be rated.
+  assert.equal(rateModelFit(18.6, laptop), "too-large");
+  assert.equal(rateModelFit(18.6, workstation), "fits");
+  assert.equal(rateModelFit(4.7, mac), "fits");
+
+  // Without a GPU to fall back from, a model that would consume most of RAM
+  // runs but crawls; reporting that as a clean fit is what wastes an evening.
+  assert.equal(rateModelFit(4.7, laptop), "tight");
+  assert.equal(rateModelFit(1.9, laptop), "fits");
+
+  // An unknown size cannot be rated, and must not read as a refusal.
+  assert.equal(rateModelFit(undefined, laptop), undefined);
+  assert.equal(rateModelFit(0, laptop), undefined);
+});
+
+test("fit advisories name the shortfall and stay silent when a model fits", () => {
+  const laptop = machineCapacity({ totalMemoryBytes: 8e9, platform: "linux" });
+  assert.equal(fitAdvisory("qwen2.5-coder:3b", 1.9, laptop), undefined);
+  assert.match(fitAdvisory("qwen2.5-coder:7b", 4.7, laptop), /close to this machine's limit/);
+  const refusal = fitAdvisory("qwen3-coder:30b", 18.6, laptop);
+  assert.match(refusal, /needs about 23 GB/);
+  assert.match(refusal, /8\.0 GB RAM/);
+});
+
+test("a machine description says which memory the number refers to", () => {
+  assert.match(
+    describeMachine(machineCapacity({ totalMemoryBytes: 16e9, unifiedMemory: true })),
+    /unified memory · GPU budget ~12\.0 GB/,
+  );
+  assert.match(
+    describeMachine(machineCapacity({ totalMemoryBytes: 8e9 })),
+    /no GPU memory detected/,
+  );
+  assert.match(
+    describeMachine(machineCapacity({ totalMemoryBytes: 32e9, gpuMemoryBytes: 24e9 })),
+    /24\.0 GB GPU memory/,
   );
 });

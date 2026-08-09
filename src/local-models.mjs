@@ -7,6 +7,7 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { protectPrivateFile } from "./file-security.mjs";
@@ -414,4 +415,112 @@ export function localModelsSnapshot({
     totalGb: Math.round(models.reduce((sum, model) => sum + model.sizeGb, 0) * 10) / 10,
     models,
   };
+}
+
+// --- machine fit -----------------------------------------------------------
+
+// Weights are not the whole cost: the KV cache, context, and runtime overhead
+// need room beside them. A fifth on top is the common working estimate and is
+// deliberately conservative, so a model reported as fitting actually runs.
+const OVERHEAD_FACTOR = 1.2;
+
+// Leave the operating system its own working set rather than pretending every
+// byte of RAM is available to one process.
+const SYSTEM_HEADROOM = 0.8;
+
+// macOS lets the GPU wire roughly three quarters of unified memory.
+const UNIFIED_GPU_SHARE = 0.75;
+
+// Without a GPU the whole model sits in system memory beside everything else
+// the machine is doing, so only the smaller part of the budget is comfortable.
+const COMFORTABLE_CPU_SHARE = 0.6;
+
+function nvidiaMemoryBytes() {
+  try {
+    const output = spawnSync(
+      "nvidia-smi",
+      ["--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+      { encoding: "utf8", timeout: 3_000 },
+    );
+    if (output.status !== 0 || !output.stdout) return undefined;
+    // Multi-GPU hosts report one line each; a model runs on one card.
+    const largest = output.stdout
+      .split(/\r?\n/)
+      .map((line) => Number.parseInt(line.trim(), 10))
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .sort((left, right) => right - left)[0];
+    return largest ? largest * 1_048_576 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Pure, so ratings can be tested against machines this one is not.
+export function machineCapacity({
+  totalMemoryBytes,
+  gpuMemoryBytes,
+  unifiedMemory = false,
+  platform = process.platform,
+} = {}) {
+  const total = Number(totalMemoryBytes) || 0;
+  const systemBudget = Math.floor(total * SYSTEM_HEADROOM);
+  const gpuBudget = unifiedMemory
+    ? Math.floor(total * UNIFIED_GPU_SHARE)
+    : Number(gpuMemoryBytes) || undefined;
+  return {
+    platform,
+    totalMemoryBytes: total,
+    unifiedMemory,
+    gpuBudgetBytes: gpuBudget,
+    // What runs at full speed, and what runs at all. With no GPU to fall back
+    // from, "comfortable" is a fraction of RAM rather than all of it, or every
+    // model reads as either fine or impossible and a 7B that will swap the
+    // machine to a crawl is reported as a clean fit.
+    fastBudgetBytes: gpuBudget || Math.floor(systemBudget * COMFORTABLE_CPU_SHARE),
+    ceilingBytes: Math.max(gpuBudget || 0, systemBudget),
+  };
+}
+
+export function detectMachine() {
+  const unifiedMemory = process.platform === "darwin" && process.arch === "arm64";
+  return machineCapacity({
+    totalMemoryBytes: os.totalmem(),
+    gpuMemoryBytes: unifiedMemory ? undefined : nvidiaMemoryBytes(),
+    unifiedMemory,
+  });
+}
+
+export function describeMachine(capacity) {
+  const memory = capacity.unifiedMemory
+    ? `${(capacity.totalMemoryBytes / 1e9).toFixed(1)} GB unified memory`
+    : `${(capacity.totalMemoryBytes / 1e9).toFixed(1)} GB RAM`;
+  const gpu = capacity.unifiedMemory
+    ? `GPU budget ~${(capacity.gpuBudgetBytes / 1e9).toFixed(1)} GB`
+    : capacity.gpuBudgetBytes
+      ? `${(capacity.gpuBudgetBytes / 1e9).toFixed(1)} GB GPU memory`
+      : "no GPU memory detected; models run on the CPU";
+  return `${memory} · ${gpu}`;
+}
+
+// "fits" runs at full speed, "tight" runs but spills to the CPU, "too-large"
+// cannot run here at all. Sizes come from the registry manifest, so this works
+// for any tag rather than a list someone has to keep current.
+export function rateModelFit(sizeGb, capacity = detectMachine()) {
+  const bytes = Number(sizeGb) * 1e9;
+  if (!Number.isFinite(bytes) || bytes <= 0) return undefined;
+  const needed = bytes * OVERHEAD_FACTOR;
+  if (needed <= capacity.fastBudgetBytes) return "fits";
+  if (needed <= capacity.ceilingBytes) return "tight";
+  return "too-large";
+}
+
+export function fitAdvisory(tag, sizeGb, capacity = detectMachine()) {
+  const fit = rateModelFit(sizeGb, capacity);
+  if (fit === "tight") {
+    return `${tag} (${sizeGb} GB) is close to this machine's limit (${describeMachine(capacity)}); expect it to spill onto the CPU and run slowly.`;
+  }
+  if (fit === "too-large") {
+    return `${tag} needs about ${Math.ceil(sizeGb * OVERHEAD_FACTOR)} GB to run and this machine has ${describeMachine(capacity)}.`;
+  }
+  return undefined;
 }
