@@ -12,6 +12,7 @@ const NO_OLLAMA = { capabilitiesFor: () => ["completion", "tools"] };
 process.env.CODEX_ROUTER_STATE_DIR = stateDir;
 
 const {
+  CODEX_PROMPT_TOKENS,
   describeMachine,
   fitAdvisory,
   localModelsSnapshot,
@@ -444,6 +445,8 @@ test("the listing says how little room Codex leaves in the window", () => {
   // Native context above the advertised cap buys nothing, so the number that
   // matters is what is left after Codex's own prompt.
   assert.match(rendered, /For coding — experimental/);
-  assert.match(rendered, /24K of the 32K window/);
+  // Derived from the measured constant rather than restated, so the copy and
+  // the measurement cannot drift apart.
+  assert.match(rendered, new RegExp(`${Math.round(CODEX_PROMPT_TOKENS / 1000)}K of the 32K window`));
   assert.match(rendered, /agent-check/);
 });

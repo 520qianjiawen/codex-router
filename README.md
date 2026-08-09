@@ -532,7 +532,7 @@ heart is not a reasonable prerequisite. The tray shows the same two groups
 under **Local LLMs**, one button per model:
 
 ```text
-For coding — experimental. Codex's prompt uses about 24K of the 32K window:
+For coding — experimental. Codex's prompt uses about 20K of the 32K window:
 
   llama3.2:3b          2.0 GB verified  ran a real tool call through Codex
   qwen2.5-coder:1.5b   1.0 GB untested  smallest coder
@@ -558,8 +558,8 @@ flaky, because a borderline model has passed and then failed the identical
 check minutes later.
 
 Be realistic about the window. Every local model is advertised to Codex at
-32K, and Codex's own instructions and tool definitions take about 24K of that
-before your code is added — so roughly 9K is left to work in, whatever the
+32K, and Codex's own instructions and tool definitions take about 20K of that
+before your code is added — so roughly 12K is left to work in, whatever the
 model natively holds. Tool support and native context are still read from the
 model's own files (the chat template and the GGUF header, about a megabyte of
 ranged requests), which is how `phi4` turns out to hold 16K rather than the
