@@ -1180,35 +1180,6 @@ export function splitFlatCodexAppName(name) {
   return toolName ? { namespace: CODEX_APP_NAMESPACE, name: toolName } : undefined;
 }
 
-// The live session 019fe6f1 burned 11 rejected create_thread calls (~3 minutes,
-// ~2.98M tokens) because a weaker custom model guessed argument shapes instead
-// of reading the schema: the app's validator error names no wrong field, and
-// the description never said which fields are required. This appends that
-// fact to the definition the router relays, so routed models see the contract
-// the app enforces. Descriptions only inform the model; the app validates the
-// arguments against its own schema, so nothing here changes dispatch.
-const CREATE_THREAD_REQUIRED_HINT =
-  " The target object is REQUIRED; its type must be one of \"project\", " +
-  "\"projectless\", or \"chatgptWorkCloud\".";
-const REQUIRED_HINTS = new Map([["create_thread", CREATE_THREAD_REQUIRED_HINT]]);
-
-export function clarifyAppToolDescriptions(tools) {
-  if (!Array.isArray(tools)) return tools;
-  return tools.map((tool) => {
-    if (tool?.type !== "namespace" || !Array.isArray(tool.tools)) return tool;
-    let changed = false;
-    const clarified = tool.tools.map((fn) => {
-      if (!fn?.name || !REQUIRED_HINTS.has(fn.name)) return fn;
-      if (typeof fn.description !== "string" || fn.description.includes(REQUIRED_HINTS.get(fn.name))) {
-        return fn;
-      }
-      changed = true;
-      return { ...fn, description: `${fn.description}${REQUIRED_HINTS.get(fn.name)}` };
-    });
-    return changed ? { ...tool, tools: clarified } : tool;
-  });
-}
-
 // The client sends a reduced codex_app namespace (three app tools) on routed
 // requests; the rest are deferred client-side. Merge the full app toolset in so
 // routed providers see the same tools a native model sees. Client-provided

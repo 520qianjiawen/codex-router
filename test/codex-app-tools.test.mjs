@@ -4,7 +4,6 @@ import test from "node:test";
 import {
   CODEX_APP_TOOL_NAMES,
   CODEX_APP_TOOLS,
-  clarifyAppToolDescriptions,
   mergeCodexAppTools,
   splitFlatCodexAppName,
 } from "../src/codex-app-tools.mjs";
@@ -152,26 +151,4 @@ test("splitFlatCodexAppName parses flattened names only", () => {
   });
   assert.equal(splitFlatCodexAppName("exec_command"), undefined);
   assert.equal(splitFlatCodexAppName("codex_app__"), undefined);
-});
-
-test("clarifyAppToolDescriptions makes create_thread's required shape explicit", () => {
-  const { tools } = mergeCodexAppTools([
-    { type: "function", name: "exec_command" },
-  ]);
-  const clarified = clarifyAppToolDescriptions(tools);
-  const codexApp = clarified.find((t) => t?.type === "namespace" && t.name === "codex_app");
-  const createThread = codexApp.tools.find((fn) => fn.name === "create_thread");
-  assert.match(
-    createThread.description,
-    /target object is REQUIRED; its type must be one of "project", "projectless", or "chatgptWorkCloud"/,
-  );
-  // Idempotent: a second pass changes nothing.
-  const again = clarifyAppToolDescriptions(clarified);
-  assert.deepEqual(again, clarified);
-  // Other app tools are untouched.
-  const listThreads = codexApp.tools.find((fn) => fn.name === "list_threads");
-  assert.equal(listThreads.description, codexApp.tools.find((fn) => fn.name === "list_threads").description);
-  // Non-app namespaces and plain tools pass through unchanged.
-  const plain = clarifyAppToolDescriptions([{ type: "function", name: "exec_command" }]);
-  assert.deepEqual(plain, [{ type: "function", name: "exec_command" }]);
 });

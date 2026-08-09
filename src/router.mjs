@@ -48,10 +48,7 @@ import {
   flattenNamespacedHistory,
   flattenNamespaceTools,
 } from "./namespace-relay.mjs";
-import {
-  clarifyAppToolDescriptions,
-  mergeCodexAppTools,
-} from "./codex-app-tools.mjs";
+import { mergeCodexAppTools } from "./codex-app-tools.mjs";
 import { activityMetadataFromHeaders } from "./codex-session-names.mjs";
 import { translateGatewayError } from "./error-translation.mjs";
 import { recordUsageEvent } from "./usage-events.mjs";
@@ -1456,10 +1453,6 @@ async function handleResponses(request, response, requestUrl) {
         // and navigation state -- it only relays definitions and results.
         const merged = mergeCodexAppTools(payload.tools);
         if (merged.merged) payload.tools = merged.tools;
-        // Weaker custom models guessed create_thread's argument shape 11
-        // times in the live session instead of reading the schema. Make the
-        // app-enforced contract explicit in the relayed description.
-        payload.tools = clarifyAppToolDescriptions(payload.tools);
         const flattened = flattenNamespaceTools(payload.tools);
         namespacesFlattened = flattened.flattened;
         if (namespacesFlattened) {
