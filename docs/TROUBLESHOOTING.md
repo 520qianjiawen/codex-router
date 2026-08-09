@@ -259,8 +259,11 @@ Manual rollback is:
 ./bin/rollback
 ```
 
-Updates refuse dirty checkouts, non-`main` development branches, and unknown
-origin URLs rather than overwriting local work.
+Updates refuse edits to tracked files, non-`main` development branches, and
+unknown origin URLs rather than overwriting local work. Untracked files never
+block an update; the refusal names the tracked files that do, and re-running the
+same command with `--force` discards those edits without deleting anything
+untracked.
 
 Legacy migration rollback is separate:
 

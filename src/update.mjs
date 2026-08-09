@@ -34,7 +34,9 @@ function requireManagedCheckout() {
   }
 }
 
-const DIRTY_PREVIEW_LIMIT = 10;
+// Exported so the Windows bootstrap installer, which reimplements this refusal
+// in PowerShell and cannot import it, can be tested against the same number.
+export const DIRTY_PREVIEW_LIMIT = 10;
 
 // Only tracked edits are at stake. A fast-forward merge never replaces an
 // untracked file, and git refuses the rare collision on its own with a precise

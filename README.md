@@ -835,7 +835,9 @@ For a managed Git checkout:
 ./bin/model-router codex rollback
 ```
 
-Updates require a clean `main` checkout and a recognized repository origin.
+Updates require a `main` checkout with no edits to tracked files, plus a
+recognized repository origin. Untracked files never block an update, and
+`--force` discards tracked edits without deleting untracked ones.
 The previous revision is retained as a local rollback ref, and a failed install
 restores the previous source revision. If you already ran `git pull` manually,
 run the update command anyway; it applies the pulled revision when the install
