@@ -434,13 +434,18 @@ for (const provider of PROVIDERS.values()) {
   if (provider.kind !== "openai-compatible") continue;
   const status = credentialStatus(provider, { persistent: true });
   const session = cliSessionDescriptor(provider);
+  // A keyless provider has no key to name, so calling its row a "key" and
+  // telling the operator to run `provider-key` sends them at a command that
+  // refuses them. What decides whether it works is its local runtime.
   add(
     status.configured ? "ok" : selection.providers.includes(provider.id) ? "fail" : "warn",
-    `${provider.displayName} key`,
+    provider.keyless ? `${provider.displayName} endpoint` : `${provider.displayName} key`,
     status.configured ? status.source : "not configured",
-    session
-      ? `Run ${session.loginCommand}, or ./bin/provider-key ${provider.id} set.`
-      : `Run ./bin/provider-key ${provider.id} set.`,
+    provider.keyless
+      ? "Start Ollama, then run ./bin/control local-models list."
+      : session
+        ? `Run ${session.loginCommand}, or ./bin/provider-key ${provider.id} set.`
+        : `Run ./bin/provider-key ${provider.id} set.`,
   );
   // A credential that resolves says nothing about whether the account's plan
   // may use the API. Only warn once the provider is actually selected, so the
@@ -455,8 +460,14 @@ for (const provider of PROVIDERS.values()) {
     add(
       "warn",
       `${provider.displayName} models`,
-      "key stored but no models curated; the picker stays empty",
-      `Run ./bin/curate-models ${provider.id} in an interactive terminal.`,
+      provider.keyless
+        ? "no local models are checked, so the picker stays empty"
+        : "key stored but no models curated; the picker stays empty",
+      // Local models are downloaded and checked, never curated from a remote
+      // catalog, so naming `curate-models` here points at the wrong command.
+      provider.keyless
+        ? `Download one with ./bin/control local-models install <tag>, then check it with ./bin/control local-models set <tag> on.`
+        : `Run ./bin/curate-models ${provider.id} in an interactive terminal.`,
     );
   }
 }
