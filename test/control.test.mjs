@@ -377,7 +377,10 @@ test("login-free aliasing applies even when a ChatGPT credential is still stored
           env: {
             ...process.env,
             CODEX_HOME: stateDir,
-            CODEX_BIN: "/usr/bin/true",
+            // A real Codex install must not leak into this test on Windows,
+            // where /usr/bin/true does not exist. Node is runnable everywhere
+            // and produces no Codex catalog, so the seeded fixture is reused.
+            CODEX_BIN: process.execPath,
             MODEL_ROUTER_TARGET: "codex",
             MODEL_ROUTER_STATE_DIR: stateDir,
           },
