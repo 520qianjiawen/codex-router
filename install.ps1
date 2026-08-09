@@ -237,10 +237,12 @@ try {
       & uv venv --python 3.12 .venv
       if ($LASTEXITCODE -ne 0) { throw "uv could not create the Python environment." }
     }
-    # litellm 1.95.0 needs fastapi<0.140 (get_flat_dependant was removed);
-    # re-test before lifting either pin. src/install-plan.mjs holds the same
-    # pins and its test fails when only one copy moves.
-    & uv pip install --python $Python "litellm[proxy]==1.95.0" "fastapi==0.139.2"
+    # requirements/python.txt is the hash-verified transitive closure of the
+    # pins in src/install-plan.mjs. Hash checking makes every wheel and sdist
+    # in that tree verify against the lock before it is executed; without it
+    # only the two top-level packages were pinned and the rest was whatever
+    # PyPI resolved that day. Regenerate with bin/lock-python, never by hand.
+    & uv pip install --python $Python --require-hashes -r requirements/python.txt
     if ($LASTEXITCODE -ne 0) { throw "LiteLLM installation failed." }
     & node src/install-plan.mjs record python-deps
     if ($LASTEXITCODE -ne 0) { throw "Recording the Python dependency state failed." }
@@ -259,7 +261,8 @@ try {
     if (-not (Test-Path $Python)) { throw "The Python virtual environment was not created." }
     & $Python -m pip install --upgrade pip
     if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed." }
-    & $Python -m pip install "litellm[proxy]==1.95.0" "fastapi==0.139.2"
+    # Same hash-verified lock as the uv branch above; both stay hash-checked.
+    & $Python -m pip install --require-hashes -r requirements/python.txt
     if ($LASTEXITCODE -ne 0) { throw "LiteLLM installation failed." }
     & node src/install-plan.mjs record python-deps
     if ($LASTEXITCODE -ne 0) { throw "Recording the Python dependency state failed." }

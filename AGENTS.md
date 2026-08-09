@@ -82,6 +82,49 @@ user.
 10. Do not terminate Codex. Tell the user to fully quit it, reopen it, create a
     new task, and choose the new model.
 
+## The Python gateway is installed from a hash-verified lock
+
+The router's gateway is LiteLLM, so every install executes a large Python
+dependency tree. That tree is pinned and hashed rather than re-resolved.
+
+1. `requirements/python.txt` is the lock: the full transitive closure of
+   `PYTHON_REQUIREMENTS` in `src/install-plan.mjs`, every distribution pinned
+   and carrying its SHA256. Both installers install *that file* with
+   `--require-hashes`, in both their `uv` and their `pip` branch. Pinning only
+   the two top-level packages left everything underneath them floating, which
+   is how one machine's gateway came to differ from another's.
+2. Never edit either `requirements/` file by hand, and never add a package to
+   an installer command line. Change the pin in `src/install-plan.mjs` and run
+   `bin/lock-python`, which rewrites `requirements/python.in` from
+   `PYTHON_REQUIREMENTS` and recompiles the lock. Commit both files together.
+3. The lock must stay **universal**. `bin/lock-python` passes `--universal
+   --generate-hashes --python-version 3.10`, which is what makes one file
+   serve macOS, Linux, and Windows on CPython 3.10+ through environment
+   markers. A lock regenerated without `--universal` looks fine and installs
+   only on the machine that produced it; `test/python-lock.test.mjs` fails on
+   that, on an unhashed entry, and on any disagreement with
+   `PYTHON_REQUIREMENTS`. Do not weaken those tests to land a lock.
+4. `litellm==1.95.0` publishes wheels for `manylinux` and `win_amd64` only, so
+   **macOS builds it from the sdist** with `maturin` and a Rust toolchain. That
+   predates the lock and the lock does not change it — the sdist hash is in the
+   file, so the source build is verified too. Do not "fix" a slow or failing
+   macOS install by moving the pin; check for `cargo` first.
+5. Hash verification covers the distributions, not the isolated build
+   environment pip and uv create for an sdist. `maturin` is fetched unhashed
+   during that build. Closing that gap needs a separate build-requirements
+   lock; do not claim the current lock covers it.
+6. The lock is proven by installing it, not by reasoning about it.
+   `.github/workflows/python-lock.yml` installs it for real on Linux and
+   Windows through both resolvers, then asserts the pinned versions, the
+   `litellm[proxy]` extra, and a live `/health/liveliness`. It gets the command
+   from `install-plan.mjs python-install-command`, which extracts the line from
+   `bin/install` and `install.ps1` themselves — never write a `pip install` line
+   into CI, because a job that spells its own command can pass while the
+   shipped installer fails. Its negative control must also keep failing: if an
+   unhashed requirement ever installs, every other check in that job is
+   meaningless. Do not add a resolver cache there; a cache hit can serve an
+   already-unpacked wheel and skip the hash check the job exists to perform.
+
 ## Requests to install or expose more models
 
 First distinguish a local model addition from a repository-wide model change.

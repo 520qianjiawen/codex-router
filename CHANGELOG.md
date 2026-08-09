@@ -14,6 +14,22 @@
   register the task starts the router again rather than leaving the machine with
   none, and stopping a service that was never installed is no longer an error.
 
+- **The Python gateway now installs from a hash-verified lock.** Pinning
+  `litellm[proxy]` and `fastapi` left their entire transitive tree unpinned, so
+  every install resolved and then executed around a hundred packages that
+  nothing had verified — and two machines installing on different days got
+  different trees. `requirements/python.txt` now pins that whole closure with a
+  SHA256 for every distribution, and all four install paths (the `uv` and `pip`
+  branches of `bin/install` and `install.ps1`) install it with
+  `--require-hashes`. The pinned versions are unchanged. The lock is universal:
+  one file covering macOS, Linux, and Windows on CPython 3.10+ through
+  environment markers, rather than a snapshot of whoever generated it. The
+  version literals are gone from the shell scripts entirely — `bin/lock-python`
+  regenerates the lock from `PYTHON_REQUIREMENTS`, and
+  `test/python-lock.test.mjs` fails the suite if the lock, the compile input,
+  and that constant ever disagree, or if either installer stops checking
+  hashes.
+
 - **Text-only models can answer about a pasted image.** A model with no image
   input — DeepSeek, GLM, Kimi — used to refuse the paste outright. When the
   vision bridge is on, a vision model you already have reads the image and
@@ -75,9 +91,11 @@
   not flood its own access log), while an abort is retried at once with a wider
   window, because the window it already spent is backoff enough and gives no
   evidence the service is dead. A timeout now also says which of the two it
-  saw. Genuine failures get faster, not slower: a child that exits now aborts
-  the probe in flight and cuts the backoff short, so a crash is reported
-  immediately instead of up to three seconds later.
+  saw. A service that genuinely died is still reported the same way it always
+  was, by the exit check between the probe and the sleep: waking that sleep from
+  the child's own exit callback would report it sooner, and kills the process on
+  Windows with a libuv assertion while it is reporting the failure it had
+  already diagnosed correctly.
 
 ## 0.4.0-beta.2
 
