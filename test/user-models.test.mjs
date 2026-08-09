@@ -60,6 +60,20 @@ test("curation metadata can set sizing and the effort ladder", () => {
   assert.deepEqual(entry.serviceTiers, [{ id: "priority", name: "Fast" }]);
 });
 
+test("curation metadata can expose provider-verified reasoning summaries", () => {
+  const entry = userModelEntry({
+    providerId: "chutes",
+    upstreamId: "moonshotai/Kimi-K3-TEE",
+    priority: 100,
+    metadata: {
+      supportsReasoningSummaries: true,
+      defaultReasoningSummary: "auto",
+    },
+  });
+  assert.equal(entry.supportsReasoningSummaries, true);
+  assert.equal(entry.defaultReasoningSummary, "auto");
+});
+
 test("curation metadata cannot replace identity or routing fields", () => {
   const entry = userModelEntry({
     providerId: "deepseek",

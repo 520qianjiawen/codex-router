@@ -28,6 +28,8 @@ const METADATA_FIELDS = new Set([
   "reasoningLevels",
   "defaultEffort",
   "serviceTiers",
+  "supportsReasoningSummaries",
+  "defaultReasoningSummary",
   "availabilityNux",
   "upgradeTo",
 ]);
