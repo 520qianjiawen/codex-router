@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   chutesBalanceMetrics,
+  chutesSubscriptionMetrics,
   deepSeekBalanceMetrics,
   githubCopilotQuotaMetrics,
   grokCreditsMetrics,
@@ -78,6 +79,47 @@ test("normalizes the Chutes API balance", () => {
     detail: "Chutes credits remaining",
     available: true,
   }]);
+});
+
+test("normalizes Chutes subscription windows", () => {
+  assert.deepEqual(chutesSubscriptionMetrics({
+    subscription: true,
+    four_hour: {
+      usage: 2,
+      cap: 8,
+      remaining: 6,
+      reset_at: "2026-08-09T16:00:00Z",
+    },
+    monthly: {
+      usage: 25,
+      cap: 100,
+      remaining: 75,
+      reset_at: "2026-09-09T00:00:00Z",
+    },
+  }), [
+    {
+      kind: "quota",
+      label: "4-hour subscription",
+      usedPercent: 25,
+      remainingPercent: 75,
+      used: 2,
+      limit: 8,
+      remaining: 6,
+      unit: "USD",
+      resetAt: 1786291200,
+    },
+    {
+      kind: "quota",
+      label: "Monthly subscription",
+      usedPercent: 25,
+      remainingPercent: 75,
+      used: 25,
+      limit: 100,
+      remaining: 75,
+      unit: "USD",
+      resetAt: 1788912000,
+    },
+  ]);
 });
 
 test("normalizes Kimi weekly and five-hour quota windows", () => {
@@ -182,16 +224,30 @@ test("Chutes usage reads the official account balance with Bearer auth", async (
         return {
           ok: true,
           status: 200,
-          json: async () => ({ balance: 18.5 }),
+          json: async () => String(url).endsWith("/subscription_usage")
+            ? {
+                subscription: true,
+                four_hour: { usage: 1, cap: 10, remaining: 9 },
+                monthly: { usage: 20, cap: 100, remaining: 80 },
+              }
+            : { balance: 18.5 },
         };
       },
     });
-    assert.deepEqual(requests, [{
-      url: "https://api.chutes.ai/users/me",
-      auth: "Bearer TEST_CHUTES_USAGE_KEY",
-    }]);
+    assert.deepEqual(requests, [
+      {
+        url: "https://api.chutes.ai/users/me",
+        auth: "Bearer TEST_CHUTES_USAGE_KEY",
+      },
+      {
+        url: "https://api.chutes.ai/users/me/subscription_usage",
+        auth: "Bearer TEST_CHUTES_USAGE_KEY",
+      },
+    ]);
     assert.equal(snapshot.chutes.status, "available");
-    assert.equal(snapshot.chutes.metrics[0].value, 18.5);
+    assert.equal(snapshot.chutes.metrics[0].label, "4-hour subscription");
+    assert.equal(snapshot.chutes.metrics[0].remainingPercent, 90);
+    assert.equal(snapshot.chutes.metrics[2].value, 18.5);
     assert.equal(snapshot.chutes.dashboardUrl, "https://chutes.ai/app");
   } finally {
     if (saved === undefined) delete process.env.CHUTES_API_KEY;
