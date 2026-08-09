@@ -1,0 +1,38 @@
+{
+  "note": "Lane L4 fixture. Constructed from the upstream response shape opencode-go/deepseek-v4-flash actually returned during the overnight baseline (2026-08-09 21:46-21:47 IST, work/baseline/usage-events.jsonl rows with inputTokens:0 and estimatedInputTokens). The router records the provider's reported counts verbatim in the usage event and writes the estimate to a separate field, so the upstream payload itself is not captured by the router; this fixture reconstructs the response.completed SSE event body from the recorded event fields plus the identical shape used by test/routing.test.mjs and the #95 repro.",
+  "recorded": {
+    "at": "2026-08-09T21:47:16.132Z",
+    "model": "opencode-go/deepseek-v4-flash",
+    "provider": "opencode-go",
+    "status": 200,
+    "inputTokens": 0,
+    "outputTokens": 469,
+    "totalTokens": 469,
+    "estimatedInputTokens": 507920
+  },
+  "upstreamSse": {
+    "event": "response.completed",
+    "data": {
+      "type": "response.completed",
+      "response": {
+        "id": "resp_routed",
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 469,
+          "total_tokens": 469
+        }
+      }
+    }
+  },
+  "expectedRouterBehavior": {
+    "predicate": "substituteZeroInputUsage fires only because upstream usage carries an explicit numeric input_tokens: 0",
+    "rewrittenInputTokens": 507920,
+    "rewrittenTotalTokens": 508389,
+    "telemetry": {
+      "inputTokens": 0,
+      "outputTokens": 469,
+      "totalTokens": 469,
+      "estimatedInputTokens": 507920
+    }
+  }
+}

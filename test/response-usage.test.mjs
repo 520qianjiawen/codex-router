@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -120,6 +121,48 @@ test("a request too small to matter produces no estimate at all", () => {
   assert.ok(estimateInputTokens(Buffer.alloc(40_000, "a")) > 0);
 });
 
+test("the estimate is capped at the provider's context window", () => {
+  // A request the provider answered cannot have exceeded the window, so the
+  // estimate must never claim it did. The cap is the context window itself.
+  const contextWindow = 1_048_576;
+  const oversized = Buffer.alloc(contextWindow * 10, "a");
+  assert.equal(estimateInputTokens(oversized, { contextWindow }), contextWindow);
+  assert.ok(
+    estimateInputTokens(Buffer.alloc(contextWindow * 3, "a"), { contextWindow }) <=
+      contextWindow,
+  );
+  // Without a window the estimate is returned as measured.
+  assert.equal(estimateInputTokens(oversized), Math.ceil(oversized.byteLength / 3.3));
+});
+
+test("a positive or missing prompt count is never rewritten with an estimate", async () => {
+  const estimate = 512_000;
+  for (const usage of [
+    { input_tokens: 1, output_tokens: 8, total_tokens: 9 },
+    { input_tokens: 4_321, output_tokens: 8, total_tokens: 4_329 },
+    { output_tokens: 8, total_tokens: 8 },
+  ]) {
+    assert.equal(substituteZeroInputUsage({ response: { usage } }, estimate), undefined);
+  }
+
+  // End to end through the transform: a reported positive count arrives at
+  // Codex byte for byte and never marks a substitution.
+  const body = [
+    completedEvent({ input_tokens: 4_321, output_tokens: 8, total_tokens: 4_329 }),
+    "data: [DONE]\n\n",
+  ];
+  const transform = new ResponseUsageTransform("text/event-stream", {
+    estimatedInputTokens: estimate,
+  });
+  assert.equal(await passThrough(transform, body), body.join(""));
+  assert.equal(transform.substitutedInputTokens(), undefined);
+  assert.deepEqual(transform.tokenUsage(), {
+    inputTokens: 4_321,
+    outputTokens: 8,
+    totalTokens: 4_329,
+  });
+});
+
 test("only an explicit zero prompt count is substituted", () => {
   const estimate = 4_242;
   const zero = substituteZeroInputUsage(
@@ -159,6 +202,71 @@ test("only an explicit zero prompt count is substituted", () => {
     substituteZeroInputUsage({ usage: { input_tokens: 0, output_tokens: 8 } }, undefined),
     undefined,
   );
+});
+
+// Lane L4 fixture: a response.completed event in the exact shape the overnight
+// baseline recorded from opencode-go/deepseek-v4-flash (work/baseline/
+// usage-events.jsonl row 2026-08-09T21:47:16.132Z, inputTokens:0 with
+// estimatedInputTokens:507920). The predicate has to fire on this shape and
+// only on this shape: an explicit numeric zero and nothing else.
+const LANE_L4_FIXTURE_PATH = new URL("./fixtures/upstream-zero-usage.json", import.meta.url);
+
+function laneL4Fixture() {
+  try {
+    const fixture = JSON.parse(readFileSync(LANE_L4_FIXTURE_PATH, "utf8"));
+    return {
+      upstream: fixture.upstreamSse.data,
+      estimate: fixture.recorded.estimatedInputTokens,
+      outputTokens: fixture.upstreamSse.data.response.usage.output_tokens,
+    };
+  } catch {
+    // The evidence file lives outside the router repo and is not part of a
+    // cherry-picked checkout, so the test falls back to the recorded shape.
+    return {
+      upstream: {
+        type: "response.completed",
+        response: {
+          id: "resp_routed",
+          usage: { input_tokens: 0, output_tokens: 469, total_tokens: 469 },
+        },
+      },
+      estimate: 507_920,
+      outputTokens: 469,
+    };
+  }
+}
+
+test("the fixture upstream zero is substituted and only the estimate is added", async () => {
+  const { upstream, estimate, outputTokens } = laneL4Fixture();
+  assert.equal(upstream.response.usage.input_tokens, 0);
+
+  const substituted = substituteZeroInputUsage(upstream, estimate);
+  assert.notEqual(substituted, undefined);
+  assert.equal(substituted.response.usage.input_tokens, estimate);
+  assert.equal(substituted.response.usage.total_tokens, estimate + outputTokens);
+
+  // The transform keeps the provider's own numbers in telemetry and names the
+  // estimate separately, so an estimated turn is never mistaken for recovery.
+  const transform = new ResponseUsageTransform("text/event-stream", {
+    estimatedInputTokens: estimate,
+  });
+  const body = [
+    `event: response.completed\ndata: ${JSON.stringify(upstream)}\n\n`,
+    "data: [DONE]\n\n",
+  ];
+  transform.on("data", () => {});
+  for (const chunk of body) transform.write(chunk);
+  transform.end();
+  await new Promise((resolve, reject) => {
+    transform.once("finish", resolve);
+    transform.once("error", reject);
+  });
+  assert.equal(transform.substitutedInputTokens(), estimate);
+  assert.deepEqual(transform.tokenUsage(), {
+    inputTokens: 0,
+    outputTokens,
+    totalTokens: outputTokens,
+  });
 });
 
 test("a zero-prompt SSE response is rewritten with the estimate", async () => {
