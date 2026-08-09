@@ -16,6 +16,7 @@ const {
   fitAdvisory,
   localModelsSnapshot,
   machineCapacity,
+  parseGgufContextLength,
   parseOllamaList,
   rateModelFit,
   readLocalModelSelection,
@@ -335,4 +336,83 @@ test("coding models are separated from image readers", () => {
   // The smallest reader scored zero on text, so size must not float it up.
   assert.notEqual(vision[0].tag, "moondream");
   assert.ok(vision.at(-1).accuracy === "captions-only");
+});
+
+// A GGUF header built by hand, so the parser is tested without the network and
+// without a multi-gigabyte fixture.
+function ggufHeader(pairs, { magic = 0x46554747, declaredPairs } = {}) {
+  const chunks = [];
+  const u32 = (value) => {
+    const buffer = Buffer.alloc(4);
+    buffer.writeUInt32LE(value);
+    return buffer;
+  };
+  const u64 = (value) => {
+    const buffer = Buffer.alloc(8);
+    buffer.writeBigUInt64LE(BigInt(value));
+    return buffer;
+  };
+  const str = (value) => {
+    const bytes = Buffer.from(value, "utf8");
+    return Buffer.concat([u64(bytes.length), bytes]);
+  };
+  chunks.push(u32(magic), u32(3), u64(0), u64(declaredPairs ?? pairs.length));
+  for (const [key, type, value] of pairs) {
+    chunks.push(str(key), u32(type));
+    if (type === 8) chunks.push(str(value));
+    else if (type === 4) chunks.push(u32(value));
+    else if (type === 10) chunks.push(u64(value));
+    else if (type === 9) {
+      // Array of strings, the shape a tokenizer vocabulary takes.
+      chunks.push(u32(8), u64(value.length), ...value.map(str));
+    }
+  }
+  return Buffer.concat(chunks);
+}
+
+test("context length is read from the model's own GGUF header", () => {
+  const buffer = ggufHeader([
+    ["general.architecture", 8, "llama"],
+    ["general.name", 8, "Llama 3.2 3B Instruct"],
+    ["llama.block_count", 4, 28],
+    ["llama.context_length", 4, 131072],
+  ]);
+  assert.equal(parseGgufContextLength(buffer), 131072);
+
+  // The key is namespaced by architecture, so the parser matches the suffix
+  // rather than one vendor's spelling.
+  assert.equal(
+    parseGgufContextLength(
+      ggufHeader([["qwen2.context_length", 10, 32768]]),
+    ),
+    32768,
+  );
+});
+
+test("a tokenizer array before the key is walked, not guessed past", () => {
+  // An array's byte length is only knowable by walking it: skipping blindly
+  // would desynchronise the reader and return a garbage context length.
+  const buffer = ggufHeader([
+    ["general.architecture", 8, "llama"],
+    ["tokenizer.ggml.tokens", 9, ["<s>", "</s>", "hello", "world"]],
+    ["llama.context_length", 4, 8192],
+  ]);
+  assert.equal(parseGgufContextLength(buffer), 8192);
+});
+
+test("an unreadable header is unknown rather than an error", () => {
+  // Not GGUF at all.
+  assert.equal(parseGgufContextLength(Buffer.from("not a model file")), undefined);
+  // Truncated mid-value: the ranged read ended before the key appeared, which
+  // must never fail an install.
+  const truncated = ggufHeader([
+    ["general.architecture", 8, "llama"],
+    ["llama.context_length", 4, 4096],
+  ]).subarray(0, 40);
+  assert.equal(parseGgufContextLength(truncated), undefined);
+  // Claims more pairs than it carries.
+  assert.equal(
+    parseGgufContextLength(ggufHeader([["general.architecture", 8, "llama"]], { declaredPairs: 9 })),
+    undefined,
+  );
 });

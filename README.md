@@ -545,7 +545,12 @@ For reading images only — cannot code:
 ```
 
 Coding models need two things Codex depends on: tool calls, and a context
-window big enough to be pointed at real code. Image readers are ranked by what
+window big enough to be pointed at real code. Neither is taken on trust: the
+chat template in the registry says whether a model can call tools, and the
+model's own GGUF header says how much context it holds. Both are read with
+ranged requests totalling about a megabyte, so `inspect` answers before any
+download — which is how `phi4` turns out to hold 16K, not the 128K its family
+suggests. Image readers are ranked by what
 they scored against a known image, so a small confident-wrong reader never
 tops the list. Everything is rated against this machine's memory, anything too
 large is not offered, and anything already downloaded drops off. Add `--json`
@@ -563,8 +568,8 @@ the rest stay installed and stay usable as vision readers, labelled *"no tools �
 vision only"*. Check before you download:
 
 ```sh
-./bin/control local-models inspect llama3.2:3b   # {"tools":true,"sizeGb":2,"fit":"fits"}
-./bin/control local-models inspect gemma3:4b     # {"tools":false,"sizeGb":3.3,"fit":"fits"}
+./bin/control local-models inspect llama3.2:3b   # tools:true  context:131072
+./bin/control local-models inspect phi4          # tools:false context:16384
 ```
 
 That reads the model's chat template from the registry — a few kilobytes

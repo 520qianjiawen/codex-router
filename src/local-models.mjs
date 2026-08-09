@@ -547,11 +547,12 @@ export function fitAdvisory(tag, sizeGb, capacity = detectMachine()) {
 // already know a tag. Two questions decide it, and they have different
 // answers: can this model do coding work, or can it only read images?
 //
-// `tools` and `sizeGb` were read from the registry manifests on 2026-08-09
-// with fetchRegistryCapabilities, and the live lookup runs again at install
-// time, so a republished tag corrects itself there. `context` is each model's
-// vendor-documented native window -- the registry does not publish it, and
-// Ollama only reports it once the model is on disk.
+// Every value here was read from the model's own files on 2026-08-09, not
+// from documentation: `tools` and `sizeGb` from the registry manifest via
+// fetchRegistryCapabilities, `context` from the GGUF header via
+// fetchRegistryContext. Both lookups run again live -- inspect reads them per
+// tag, and install re-checks -- so a republished tag corrects itself there
+// rather than silently disagreeing with this list.
 //
 // Codex drives every turn through tool calls, so a model without them cannot
 // do coding work at any size. Vision readers are not listed here at all: they
@@ -686,4 +687,128 @@ export function renderLocalModels(snapshot) {
     lines.push("", `  ./bin/control local-models install ${(coding[0] || vision[0]).tag}`);
   }
   return lines.join("\n");
+}
+
+// --- measured context length ------------------------------------------------
+
+// How much of a codebase a model can hold decides whether it is worth pointing
+// at one, and neither the registry manifest nor Ollama publishes it before the
+// model is on disk. It is in the model file itself: GGUF stores its metadata
+// as a key-value block at the very start, so a ranged request for the first
+// megabyte reads the real number without pulling the weights.
+const GGUF_MAGIC = 0x46554747;
+const GGUF_HEAD_BYTES = 1_000_000;
+
+// GGUF value type tags, in the order the format defines them.
+const GGUF_UINT8 = 0;
+const GGUF_INT8 = 1;
+const GGUF_UINT16 = 2;
+const GGUF_INT16 = 3;
+const GGUF_UINT32 = 4;
+const GGUF_INT32 = 5;
+const GGUF_FLOAT32 = 6;
+const GGUF_BOOL = 7;
+const GGUF_STRING = 8;
+const GGUF_ARRAY = 9;
+const GGUF_UINT64 = 10;
+const GGUF_INT64 = 11;
+const GGUF_FLOAT64 = 12;
+
+class ShortRead extends Error {}
+
+function ggufReader(buffer) {
+  let offset = 0;
+  const need = (count) => {
+    if (offset + count > buffer.length) throw new ShortRead();
+  };
+  return {
+    u8() { need(1); return buffer[offset++]; },
+    u32() { need(4); const value = buffer.readUInt32LE(offset); offset += 4; return value; },
+    i32() { need(4); const value = buffer.readInt32LE(offset); offset += 4; return value; },
+    u64() { need(8); const value = Number(buffer.readBigUInt64LE(offset)); offset += 8; return value; },
+    i64() { need(8); const value = Number(buffer.readBigInt64LE(offset)); offset += 8; return value; },
+    f32() { need(4); const value = buffer.readFloatLE(offset); offset += 4; return value; },
+    f64() { need(8); const value = buffer.readDoubleLE(offset); offset += 8; return value; },
+    str() {
+      const length = this.u64();
+      need(length);
+      const value = buffer.toString("utf8", offset, offset + length);
+      offset += length;
+      return value;
+    },
+  };
+}
+
+// Values are read rather than skipped because an array's byte length is only
+// knowable by walking it -- tokenizer vocabularies are arrays of strings.
+function readGgufValue(reader, type) {
+  if (type === GGUF_UINT8 || type === GGUF_INT8 || type === GGUF_BOOL) return reader.u8();
+  if (type === GGUF_UINT16 || type === GGUF_INT16) return reader.u32() & 0xffff;
+  if (type === GGUF_UINT32) return reader.u32();
+  if (type === GGUF_INT32) return reader.i32();
+  if (type === GGUF_FLOAT32) return reader.f32();
+  if (type === GGUF_STRING) return reader.str();
+  if (type === GGUF_UINT64) return reader.u64();
+  if (type === GGUF_INT64) return reader.i64();
+  if (type === GGUF_FLOAT64) return reader.f64();
+  if (type === GGUF_ARRAY) {
+    const elementType = reader.u32();
+    const count = reader.u64();
+    for (let index = 0; index < count; index += 1) readGgufValue(reader, elementType);
+    return undefined;
+  }
+  throw new Error(`unsupported GGUF value type ${type}`);
+}
+
+export function parseGgufContextLength(buffer) {
+  const reader = ggufReader(buffer);
+  if (reader.u32() !== GGUF_MAGIC) return undefined;
+  reader.u32();
+  reader.u64();
+  const pairs = reader.u64();
+  for (let index = 0; index < pairs; index += 1) {
+    let key;
+    let value;
+    try {
+      key = reader.str();
+      value = readGgufValue(reader, reader.u32());
+    } catch (error) {
+      // The head of the file ran out before the key appeared. Unknown is the
+      // honest answer; it never blocks an install.
+      if (error instanceof ShortRead) return undefined;
+      throw error;
+    }
+    // Namespaced by architecture: llama.context_length, qwen2.context_length.
+    if (key.endsWith(".context_length") && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+export async function fetchRegistryContext(tag, { fetchImpl = fetch, timeoutMs = 8_000 } = {}) {
+  const [name, version = "latest"] = String(tag).split(":");
+  if (!name) return undefined;
+  const base = `${REGISTRY_BASE}/v2/library/${encodeURIComponent(name)}`;
+  try {
+    const manifest = await fetchImpl(`${base}/manifests/${encodeURIComponent(version)}`, {
+      headers: { Accept: "application/vnd.docker.distribution.manifest.v2+json" },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!manifest.ok) return undefined;
+    const parsed = await manifest.json();
+    const weights = (parsed?.layers || []).find((layer) =>
+      layer?.mediaType?.endsWith(".model"),
+    );
+    if (!weights?.digest) return undefined;
+    const head = await fetchImpl(`${base}/blobs/${weights.digest}`, {
+      redirect: "follow",
+      headers: { Range: `bytes=0-${GGUF_HEAD_BYTES - 1}` },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!head.ok) return undefined;
+    return parseGgufContextLength(Buffer.from(await head.arrayBuffer()));
+  } catch {
+    // Offline, a non-GGUF model, or a CDN that refuses ranges: unknown, never
+    // an error the operator has to deal with.
+    return undefined;
+  }
 }

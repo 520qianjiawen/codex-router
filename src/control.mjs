@@ -896,17 +896,33 @@ async function handleLocalModels(action, value, flag) {
     // multi-gigabyte download.
     const tag = String(value || "").trim();
     if (!tag) throw new Error("Usage: control local-models inspect <model-tag>");
-    const { fetchRegistryCapabilities, describeMachine, detectMachine, rateModelFit } =
-      await import("./local-models.mjs");
-    const info = await fetchRegistryCapabilities(tag);
+    const {
+      fetchRegistryCapabilities,
+      fetchRegistryContext,
+      describeMachine,
+      detectMachine,
+      rateModelFit,
+    } = await import("./local-models.mjs");
+    // Both are read from the model's own files rather than assumed: the chat
+    // template says whether it can call tools, the GGUF header says how much
+    // context it holds. One megabyte of ranged reads, no download.
+    const [info, context] = await Promise.all([
+      fetchRegistryCapabilities(tag),
+      fetchRegistryContext(tag),
+    ]);
     // Whether the machine can run it is as decisive as whether Codex can
     // drive it, and the manifest already carries the size.
     const capacity = detectMachine();
     process.stdout.write(
       `${JSON.stringify(
         info
-          ? { ...info, fit: rateModelFit(info.sizeGb, capacity) ?? null, machine: describeMachine(capacity) }
-          : { tag, unknown: true, machine: describeMachine(capacity) },
+          ? {
+              ...info,
+              context: context ?? null,
+              fit: rateModelFit(info.sizeGb, capacity) ?? null,
+              machine: describeMachine(capacity),
+            }
+          : { tag, unknown: true, context: context ?? null, machine: describeMachine(capacity) },
       )}\n`,
     );
     return;
