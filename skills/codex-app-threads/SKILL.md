@@ -8,6 +8,10 @@ description: Create, list, read, message, wait on, fork, rename, archive, and pi
 The tools are `codex_app__*` (for example `codex_app__create_thread`). Call
 them with these exact shapes.
 
+Do NOT prefix them with `mcp__codex_apps__` — that is a different set of MCP
+servers (github, linear, notion) that exist in your tool list; the thread
+tools are `codex_app__` only.
+
 ## Create a thread
 
 `create_thread` requires TWO fields: `prompt` (string) and `target`
