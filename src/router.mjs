@@ -37,7 +37,11 @@ import {
   readProviderSelection,
   selectedConfiguredListedModels,
 } from "./provider-selection.mjs";
-import { ResponseUsageTransform, tokenUsageFromPayload } from "./response-usage.mjs";
+import {
+  estimateInputTokens,
+  ResponseUsageTransform,
+  tokenUsageFromPayload,
+} from "./response-usage.mjs";
 import { fetchWithRetry } from "./upstream-retry.mjs";
 import {
   CollaborationToolCallTransform,
@@ -91,6 +95,11 @@ const INTERNAL_KEY =
 const CALLER_KEY = process.env.CODEX_ROUTER_CALLER_KEY;
 const QUIET =
   process.env.CODEX_ROUTER_QUIET === "1" || process.env.KIMI_PROXY_QUIET === "1";
+// Kill switch for the zero-prompt-token substitution (#95). It is on because a
+// provider that reports no prompt tokens breaks compaction outright, but an
+// operator who would rather see the provider's own numbers can turn it off
+// without downgrading the router.
+const ZERO_INPUT_ESTIMATE = process.env.CODEX_ROUTER_ZERO_INPUT_ESTIMATE !== "0";
 const ERROR_STATUS_DURATION_MS = 8_000;
 const configuredDecodedBodyBytes = Number(
   process.env.MODEL_ROUTER_MAX_DECODED_BODY_BYTES ||
@@ -1303,8 +1312,23 @@ async function handleResponses(request, response, requestUrl) {
     }
     // Native OpenAI responses carry the same `usage` shape as routed ones, so
     // meter both paths; without this, native traffic reports zero tokens.
+    //
+    // A routed provider that answers a large prompt with `input_tokens: 0` is
+    // reporting something that cannot be true, and Codex reads exactly that
+    // number to decide when to compact -- opencode's Go endpoint did it for a
+    // whole model family and sessions ran past the context window and died
+    // (#95). The estimate below is offered only for those responses; the
+    // predicate is structural (this request, these bytes, an explicit zero),
+    // so it cannot fire on a provider that reports correctly and it disables
+    // itself the moment the upstream starts reporting again.
     const usageTransform = new ResponseUsageTransform(
       upstream.headers.get("content-type") || "",
+      {
+        estimatedInputTokens:
+          ZERO_INPUT_ESTIMATE && route
+            ? estimateInputTokens(routedBody, { contextWindow: route.contextWindow })
+            : undefined,
+      },
     );
     const transforms = [usageTransform];
     if (collaborationFlattened) {
@@ -1312,8 +1336,11 @@ async function handleResponses(request, response, requestUrl) {
     }
     await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, transforms);
     const usage = usageTransform?.tokenUsage();
-    // `retries` is what separates "it never failed" from "it failed and the
-    // router absorbed it", both of which otherwise record a plain 200.
+    const estimatedInputTokens = usageTransform?.substitutedInputTokens();
+    // `retries` separates "it never failed" from "it failed and the router
+    // absorbed it", both of which otherwise record a plain 200;
+    // `estimatedInputTokens` separates a count the provider sent from one the
+    // router had to invent. Neither is inferable from the rest of the event.
     recordUsageEvent({
       model: route?.slug || requestedModel,
       provider: route ? canonicalProviderId(route.provider) : "openai",
@@ -1321,10 +1348,15 @@ async function handleResponses(request, response, requestUrl) {
       durationMs: Date.now() - startedAt,
       retries: upstreamRetries,
       ...usage,
+      estimatedInputTokens,
     });
     if (!QUIET) {
+      // The substitution is named in the log line as well as the usage event:
+      // a router that quietly invents token counts is its own trap.
       console.error(
-        `[codex-router] model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${upstream.status}${upstreamRetries ? ` retries=${upstreamRetries}` : ""}`,
+        `[codex-router] model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${upstream.status}${
+          upstreamRetries ? ` retries=${upstreamRetries}` : ""
+        }${estimatedInputTokens ? ` estimated-input-tokens=${estimatedInputTokens}` : ""}`,
       );
     }
   } catch (error) {
