@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -14,12 +14,42 @@ const {
   setVisionBridgeEnabled,
   setVisionBridgeEngine,
   setVisionBridgeLocal,
+  visionBridgeConfigured,
   visionBridgeSnapshot,
 } = await import("../src/vision-bridge-state.mjs");
+const { resolveVisionEngine } = await import("../src/vision-bridge.mjs");
 
-test("the bridge is off until the operator turns it on", () => {
-  assert.deepEqual(readVisionBridgeSettings(), { version: 1, enabled: false, engine: null, effort: null, local: null });
+function forgetState() {
+  rmSync(VISION_BRIDGE_STATE_PATH, { force: true });
+}
+
+test("a machine that never configured the bridge gets it on", () => {
+  forgetState();
+  assert.equal(visionBridgeConfigured(), false);
+  assert.deepEqual(readVisionBridgeSettings(), {
+    version: 1,
+    enabled: true,
+    engine: null,
+    effort: null,
+    local: null,
+  });
   assert.ok(VISION_BRIDGE_STATE_PATH.startsWith(stateDir));
+});
+
+test("the default reaches the resolver, so a pasted image is read with no configuration", () => {
+  forgetState();
+  const flash = {
+    slug: "qwen-plan/qwen3.6-flash",
+    provider: "qwen-plan",
+    inputModalities: ["text", "image"],
+  };
+  assert.equal(
+    resolveVisionEngine(() => [flash], readVisionBridgeSettings())?.slug,
+    "qwen-plan/qwen3.6-flash",
+  );
+  // ...and with nothing to read it with, the answer is still "no engine", which
+  // is byte-for-byte the behaviour a switched-off bridge always had.
+  assert.equal(resolveVisionEngine(() => [], readVisionBridgeSettings()), undefined);
 });
 
 test("enabling and pinning round-trip through protected state", () => {
@@ -61,6 +91,48 @@ test("pinning a local model stores it and selects the local engine", () => {
 test("corrupt state reads as off rather than throwing", () => {
   writeFileSync(VISION_BRIDGE_STATE_PATH, "{not json", "utf8");
   assert.deepEqual(readVisionBridgeSettings(), { version: 1, enabled: false, engine: null, effort: null, local: null });
+});
+
+// The migration rule, stated as a test. "Never configured" is the absence of
+// the file; anything on disk is the operator's own answer and the new default
+// must not reach past it. An unreadable file is not consent either way, so it
+// keeps the conservative reading it always had.
+test("a stored off is never re-enabled by the new default", () => {
+  writeFileSync(
+    VISION_BRIDGE_STATE_PATH,
+    `${JSON.stringify({ version: 1, enabled: false, engine: null, effort: null, local: null })}\n`,
+    "utf8",
+  );
+  assert.equal(visionBridgeConfigured(), true);
+  assert.equal(readVisionBridgeSettings().enabled, false);
+  // And it keeps surviving reads, writes of unrelated fields, and re-reads.
+  setVisionBridgeEffort("high");
+  assert.equal(readVisionBridgeSettings().enabled, false);
+  setVisionBridgeEngine("qwen-plan/qwen3.6-flash");
+  assert.equal(readVisionBridgeSettings().enabled, false);
+  // A stored off resolves no engine, exactly as before.
+  assert.equal(
+    resolveVisionEngine(
+      () => [
+        { slug: "qwen-plan/qwen3.6-flash", provider: "qwen-plan", inputModalities: ["text", "image"] },
+      ],
+      readVisionBridgeSettings(),
+    ),
+    undefined,
+  );
+  setVisionBridgeEffort(null);
+  setVisionBridgeEngine(null);
+});
+
+test("a state file this build cannot read stays off rather than adopting the new default", () => {
+  writeFileSync(
+    VISION_BRIDGE_STATE_PATH,
+    `${JSON.stringify({ version: 99, enabled: true })}\n`,
+    "utf8",
+  );
+  assert.equal(readVisionBridgeSettings().enabled, false);
+  writeFileSync(VISION_BRIDGE_STATE_PATH, `${JSON.stringify({ version: 1 })}\n`, "utf8");
+  assert.equal(readVisionBridgeSettings().enabled, false);
 });
 
 test("a reasoning effort is pinned and cleared on its own, without touching the engine", () => {

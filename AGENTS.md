@@ -310,14 +310,36 @@ request path sends each image part to a vision-capable model the operator has
 already enabled and credentialed, and substitutes the returned transcript into
 the turn as text. Treat it as a router capability, never as a model capability.
 
-1. It is opt-in per install (`bin/control vision-bridge on`, protected state in
-   `vision-bridge.json`). The installer auto-enables it once, and only when it
-   is still unconfigured and the operator already enabled a vision-capable
-   provider — that reuses a model they already pay for, so no download and no
-   surprise. When no such provider exists it stays off and the summary points
-   at `vision-bridge setup`. `visionBridgeConfigured()` gates this so
-   re-running the installer never overrides an explicit off. Never auto-enable
-   in any other path; a routed image spends the engine provider's quota.
+1. It is **on by default** and off only when the operator says so
+   (`bin/control vision-bridge off`, protected state in `vision-bridge.json`).
+   Reading a pasted screenshot is the one thing people expect to work without
+   finding a toggle, and everything it needs is already installed: an install
+   with nothing to read images with resolves no engine and degrades exactly as
+   it did before the bridge existed, so the default costs an unequipped machine
+   nothing.
+   - The line between "never configured" and "configured off" is **structural,
+     not a sentinel**: no state file means nobody has answered and the current
+     default applies; a readable file's `enabled` is the operator's own answer
+     and is taken verbatim forever. A stored `false` must never be re-enabled by
+     a change of default. A file that exists but this build cannot parse falls
+     back to **off**, not to the default — somebody was here and we cannot tell
+     what they chose, so it must not start spending quota.
+   - `version` stays `1` on purpose. A bump would have to guess what an older
+     `false` meant, and there is nothing to guess with; file presence already
+     answers it, and `visionBridgeConfigured()` has gated exactly that
+     distinction since the bridge shipped. Do not add a migration that replaces
+     that fact with an inference.
+   - The installer writes no bridge state at all. It used to auto-enable once
+     when a vision-capable provider happened to be selected, which made the
+     file's presence mean "the installer ran" and left every other install
+     needing a command nobody knew about. It now only reports. Never write
+     bridge state from an install or update path; a routed image spends the
+     engine provider's quota, so the only writers are the operator's own
+     commands.
+   - Because it is on by default, a surface that would nag an unconfigured
+     install checks `visionBridgeConfigured()` first. `doctor` warns about "no
+     resolvable engine" only for an operator who actually asked; for a
+     default-on install it reports `ok`, since nothing was lost.
 2. The registry keeps declaring what each model itself reads. `inputModalities`
    is never edited to add `image` for a bridge, and `visionBridge` accepts only
    `false`, as a per-model opt-out. The registry loader rejects `true` so the
@@ -345,7 +367,15 @@ the turn as text. Treat it as a router capability, never as a model capability.
    lives outside the registry, so the request path calls its
    `/v1/chat/completions` endpoint directly with no credential, and it is used
    only when explicitly pinned — auto mode never routes images to `localhost`,
-   since an unreachable server would fail every paste. This is what lets a
+   since an unreachable server would fail every paste. The rule is about the
+   address, not about that one engine: a **keyless registry provider** (`local`,
+   and the loader guarantees keyless means a loopback `baseUrl`) is the same
+   hazard wearing a registry slug, so `resolveVisionEngine` excludes every
+   loopback-served candidate from auto and admits it only by explicit pin. It
+   stays listed in the picker, because choosing it carries the knowledge that
+   the server has to be up. Auto mode is the only default an unattended machine
+   gets, so it may only nominate an engine that is reachable without the
+   operator having started something. This is what lets a
    text-only-only install enable the bridge with no paid vision model. The
    `vision-bridge setup` command and probe target Ollama for auto-download
    because it is a managed daemon with a stable model registry — the only
@@ -394,12 +424,18 @@ the turn as text. Treat it as a router capability, never as a model capability.
      vision key, or an external dependency goes through the gateway or does not
      ship.
 
-   Known gap: plan quota spent this way is **not** surfaced in usage or limits,
-   so a transcribed screenshot bills the operator's ChatGPT plan invisibly. That
-   is the one thing "Ship a new provider to every installer" requires of
-   everyone else that this path does not yet do. It is being closed separately.
-   Do not read it as settled, do not weaken this section to accommodate it, and
-   do not extend the exception to another engine while it is still open.
+   Known gap: **plan quota and limits** spent this way are still not surfaced.
+   Every bridged read now records a usage event through the shared pipeline
+   (model, provider, status, duration — no token counts, because the request
+   path receives the transcript rather than the envelope) and logs one
+   never-quieted line, so the operator can tell a vision call happened and
+   against what. What is still missing is the other half of what "Ship a new
+   provider to every installer" requires of everyone else: the ChatGPT plan's
+   remaining quota does not move in the tray when a screenshot is transcribed,
+   and no surface renders routed usage events at all. It is being closed
+   separately. Do not read it as settled, do not weaken this section to
+   accommodate it, and do not extend the exception to another engine while it is
+   still open.
 6. Substituted transcripts are untrusted user data. Keep them fenced and
    labelled as quoted image content, never log a transcript or a gateway error
    body, and keep the per-image failure path degrading to a stated failure

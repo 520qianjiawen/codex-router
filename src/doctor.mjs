@@ -34,7 +34,10 @@ import {
   selectedConfiguredListedModels,
 } from "./provider-selection.mjs";
 import { resolveVisionEngine } from "./vision-bridge.mjs";
-import { readVisionBridgeSettings } from "./vision-bridge-state.mjs";
+import {
+  readVisionBridgeSettings,
+  visionBridgeConfigured,
+} from "./vision-bridge-state.mjs";
 
 const checks = [];
 const add = (status, name, detail, fix) => checks.push({ status, name, detail, fix });
@@ -281,20 +284,33 @@ add(
     : `${requiredRoutedModels.length} routed models`,
   "Run ./bin/doctor --fix from the owning checkout, then fully quit and reopen Codex.",
 );
-// The bridge is opt-in, so "off" is a normal state and reports ok. Enabled
-// with no resolvable engine is the broken one: Codex would keep offering the
-// paste while nothing could read it, so the catalog drops the advertisement
-// and this says why.
+// "Off" is a normal state and reports ok. Enabled with no resolvable engine is
+// the broken one: Codex would keep offering the paste while nothing could read
+// it, so the catalog drops the advertisement and this says why.
+//
+// Only for an operator who actually asked, though. The bridge is now on by
+// default, so a plain text-only install reaches this branch having configured
+// nothing and having lost nothing -- images degrade exactly as they did before
+// the bridge existed. Warning there would put a yellow line on every fresh
+// DeepSeek-only install for a feature nobody switched on. It still reports what
+// is true, just at the severity the situation has.
+//
+// This check sees routed models only, so a native (ChatGPT-plan) engine is
+// invisible to it and a signed-in install may well read images fine while this
+// says nothing resolves.
 const visionSettings = readVisionBridgeSettings();
 const visionEngine = resolveVisionEngine(() => requiredRoutedModels, visionSettings);
 if (visionSettings.enabled && !visionEngine) {
+  const asked = visionBridgeConfigured();
   add(
-    "warn",
+    asked ? "warn" : "ok",
     "Vision bridge",
     visionSettings.engine
       ? `pinned engine ${visionSettings.engine} is not an enabled model that reads images`
-      : "enabled, but no enabled provider offers a model that reads images",
-    "Enable a provider with a vision model, or run ./bin/model-router codex control vision-bridge engine auto.",
+      : asked
+        ? "enabled, but no enabled provider offers a model that reads images"
+        : "on by default, but no enabled provider offers a model that reads images yet",
+    "Enable a provider with a vision model, sign in to ChatGPT, or run ./bin/model-router codex control vision-bridge setup for a local reader.",
   );
 } else if (visionEngine?.local) {
   add(

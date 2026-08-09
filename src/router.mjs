@@ -760,6 +760,15 @@ async function normalizeRoutedAgentInput(request, input, signal) {
   return output;
 }
 
+// Which bill a bridged read lands on. A registry engine names its own provider;
+// a native engine spends the signed-in ChatGPT plan, which the tray already
+// calls `openai`; a local engine spends nothing but electricity.
+function visionEngineProvider(engine) {
+  if (engine.native) return "openai";
+  if (engine.local) return "local";
+  return engine.provider || "unknown";
+}
+
 // Codex resends the whole conversation every turn, so the same screenshot
 // arrives again on every follow-up. Without the hash cache a five-turn
 // conversation about one image would buy the same transcript five times.
@@ -782,17 +791,39 @@ async function visionEvidenceFor(url, engine, signal, request, effort) {
   // the same screenshot again must re-read it, not replay the cheaper pass.
   const key = `${engine.slug}\u0000${effort || "default"}\u0000${account}\u0000${url}`;
   const cached = evidenceCache.get(key);
+  // A cache hit buys nothing, so it records nothing: the events file is a
+  // record of spend, not of calls the router avoided.
   if (cached !== undefined) return cached;
-  const text = await describeImage({
-    engine,
-    imageUrl: url,
-    gatewayBase: GATEWAY_BASE,
-    headers: routedHeaders(),
-    nativeCall,
-    effort,
-    signal,
-  });
-  return evidenceCache.set(key, text);
+  // A bridged read is a request the operator never asked for by name, billed to
+  // whichever engine won the ranking. It rides the same usage-events pipeline
+  // every routed turn uses, so `usage-events.jsonl` and `control probe` show
+  // that a vision call happened, against which model, and whether it worked --
+  // otherwise the very first read on an install that enabled nothing would
+  // leave no trace at all. Token counts are not available here (`describeImage`
+  // returns the transcript, not the envelope), so the event carries what it
+  // honestly has.
+  const startedAt = Date.now();
+  let status = 0;
+  try {
+    const text = await describeImage({
+      engine,
+      imageUrl: url,
+      gatewayBase: GATEWAY_BASE,
+      headers: routedHeaders(),
+      nativeCall,
+      effort,
+      signal,
+    });
+    status = 200;
+    return evidenceCache.set(key, text);
+  } finally {
+    recordUsageEvent({
+      model: engine.slug,
+      provider: visionEngineProvider(engine),
+      status,
+      durationMs: Date.now() - startedAt,
+    });
+  }
 }
 
 // Text-only models get their images read by a vision-capable model the
@@ -848,12 +879,15 @@ async function bridgeVisionInput(input, route, signal, request) {
     text: await visionEvidenceFor(url, engine, signal, request, effort),
     engineName,
   }));
-  if (!QUIET) {
-    console.error(
-      `[codex-router] vision-bridge model=${route.slug} engine=${engine.slug} ` +
-        `images=${result.images} described=${result.described} failed=${result.failed}`,
-    );
-  }
+  // Never gated on QUIET, for the same reason the retry line is not: a
+  // production LaunchAgent hard-sets `CODEX_ROUTER_QUIET=1`, and this is the
+  // one line that says the router spent an engine's quota on a paste nobody
+  // named. Silent automatic spending is the failure mode; the log carries a
+  // model, an engine, and counts -- never a transcript.
+  console.error(
+    `[codex-router] vision-bridge model=${route.slug} engine=${engine.slug} ` +
+      `images=${result.images} described=${result.described} failed=${result.failed}`,
+  );
   return result.input;
 }
 

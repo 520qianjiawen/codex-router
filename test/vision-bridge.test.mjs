@@ -175,6 +175,52 @@ test("a pinned local engine resolves even with no paid vision model enabled", ()
   assert.equal(engine.baseUrl, "http://127.0.0.1:11434/v1");
 });
 
+// The bridge is on by default now, so "auto" runs on machines nobody set up.
+// A model served from this machine is only there while the operator's own
+// runtime is running, so nominating one automatically would fail every paste
+// on a machine where Ollama happens to be closed -- the same reasoning that
+// keeps the pinned `local` engine pin-only. The registry enforces that a
+// keyless provider is loopback-only, so that flag is the whole rule.
+const LOOPBACK_VISION = {
+  slug: "local/qwen2.5vl:3b",
+  displayName: "Qwen2.5-VL 3B (local)",
+  provider: "local",
+  gatewayModel: "qwen2.5vl:3b",
+  inputModalities: ["text", "image"],
+  priority: 1,
+};
+
+test("auto never nominates an engine served from this machine", () => {
+  assert.equal(resolveVisionEngine(() => [LOOPBACK_VISION], { enabled: true }), undefined);
+  assert.equal(
+    resolveVisionEngine(() => [LOOPBACK_VISION, FLASH_VISION], { enabled: true })?.slug,
+    FLASH_VISION.slug,
+  );
+  // The exclusion is about auto only: an operator who names it still gets it.
+  assert.equal(
+    resolveVisionEngine(() => [LOOPBACK_VISION], { enabled: true, engine: LOOPBACK_VISION.slug })?.slug,
+    LOOPBACK_VISION.slug,
+  );
+  // ...and it stays offerable in the picker, which lists what can be pinned.
+  assert.deepEqual(
+    rankVisionEngines([LOOPBACK_VISION, FLASH_VISION]).map((model) => model.slug),
+    [FLASH_VISION.slug, LOOPBACK_VISION.slug],
+  );
+});
+
+test("with nothing to read an image with, a paste degrades exactly as it did before", () => {
+  // The switched-off bridge and the on-by-default bridge with no engine reach
+  // the identical code path: no engine, so the router states the failure
+  // instead of sending a part the provider would reject.
+  assert.equal(resolveVisionEngine(() => [TEXT_ONLY], { enabled: true }), undefined);
+  assert.equal(resolveVisionEngine(() => [], { enabled: true }), undefined);
+  assert.deepEqual(applyVisionBridge([TEXT_ONLY], undefined), [TEXT_ONLY]);
+  const off = stripImages(imageInput(), "reason");
+  assert.equal(off.images, 1);
+  assert.equal(off.input[0].content[1].type, "input_text");
+  assert.match(off.input[0].content[1].text, /could not be read/);
+});
+
 test("the local engine falls back to sensible defaults", () => {
   const engine = localVisionEngine({});
   assert.equal(engine.gatewayModel, DEFAULT_LOCAL_VISION_MODEL);
@@ -877,6 +923,42 @@ test("the request path hands the engine resolver a list it has not built yet", a
     eager,
     [],
     "bridgeVisionInput must only reach the credential scan from inside the deferred candidate list",
+  );
+});
+
+// The bridge now spends an engine's quota on machines that configured nothing,
+// so a read that leaves no trace is the failure mode. Two records, for the two
+// questions an operator asks afterwards: did a vision call happen, and against
+// what.
+test("a bridged read is recorded rather than spent silently", async () => {
+  const source = await readFile(path.join(repoRoot, "src/router.mjs"), "utf8");
+  const evidence = source.slice(
+    source.indexOf("async function visionEvidenceFor"),
+    source.indexOf("async function bridgeVisionInput"),
+  );
+  assert.match(
+    evidence,
+    /recordUsageEvent\(\{[\s\S]*model: engine\.slug/,
+    "a bridged read must record a usage event naming the engine that was billed",
+  );
+  // A cache hit skipped the call, so it must not appear as spend.
+  assert.ok(
+    evidence.indexOf("if (cached !== undefined) return cached;") <
+      evidence.indexOf("recordUsageEvent("),
+    "a cache hit must return before anything is recorded",
+  );
+  const bridge = source.slice(
+    source.indexOf("async function bridgeVisionInput"),
+    source.indexOf("function isOpaqueEncryptedContent"),
+  );
+  // A production LaunchAgent hard-sets CODEX_ROUTER_QUIET=1, so gating this
+  // line on it would hide automatic spending on exactly the installs that run
+  // unattended.
+  assert.match(bridge, /console\.error\(\s*`\[codex-router\] vision-bridge /);
+  assert.doesNotMatch(
+    bridge,
+    /if \(!QUIET\)/,
+    "the vision-bridge line must not be gated on QUIET",
   );
 });
 

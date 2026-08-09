@@ -574,17 +574,23 @@ The vision bridge fixes that at the router: it sends the pasted image to a
 vision-capable model you have **already enabled**, and substitutes the reply
 into the turn as text before the text-only model ever sees it.
 
+It is **on by default** — paste a screenshot and it is read, with nothing to
+configure. If nothing on your machine can read images, nothing changes: the
+picker keeps saying text-only, exactly as before.
+
 ```sh
-./bin/control vision-bridge on
 ./bin/control vision-bridge status
+./bin/control vision-bridge off     # never spend an engine's quota on a paste
 ```
 
-Then fully quit Codex and reopen it, so the picker picks up the rebuilt catalog.
+Turning it off is remembered permanently; an update never turns it back on.
 
-The engine is chosen automatically from your enabled, credentialed models,
-cheapest tier first (a Flash or Haiku class model beats a flagship for reading a
-screenshot, at a fraction of the cost). Pin a specific one, or hand the choice
-back:
+The engine is chosen automatically from your enabled, credentialed models and
+your signed-in ChatGPT plan, cheapest tier first (a Flash or Haiku class model
+beats a flagship for reading a screenshot, at a fraction of the cost). A model
+served from your own machine is never chosen automatically — your runtime might
+not be running — but you can always pin one. Pin a specific engine, or hand the
+choice back:
 
 ```sh
 ./bin/control vision-bridge engine qwen-plan/qwen3.6-flash
@@ -613,6 +619,10 @@ Notes worth knowing:
 - **It advertises only what it can deliver.** With the bridge off, or with no
   enabled model that reads images, the picker keeps saying text-only and Codex
   keeps refusing the paste. `doctor` reports the engine in use.
+- **You can see what it spent.** Every read that is not served from the cache
+  is written to `usage-events.jsonl` with the engine it was billed to, and the
+  router logs one line per bridged turn. Plan quota for a ChatGPT-plan engine
+  is still not reflected in the tray's limits — see `AGENTS.md`.
 
 The evidence contract is modelled on
 [ModLens](https://github.com/liustack/modlens), which solves the same problem

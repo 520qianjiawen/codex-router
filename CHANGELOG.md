@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- **A text-only model reads a pasted image with no configuration.** The vision
+  bridge is now on by default: paste a screenshot into DeepSeek, GLM, or Kimi
+  and it is transcribed by the cheapest vision-capable model you have already
+  enabled — or by your signed-in ChatGPT plan — instead of silently doing
+  nothing until you discovered a toggle. An install with nothing to read images
+  with behaves exactly as it did before: no engine resolves, the picker keeps
+  saying text-only, and Codex keeps refusing the paste.
+
+  Turning it off is permanent. The state file's *presence* is what separates
+  "never configured" from "configured off", so a stored `enabled: false` is
+  never re-enabled by this change or any future one, and a state file this
+  build cannot parse falls back to off rather than to the new default. The
+  installer no longer writes bridge state at all; it only reports what will
+  happen.
+
+  Two things it will not do on its own. It never picks an engine served from
+  your own machine — the pinned `local` engine, or a model from the keyless
+  `local` provider — because your runtime may not be running and that would
+  fail every paste; pin one and it is used gladly. And it no longer spends
+  quota invisibly: every read that misses the transcript cache records a usage
+  event naming the engine it was billed to, and the per-turn log line is no
+  longer suppressed on an unattended service. A ChatGPT-plan engine's quota is
+  still not reflected in the tray's limits.
+
 - **A curated model can say it refuses a forced tool choice.** A few upstreams
   call tools happily when `tool_choice` is `"auto"` and answer HTTP 400 when
   one is required, so the compatibility check reported no tool support and the

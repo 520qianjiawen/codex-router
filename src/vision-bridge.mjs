@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { PROVIDERS } from "./model-registry.mjs";
+
 // A text-only model cannot read a pasted screenshot, so the router reads it on
 // the model's behalf: every image part is sent to a vision-capable model the
 // operator has already enabled, and the reply is substituted into the turn as
@@ -182,6 +184,22 @@ export function nativeVisionCandidates(models, hidden = new Set()) {
     .filter(supportsImageInput);
 }
 
+// Auto must never nominate an engine served from this machine. The pinned
+// `local` engine has always been pin-only for this reason -- an unreachable
+// localhost would fail every paste -- and a keyless registry provider is the
+// identical hazard wearing a registry slug: the loader guarantees `keyless`
+// means a loopback `baseUrl`, so those models are somebody's own Ollama or LM
+// Studio, up only while they have it running. That was survivable while the
+// bridge was opt-in; with the bridge on by default it would silently make a
+// stopped runtime the default reader on every machine that ever checked a local
+// vision model. Pinning one stays fully supported, and the picker still lists
+// them, because a deliberate choice carries the knowledge that the server has
+// to be up.
+export function isLoopbackEngine(model) {
+  if (model?.local === true) return true;
+  return Boolean(PROVIDERS.get(String(model?.provider || ""))?.keyless);
+}
+
 // `listCandidates` must return the selected and credentialed set: an engine the
 // operator cannot actually call would make the catalog promise image input that
 // every turn then fails to deliver. The local engine is the one exception --
@@ -218,7 +236,7 @@ export function resolveVisionEngine(listCandidates, settings) {
     // reason to silently describe images with a different model.
     return ranked.find((model) => model.slug === settings.engine);
   }
-  return ranked[0];
+  return ranked.find((model) => !isLoopbackEngine(model));
 }
 
 // The bridge stands in for the model, so a model that already reads images is

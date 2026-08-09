@@ -15,7 +15,25 @@ export const VISION_BRIDGE_STATE_PATH =
   process.env.MODEL_ROUTER_VISION_BRIDGE_STATE ||
   path.join(STATE_DIR, "vision-bridge.json");
 
+// What a machine that has never answered the question gets. Pasting a
+// screenshot to a text-only model is the single thing operators expect to work
+// without reading documentation, and everything the bridge needs to serve it is
+// already installed: the ranking prefers the cheapest engine, and an install
+// with nothing to read images with resolves no engine and degrades exactly as
+// it always did. So the honest default is on.
+//
+// This is deliberately *not* the fallback for a state file that exists and
+// cannot be read -- see `disabledSettings()`.
 function defaultSettings() {
+  return { version: 1, enabled: true, engine: null, effort: null, local: null };
+}
+
+// The conservative reading, used only when a state file is present but this
+// build cannot make sense of it. A file on disk means the operator has been
+// here; it is not evidence of consent, so it must not inherit a default that
+// starts spending an engine's quota. Off is what every install had before the
+// bridge existed, and `bin/control vision-bridge on` is one command away.
+function disabledSettings() {
   return { version: 1, enabled: false, engine: null, effort: null, local: null };
 }
 
@@ -53,10 +71,25 @@ function normalizeLocal(value) {
   return local;
 }
 
-// Local opt-in that lets text-only models receive pasted images as described
-// text. The checked-in registry keeps declaring what each model itself can
-// read; this state only records that the operator wants the router to stand in
-// for the missing capability on this machine.
+// The checked-in registry keeps declaring what each model itself can read; this
+// state only records how the operator wants the router to stand in for the
+// missing capability on this machine.
+//
+// Three cases, and the distinction between them is structural rather than a
+// sentinel value:
+//
+//   no file      -- nobody has ever answered. Takes the current default.
+//   readable     -- `enabled` is the operator's own answer and is taken
+//                   verbatim, forever. A stored `false` is never re-enabled by
+//                   a change of default; that is the whole point of writing it.
+//   unreadable   -- a file exists, so somebody was here, but this build cannot
+//                   tell what they chose. Falls back to off, not to the default.
+//
+// That is why the version stays 1. A bumped version would have to guess what a
+// v1 `false` meant, and there is nothing to guess with: file presence already
+// separates "never configured" from "configured off", and `visionBridgeConfigured()`
+// has been the installer's gate on exactly that distinction since the bridge
+// shipped. A migration could only replace a fact with an inference.
 export function readVisionBridgeSettings() {
   if (!existsSync(VISION_BRIDGE_STATE_PATH)) return defaultSettings();
   try {
@@ -71,10 +104,9 @@ export function readVisionBridgeSettings() {
       };
     }
   } catch {
-    // Corrupt state falls back to off, which is the behavior every install had
-    // before the bridge existed.
+    // Falls through to the conservative reading below.
   }
-  return defaultSettings();
+  return disabledSettings();
 }
 
 function writeSettings(settings) {
@@ -123,9 +155,11 @@ export function setVisionBridgeEffort(effort) {
   return writeSettings({ ...current, version: 1, effort: normalizeEffort(effort) });
 }
 
-// True once the operator has made any explicit choice. Install-time auto-enable
-// checks this so re-running the installer never overrides someone who turned
-// the bridge off on purpose.
+// True once the operator has made any explicit choice. This is the structural
+// line between "never configured", which takes the current default, and
+// "configured", whose stored `enabled` is authoritative and outlives any change
+// of default. Surfaces that would otherwise nag about an unconfigured install
+// check this rather than inferring intent from the value.
 export function visionBridgeConfigured() {
   return existsSync(VISION_BRIDGE_STATE_PATH);
 }
