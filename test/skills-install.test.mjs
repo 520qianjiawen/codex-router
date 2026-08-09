@@ -107,6 +107,51 @@ test("uninstall on a clean home is a no-op", () => {
   }
 });
 
+test("install prunes stale managed dirs the pack no longer ships", () => {
+  const home = tempCodexHome();
+  try {
+    installSkills(home, { quiet: true });
+    // Simulate a pack skill being removed in a later revision: plant a
+    // managed dir that no longer exists in the source.
+    const stale = path.join(home, "skills", "codex-obsolete");
+    mkdirSync(stale, { recursive: true });
+    writeFileSync(path.join(stale, "SKILL.md"), "# obsolete\n");
+    writeFileSync(path.join(stale, ".codex-router-managed"), "x\n");
+    installSkills(home, { quiet: true });
+    assert.ok(!existsSync(stale), "stale managed dir removed");
+    assert.ok(existsSync(path.join(home, "skills", "codex-router")), "current skills kept");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("install skips hidden directories and dirs without SKILL.md", () => {
+  const home = tempCodexHome();
+  const fakeSource = mkdtempSync(path.join(os.tmpdir(), "codex-skills-source-"));
+  try {
+    // A hidden dir and a non-skill dir in the source must never be copied.
+    mkdirSync(path.join(fakeSource, ".hidden"), { recursive: true });
+    mkdirSync(path.join(fakeSource, "no-skill-dir"), { recursive: true });
+    for (const name of PACK) {
+      mkdirSync(path.join(fakeSource, name), { recursive: true });
+      writeFileSync(path.join(fakeSource, name, "SKILL.md"), `# ${name}\n`);
+    }
+    process.env.CODEX_ROUTER_SKILLS_DIR = fakeSource;
+    try {
+      const { installed } = installSkills(home, { quiet: true });
+      assert.equal(installed, PACK.length);
+      const installedNames = readdirSync(path.join(home, "skills")).sort();
+      assert.ok(!installedNames.includes(".hidden"), "hidden dir not copied");
+      assert.ok(!installedNames.includes("no-skill-dir"), "no-SKILL.md dir not copied");
+    } finally {
+      delete process.env.CODEX_ROUTER_SKILLS_DIR;
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(fakeSource, { recursive: true, force: true });
+  }
+});
+
 test("every pack skill has valid frontmatter, a trigger description, and stays short", () => {
   const skillsRoot = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
@@ -125,6 +170,13 @@ test("every pack skill has valid frontmatter, a trigger description, and stays s
     assert.equal(match[1], name, `${name}: frontmatter name matches directory`);
     // The description is what the model matches on; it must carry triggers.
     assert.match(match[2], /Use when/, `${name}: description has "Use when" triggers`);
+    // Every description is scoped to custom routed models so a native GPT
+    // session never triggers a skill that teaches flattened names it lacks.
+    assert.match(
+      match[2],
+      /custom \(non-OpenAI\) model/,
+      `${name}: description scoped to custom models`,
+    );
     assert.ok(match[2].length <= 1024, `${name}: description within 1024 chars`);
     // Keep the pack cheap to load: short file, no emoji, no time-sensitive data.
     assert.ok(text.split("\n").length <= 100, `${name}: SKILL.md under 100 lines`);

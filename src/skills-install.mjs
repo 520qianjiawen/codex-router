@@ -22,8 +22,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const SKILLS_SOURCE = path.join(SOURCE_ROOT, "skills");
 const MARKER = ".codex-router-managed";
+
+// The pack source directory. Overridable for tests via the environment.
+function skillsSource() {
+  return process.env.CODEX_ROUTER_SKILLS_DIR || path.join(SOURCE_ROOT, "skills");
+}
 
 export function codexSkillsDir(codexHome) {
   return path.join(codexHome, "skills");
@@ -39,7 +43,8 @@ export function managedSkillNames(codexHome) {
 }
 
 export function installSkills(codexHome, { quiet = false } = {}) {
-  if (!existsSync(SKILLS_SOURCE)) {
+  const sourceRoot = skillsSource();
+  if (!existsSync(sourceRoot)) {
     if (!quiet) {
       console.error("codex-router: no skills/ directory in this checkout; nothing to install.");
     }
@@ -47,12 +52,20 @@ export function installSkills(codexHome, { quiet = false } = {}) {
   }
   const target = codexSkillsDir(codexHome);
   mkdirSync(target, { recursive: true });
+  const sourceNames = new Set();
   let installed = 0;
   let skipped = 0;
-  for (const entry of readdirSync(SKILLS_SOURCE, { withFileTypes: true })) {
+  for (const entry of readdirSync(sourceRoot, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
-    const source = path.join(SKILLS_SOURCE, entry.name);
-    if (!existsSync(path.join(source, "SKILL.md"))) continue;
+    if (entry.name.startsWith(".")) continue; // never copy hidden directories
+    const source = path.join(sourceRoot, entry.name);
+    if (!existsSync(path.join(source, "SKILL.md"))) {
+      if (!quiet) {
+        console.error(`codex-router: skipping ${entry.name} (no SKILL.md).`);
+      }
+      continue;
+    }
+    sourceNames.add(entry.name);
     const dest = path.join(target, entry.name);
     if (existsSync(dest) && !existsSync(path.join(dest, MARKER))) {
       // Another tool or the user already owns this name. Never clobber it.
@@ -71,6 +84,14 @@ export function installSkills(codexHome, { quiet = false } = {}) {
       "Installed by codex-router. Remove this directory to uninstall the skill.\n",
     );
     installed += 1;
+  }
+  // Prune managed directories the pack no longer ships, so the installed set
+  // always matches the checkout. Only marker-owned dirs are removed.
+  for (const name of managedSkillNames(codexHome)) {
+    if (!sourceNames.has(name)) {
+      rmSync(path.join(target, name), { recursive: true, force: true });
+      if (!quiet) console.error(`codex-router: removed stale managed skill "${name}".`);
+    }
   }
   return { installed, skipped };
 }
