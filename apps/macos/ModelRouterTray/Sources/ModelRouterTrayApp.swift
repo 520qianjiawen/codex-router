@@ -2831,9 +2831,12 @@ private struct TrayView: View {
 
     @ViewBuilder private var engineMenu: some View {
       Menu {
-        Button("Auto · cheapest paid model") {
-          Task { await store.setVisionBridgeEngine("auto") }
-        }
+        // No "Auto" entry. It was labelled "cheapest paid model", but the
+        // ranking behind it scored cost by testing slugs against
+        // /flash|haiku|mini|lite|small|turbo/ -- which matches none of the
+        // engines a typical install has, so they tied and the winner fell out
+        // of alphabetical order. The menu now offers only models the operator
+        // can actually evaluate, and a fresh install starts on a named default.
         if !(vision?.paidEngines ?? []).isEmpty {
           Section("Paid (cloud)") {
             ForEach(vision?.paidEngines ?? []) { option in

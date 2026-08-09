@@ -279,9 +279,12 @@ export function resolveVisionEngine(listCandidates, settings) {
   if (settings.engine === LOCAL_ENGINE_SLUG) return localVisionEngine(settings);
   const ranked = rankVisionEngines(listCandidates());
   if (settings.engine) {
+    const pinned = ranked.find((model) => model.slug === settings.engine);
     // A pin that no longer resolves is an operator-visible problem, not a
-    // reason to silently describe images with a different model.
-    return ranked.find((model) => model.slug === settings.engine);
+    // reason to silently describe images with a different model. A *default*
+    // that does not resolve is different: nobody chose it, so an install
+    // without the default engine available still reads images.
+    if (pinned || !settings.defaulted) return pinned;
   }
   return ranked.find((model) => !isLoopbackEngine(model));
 }
