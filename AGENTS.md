@@ -461,6 +461,38 @@ the turn as text. Treat it as a router capability, never as a model capability.
    layout list, readable data values, and an explicit uncertainty list, so the
    downstream model quotes rather than guesses. Preserve the uncertainty
    section in any rewrite.
+   - `## Identification` is the **one** section where inference is allowed, and
+     it exists because a pure transcription contract cannot answer "what is
+     this?" — which is the most common thing anyone asks about a pasted image.
+     Without it the reader described a photo it plainly recognized, and the
+     routed model went looking on the internet, uploading the operator's
+     screenshot to a public host on the way. Keep it separate from `## Text`,
+     keep it required, and keep `(unrecognized)` as the answer when nothing is
+     recognizable. Inference belongs in one labelled place, never spread
+     through the sections that claim to be a reading.
+8. The reader is asked what the operator wants to know, and asked **again when
+   that changes**. Pinning the question to the image's own message kept the
+   cache still and made an image's reading a snapshot of the first thing ever
+   asked about it. The newest image follows the newest question instead. Three
+   properties keep that affordable, and all three are load-bearing:
+   - Bought once per *question*, never per turn: a question already asked is
+     served from the record, so Codex resending the conversation is free.
+   - Only the **newest** image follows the conversation. Older images keep the
+     question they were read for, so a chat holding ten screenshots cannot turn
+     one new question into ten new reads.
+   - The record accumulates, so an earlier answer survives a later question.
+   The question itself is the operator's words only: Codex's `<image …>` wrapper,
+   its `# Files mentioned by the user:` preamble, and its context blocks
+   (`<environment_context>`, `<recommended_plugins>`) are bookkeeping, and
+   sending them produced transcripts written about a filename.
+9. A read that fails **transiently** is asked again — twice, at 250ms and 1s.
+   The engine is a rate-limited account across a network, and losing an image
+   for the whole turn to a 429 that would have cleared in a second is the
+   opposite of what the bridge is for. What is not retried is equally
+   deliberate: 4xx refusals buy the identical refusal, and a timeout is reported
+   rather than retried because the per-attempt budget is already two minutes. A
+   transport failure keeps the transport's own wording ("fetch failed"), which
+   is how an operator learns their own loopback engine is down.
    - A reading that came back **incomplete** says so in its own header. The
      downstream model cannot otherwise tell "the image does not show that" from
      "the transcript does not mention it", and it answers the first with
@@ -471,7 +503,7 @@ the turn as text. Treat it as a router capability, never as a model capability.
      not follow the format at all -- a small local model answering in prose --
      and reading again returns the same shape, so an invitation there buys a
      loop rather than an answer. Never advertise a second look on every image.
-8. Every image the router carries is read, in **both** places Codex puts one:
+10. Every image the router carries is read, in **both** places Codex puts one:
    parts of a user message, and the `output` of a `function_call_output`. A
    text-only model that has just been handed a transcript still sees the file's
    path in the turn and calls `view_image` on it, and that tool result holds the
@@ -490,7 +522,7 @@ the turn as text. Treat it as a router capability, never as a model capability.
      buying a second one. It is also the only way a *later* question gets a
      freshly focused read, since the question pinned to an image is the one in
      its own message.
-9. An image's evidence is **one record per image, not one transcript per
+11. An image's evidence is **one record per image, not one transcript per
    question**. The question still decides whether a read has to be bought;
    what gets injected is every reading the router holds for that image. Filing
    one transcript per (image, question) and injecting only the matching one made
@@ -502,7 +534,7 @@ the turn as text. Treat it as a router capability, never as a model capability.
    slot prints the record; the rest point at it. That pointer is keyed on the
    image, never on matching transcript text: two different screenshots can read
    identically, and "the same image" has to be a fact about the bytes.
-10. One image, one purchase. The transcript cache only knows about reads that
+12. One image, one purchase. The transcript cache only knows about reads that
    have **finished**, so concurrent requests — Codex sends them, and a subagent
    runs beside its parent — all missed and all bought the same transcript. Reads
    in flight are shared by image, effort, account, and question; waiters take the
@@ -511,7 +543,7 @@ the turn as text. Treat it as a router capability, never as a model capability.
    request an image. Reads within a turn run concurrently under a fixed cap: the
    operator waits for all of them before the routed turn starts, but the engine
    is somebody's rate-limited account and must not receive an album as a burst.
-11. Never add a local model to `LOCAL_VISION_CATALOG` with an `accuracy` claim
+13. Never add a local model to `LOCAL_VISION_CATALOG` with an `accuracy` claim
    that was not measured. Run `node src/vision-benchmark.mjs`, which scores a
    model against a checked-in image with known contents, and record the result
    in `measured`; anything unmeasured stays `untested`. This is not bureaucracy:
@@ -519,7 +551,7 @@ the turn as text. Treat it as a router capability, never as a model capability.
    plausible, so a reputation-based label would route users straight to a model
    that fabricates invoice numbers. The picker sorts on this field, so an
    unearned "accurate" puts a confident-wrong reader at the top of the list.
-12. Which native models may read an image is one rule in one place
+14. Which native models may read an image is one rule in one place
    (`src/vision-engines.mjs`), not a criterion each surface re-derives. The
    catalog build, the tray, and the request path each asked it separately once,
    and the three answers disagreed — the request path applied no auth gate at
@@ -528,7 +560,7 @@ the turn as text. Treat it as a router capability, never as a model capability.
    process) and only the request path holds the caller's live session. Every
    call site names its evidence explicitly, and the coverage below fails when
    one of them stops.
-13. The bridge lives on the **routed request path only**. `src/api-forwarder.mjs`
+15. The bridge lives on the **routed request path only**. `src/api-forwarder.mjs`
     sits downstream of the gateway — every routed model's `api_base` points at
     it — so Codex's traffic arrives already bridged and an image reaching that
     hop came from a client talking to the gateway directly. It replaces those
@@ -537,7 +569,7 @@ the turn as text. Treat it as a router capability, never as a model capability.
     substituted part must use the protocol's own text type (`input_text` for
     Responses, `text` for chat completions and Anthropic messages), or an image
     the provider rejects is merely traded for a text part it rejects.
-14. Regression coverage lives in `test/vision-bridge.test.mjs`,
+16. Regression coverage lives in `test/vision-bridge.test.mjs`,
     `test/vision-bridge-state.test.mjs`, the bridged-catalog case in
     `test/catalog.test.mjs`, the whole-path measurements in
     `test/vision-bridge-e2e.test.mjs`, and the router cases in
