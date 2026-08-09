@@ -965,6 +965,22 @@ node src/skills-install.mjs install
 node src/skills-install.mjs uninstall
 ```
 
+`./bin/model-router codex doctor` checks the pack: installed, current
+against the checkout, free of name collisions, and matching the app
+toolset snapshot the router relays.
+
+To verify the pack actually reaches a session, run the probe against a
+rollout after using a custom model in the app:
+
+```sh
+node scripts/verify-skill-injection.mjs ~/.codex/sessions/2026/08/09/rollout-*.jsonl
+```
+
+It asserts the session listed a pack skill, that the model read it, that
+`create_thread` calls carried the required fields, and (with
+`--expect native`) that native sessions never read the pack. The browser
+and computer-use bootstrap one-liners are live-only and flagged as such.
+
 ## Common commands
 
 ```sh
