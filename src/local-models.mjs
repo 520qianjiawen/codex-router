@@ -18,6 +18,9 @@ import {
 } from "./provider-selection.mjs";
 import { STATE_DIR } from "./paths.mjs";
 import { readUserModels, userModelEntry, writeUserModels } from "./user-models.mjs";
+// The vision catalog is measured against a known image, so image readers are
+// taken from there rather than guessed at a second time here.
+import { LOCAL_VISION_CATALOG as VISION_CATALOG } from "./vision-host.mjs";
 
 
 // Local models are the operator's own software running on their own machine, so
@@ -414,7 +417,9 @@ export function localModelsSnapshot({
   // Without this the only way to install a model was to already know its tag,
   // which is no help to anyone who has never installed one. Rated for this
   // machine so the list cannot suggest something that will not run here.
-  const available = suggestedLocalModels({ installed: models });
+  const capacity = detectMachine();
+  const available = suggestedLocalModels({ capacity, installed: models });
+  const availableVision = suggestedVisionModels({ capacity, installed: models });
   return {
     path: LOCAL_MODELS_STATE_PATH,
     installed: models.length,
@@ -423,7 +428,8 @@ export function localModelsSnapshot({
     totalGb: Math.round(models.reduce((sum, model) => sum + model.sizeGb, 0) * 10) / 10,
     models,
     available,
-    machine: describeMachine(detectMachine()),
+    availableVision,
+    machine: describeMachine(capacity),
   };
 }
 
@@ -537,140 +543,147 @@ export function fitAdvisory(tag, sizeGb, capacity = detectMachine()) {
 
 // --- what is worth downloading ---------------------------------------------
 
-// Nothing in the tray or the CLI answered "which models exist?", so the only
-// way to install one was to already know its tag. This is a starting list, not
-// a catalog: `tools` and `sizeGb` below were read from the registry manifests
-// on 2026-08-09 with fetchRegistryCapabilities, and the live lookup still runs
-// at install time, so a republished tag corrects itself there rather than
-// silently disagreeing here.
+// Nothing answered "which model should I get?", so the only way in was to
+// already know a tag. Two questions decide it, and they have different
+// answers: can this model do coding work, or can it only read images?
 //
-// `tools` decides everything. Codex drives every turn through tool calls, so a
-// model without them can only ever be a vision reader — and several popular
-// coding models turn out not to have them.
+// `tools` and `sizeGb` were read from the registry manifests on 2026-08-09
+// with fetchRegistryCapabilities, and the live lookup runs again at install
+// time, so a republished tag corrects itself there. `context` is each model's
+// vendor-documented native window -- the registry does not publish it, and
+// Ollama only reports it once the model is on disk.
+//
+// Codex drives every turn through tool calls, so a model without them cannot
+// do coding work at any size. Vision readers are not listed here at all: they
+// have their own catalog with measured accuracy.
+const MIN_CODING_CONTEXT = 32_768;
+
 export const SUGGESTED_LOCAL_MODELS = Object.freeze(
   [
-    {
-      tag: "qwen2.5-coder:1.5b",
-      sizeGb: 1,
-      tools: true,
-      note: "Smallest coder; for machines with little to spare",
-    },
-    {
-      tag: "llama3.2:3b",
-      sizeGb: 2,
-      tools: true,
-      note: "Verified making a real tool call through the router",
-    },
-    {
-      tag: "qwen2.5-coder:3b",
-      sizeGb: 1.9,
-      tools: true,
-      note: "Small coder",
-    },
-    {
-      tag: "gemma3:4b",
-      sizeGb: 3.3,
-      tools: false,
-      note: "No tools — vision reader only",
-    },
-    {
-      tag: "mistral:7b",
-      sizeGb: 4.4,
-      tools: true,
-      note: "General purpose",
-    },
+    { tag: "qwen2.5-coder:1.5b", sizeGb: 1, tools: true, context: 32_768, note: "smallest coder" },
+    { tag: "qwen2.5-coder:3b", sizeGb: 1.9, tools: true, context: 32_768, note: "small coder" },
+    { tag: "llama3.2:3b", sizeGb: 2, tools: true, context: 131_072, note: "verified working here" },
+    { tag: "mistral:7b", sizeGb: 4.4, tools: true, context: 32_768, note: "general purpose" },
     {
       tag: "qwen2.5-coder:7b",
       sizeGb: 4.7,
       tools: true,
-      note: "Advertises tools but has returned them as plain text",
+      context: 32_768,
+      note: "tools can arrive as plain text",
     },
-    {
-      tag: "llama3.1:8b",
-      sizeGb: 4.9,
-      tools: true,
-      note: "General purpose baseline",
-    },
-    {
-      tag: "qwen2.5-coder:14b",
-      sizeGb: 9,
-      tools: true,
-      note: "Stronger coder",
-    },
-    {
-      tag: "gpt-oss:20b",
-      sizeGb: 13.8,
-      tools: true,
-      note: "Open thinking model",
-    },
-    {
-      tag: "devstral",
-      sizeGb: 14.3,
-      tools: true,
-      note: "Built for agentic coding",
-    },
+    { tag: "llama3.1:8b", sizeGb: 4.9, tools: true, context: 131_072, note: "general purpose" },
+    { tag: "qwen2.5-coder:14b", sizeGb: 9, tools: true, context: 32_768, note: "stronger coder" },
+    { tag: "gpt-oss:20b", sizeGb: 13.8, tools: true, context: 131_072, note: "thinking model" },
+    { tag: "devstral", sizeGb: 14.3, tools: true, context: 131_072, note: "built for agents" },
   ].map((entry) => Object.freeze(entry)),
 );
 
-// Rated for this machine and filtered against what is already downloaded, so
-// the list only ever offers something the operator does not have and can run.
+function notInstalled(installed) {
+  const have = new Set(installed.map((entry) => String(entry?.tag ?? entry)));
+  return (tag) => !have.has(tag) && !have.has(`${tag}:latest`);
+}
+
+// Models that can actually do coding work here: they call tools, they hold
+// enough context to be worth pointing at a codebase, and they fit in memory.
 export function suggestedLocalModels({
   capacity = detectMachine(),
   installed = [],
   includeUnusable = false,
 } = {}) {
-  const have = new Set(installed.map((entry) => String(entry?.tag ?? entry)));
+  const fresh = notInstalled(installed);
   return SUGGESTED_LOCAL_MODELS
+    .filter((entry) => entry.tools && entry.context >= MIN_CODING_CONTEXT)
     .map((entry) => ({ ...entry, fit: rateModelFit(entry.sizeGb, capacity) }))
-    .filter((entry) => !have.has(entry.tag) && !have.has(`${entry.tag}:latest`))
+    .filter((entry) => fresh(entry.tag))
     .filter((entry) => includeUnusable || entry.fit !== "too-large")
     .sort((left, right) => left.sizeGb - right.sizeGb);
 }
 
+// Models that can only read images. Kept separate because the choice is a
+// different one -- accuracy at transcription, not coding ability -- and the
+// vision catalog already records what each one actually scored.
+export function suggestedVisionModels({
+  capacity = detectMachine(),
+  installed = [],
+  catalog,
+} = {}) {
+  const fresh = notInstalled(installed);
+  const entries = catalog || VISION_CATALOG;
+  return entries
+    .map((entry) => ({
+      tag: entry.tag,
+      sizeGb: entry.sizeGb,
+      accuracy: entry.accuracy,
+      note: entry.note,
+      fit: rateModelFit(entry.sizeGb, capacity),
+    }))
+    .filter((entry) => fresh(entry.tag))
+    .filter((entry) => entry.fit !== "too-large")
+    // Proven readers first. Sorting by size alone would top the list with
+    // moondream, which is the smallest and transcribed none of the test text —
+    // a confident-wrong reader is worse than a slower right one.
+    .sort(
+      (left, right) =>
+        VISION_ACCURACY_RANK[left.accuracy] - VISION_ACCURACY_RANK[right.accuracy] ||
+        left.sizeGb - right.sizeGb,
+    );
+}
+
+// Mirrors the vision catalog's own ranking: measured-accurate, then partial,
+// then unmeasured, then the ones that only caption.
+const VISION_ACCURACY_RANK = {
+  accurate: 0,
+  partial: 1,
+  untested: 2,
+  "captions-only": 3,
+};
+
 // A snapshot is the tray's data contract, not something a person can read at a
-// terminal. This renders the same object for the operator: what is installed,
-// what each model can actually do, and what is worth downloading next.
+// terminal. This renders the same object for the operator, in the two groups
+// the choice actually splits into.
+function contextLabel(tokens) {
+  return tokens >= 1000 ? `${Math.round(tokens / 1024)}K` : String(tokens);
+}
+
 export function renderLocalModels(snapshot) {
   const lines = [`Local models · ${snapshot.machine || "this machine"}`, ""];
   if (snapshot.models.length === 0) {
     lines.push("Installed: none yet");
   } else {
-    lines.push(`Installed: ${snapshot.installed} · ${snapshot.totalGb} GB · ${snapshot.usableAsChat ?? 0} usable as chat models`);
-    lines.push("");
+    lines.push(`Installed: ${snapshot.installed} · ${snapshot.totalGb} GB`);
     const width = Math.max(...snapshot.models.map((model) => model.tag.length));
     for (const model of snapshot.models) {
-      // The checkbox is what offers a model to Codex, so it leads the row.
-      const role = model.tools
-        ? model.vision
-          ? "chat + vision"
-          : "chat"
-        : model.vision
-          ? "vision only (no tools)"
-          : "no tools";
+      const role = model.tools ? (model.vision ? "code + images" : "code") : "images only";
       lines.push(
         `  ${model.enabled ? "[x]" : "[ ]"} ${model.tag.padEnd(width)} ` +
           `${`${model.sizeGb.toFixed(1)} GB`.padStart(8)}  ${role}${model.running ? "  · loaded" : ""}`,
       );
     }
   }
-  const available = snapshot.available || [];
-  if (available.length) {
-    lines.push("", "Available to download:", "");
-    const width = Math.max(...available.map((entry) => entry.tag.length));
-    for (const entry of available) {
-      const flags = [entry.tools ? undefined : "no tools", entry.fit === "tight" ? "tight" : undefined]
-        .filter(Boolean)
-        .join(", ");
+  const coding = snapshot.available || [];
+  const vision = snapshot.availableVision || [];
+  if (coding.length) {
+    lines.push("", "For coding — calls tools, holds enough context:", "");
+    const width = Math.max(...coding.map((entry) => entry.tag.length));
+    for (const entry of coding) {
       lines.push(
-        `  ${entry.tag.padEnd(width)} ${`${entry.sizeGb.toFixed(1)} GB`.padStart(8)}  ` +
-          `${entry.note}${flags ? ` (${flags})` : ""}`,
+        `  ${entry.tag.padEnd(width)} ${`${entry.sizeGb.toFixed(1)} GB`.padStart(8)} ` +
+          `${contextLabel(entry.context).padStart(5)}  ${entry.note}` +
+          `${entry.fit === "tight" ? " (tight)" : ""}`,
       );
     }
-    lines.push(
-      "",
-      `  ./bin/control local-models install ${available[0].tag}`,
-      `  ./bin/control local-models set ${available[0].tag} on`,
-    );
+  }
+  if (vision.length) {
+    lines.push("", "For reading images only — cannot code:", "");
+    const width = Math.max(...vision.map((entry) => entry.tag.length));
+    for (const entry of vision) {
+      lines.push(
+        `  ${entry.tag.padEnd(width)} ${`${entry.sizeGb.toFixed(1)} GB`.padStart(8)}  ${entry.accuracy}`,
+      );
+    }
+  }
+  if (coding.length || vision.length) {
+    lines.push("", `  ./bin/control local-models install ${(coding[0] || vision[0]).tag}`);
   }
   return lines.join("\n");
 }

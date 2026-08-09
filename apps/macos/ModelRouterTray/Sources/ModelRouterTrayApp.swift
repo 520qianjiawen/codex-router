@@ -1689,6 +1689,7 @@ struct LocalModelsSnapshot: Decodable {
   // Optional so a tray built against this snapshot keeps decoding one from an
   // older router that has no suggestions to offer.
   let available: [AvailableLocalModel]?
+  let availableVision: [AvailableVisionModel]?
   let machine: String?
 }
 
@@ -1698,6 +1699,25 @@ struct AvailableLocalModel: Decodable, Identifiable, Equatable {
   let tag: String
   let sizeGb: Double
   let tools: Bool
+  let context: Int?
+  let note: String
+  let fit: String
+  var id: String { tag }
+
+  /// Codex sizes its prompts to the window, so this is what makes a model
+  /// worth pointing at a codebase rather than a snippet.
+  var contextLabel: String {
+    guard let context else { return "" }
+    return context >= 1000 ? "\(context / 1024)K" : "\(context)"
+  }
+}
+
+/// A model that can only read images. Ranked by what it actually scored
+/// against a known image, never by size alone.
+struct AvailableVisionModel: Decodable, Identifiable, Equatable {
+  let tag: String
+  let sizeGb: Double
+  let accuracy: String
   let note: String
   let fit: String
   var id: String { tag }
@@ -2463,19 +2483,18 @@ private struct TrayView: View {
         // something it cannot run.
         if !suggestedLocalModels.isEmpty {
           Divider().padding(.vertical, 2)
-          HStack(spacing: 4) {
-            Text("AVAILABLE TO DOWNLOAD")
-            Spacer()
-            if let machine = localModels?.machine {
-              Text(machine).lineLimit(1).truncationMode(.tail)
-            }
-          }
-          .font(.system(size: 8, weight: .semibold))
-          .foregroundStyle(routerMuted)
-          .padding(.horizontal, 2)
+          downloadHeader("FOR CODING", detail: localModels?.machine)
           VStack(spacing: 6) {
             ForEach(suggestedLocalModels) { model in
               availableLocalRow(model)
+            }
+          }
+        }
+        if !suggestedVisionModels.isEmpty {
+          downloadHeader("FOR READING IMAGES ONLY", detail: "cannot code")
+          VStack(spacing: 6) {
+            ForEach(suggestedVisionModels) { model in
+              availableVisionRow(model)
             }
           }
         }
@@ -2508,11 +2527,9 @@ private struct TrayView: View {
           Text(model.tag)
             .font(.system(size: 10, weight: .medium))
             .lineLimit(1)
-          // Tool support decides whether Codex can drive it at all, so it is
-          // stated on the row rather than discovered after the download.
-          Text(model.tools ? model.note : "\(model.note) · no tools, vision only")
+          Text(model.note)
             .font(.system(size: 8))
-            .foregroundStyle(model.tools ? routerMuted : routerYellow.opacity(0.9))
+            .foregroundStyle(routerMuted)
             .lineLimit(1)
             .truncationMode(.tail)
         }
@@ -2522,6 +2539,50 @@ private struct TrayView: View {
             .font(.system(size: 8, weight: .medium))
             .foregroundStyle(routerYellow)
         }
+        // How much of a codebase it can hold, which is what separates a model
+        // worth coding with from one that only handles snippets.
+        Text(model.contextLabel)
+          .font(.system(size: 9))
+          .foregroundStyle(routerMuted)
+          .monospacedDigit()
+        Text(String(format: "%.1f GB", model.sizeGb))
+          .font(.system(size: 9))
+          .foregroundStyle(routerMuted)
+          .monospacedDigit()
+        Button("Download") {
+          Task { await store.downloadLocalVisionModel(model.tag) }
+        }
+        .buttonStyle(.borderless)
+        .font(.system(size: 9, weight: .medium))
+        .foregroundStyle(canDownloadSuggestion ? routerMint : routerMutedStrong)
+        .disabled(!canDownloadSuggestion)
+      }
+    }
+
+    @ViewBuilder private func downloadHeader(_ title: String, detail: String?) -> some View {
+      Divider().padding(.vertical, 2)
+      HStack(spacing: 4) {
+        Text(title)
+        Spacer()
+        if let detail {
+          Text(detail).lineLimit(1).truncationMode(.tail)
+        }
+      }
+      .font(.system(size: 8, weight: .semibold))
+      .foregroundStyle(routerMuted)
+      .padding(.horizontal, 2)
+    }
+
+    @ViewBuilder private func availableVisionRow(_ model: AvailableVisionModel) -> some View {
+      HStack(spacing: 8) {
+        Text(model.tag)
+          .font(.system(size: 10, weight: .medium))
+          .lineLimit(1)
+        // What it scored against a known image, not a claim about it.
+        Text(model.accuracy)
+          .font(.system(size: 8))
+          .foregroundStyle(model.accuracy == "accurate" ? routerMint : routerMuted)
+        Spacer()
         Text(String(format: "%.1f GB", model.sizeGb))
           .font(.system(size: 9))
           .foregroundStyle(routerMuted)
@@ -2542,6 +2603,10 @@ private struct TrayView: View {
 
     private var suggestedLocalModels: [AvailableLocalModel] {
       localModels?.available ?? []
+    }
+
+    private var suggestedVisionModels: [AvailableVisionModel] {
+      localModels?.availableVision ?? []
     }
 
     private static let checkColumnWidth: CGFloat = 38

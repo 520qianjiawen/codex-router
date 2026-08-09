@@ -528,25 +528,28 @@ want, then fully quit and reopen Codex.
 ```
 
 `list` also answers "which model should I get?", because knowing a tag by
-heart is not a reasonable prerequisite for trying one. The tray shows the same
-list under **Local LLMs → Available to download**, one button per model:
+heart is not a reasonable prerequisite. The tray shows the same two groups
+under **Local LLMs**, one button per model:
 
 ```text
-Local models · 68.7 GB unified memory · GPU budget ~51.5 GB
+For coding — calls tools, holds enough context:
 
-Installed: none yet
+  qwen2.5-coder:1.5b   1.0 GB   32K  smallest coder
+  llama3.2:3b          2.0 GB  128K  verified working here
+  devstral            14.3 GB  128K  built for agents
 
-Available to download:
+For reading images only — cannot code:
 
-  qwen2.5-coder:1.5b   1.0 GB  Smallest coder; for machines with little to spare
-  llama3.2:3b          2.0 GB  Verified making a real tool call through the router
-  gemma3:4b            3.3 GB  No tools — vision reader only (no tools)
-  ...
+  qwen2.5vl:3b         3.2 GB  accurate
+  moondream            1.7 GB  captions-only
 ```
 
-Every entry is rated against this machine's memory, so nothing offered there
-is something it cannot run, and anything already downloaded drops off. Add
-`--json` for the same data as an object.
+Coding models need two things Codex depends on: tool calls, and a context
+window big enough to be pointed at real code. Image readers are ranked by what
+they scored against a known image, so a small confident-wrong reader never
+tops the list. Everything is rated against this machine's memory, anything too
+large is not offered, and anything already downloaded drops off. Add `--json`
+for the same data as an object.
 
 Checking, installing, and removing are three separate actions on purpose:
 unchecking never deletes a download, and removing needs explicit confirmation.

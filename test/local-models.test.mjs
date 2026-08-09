@@ -23,6 +23,7 @@ const {
   renderLocalModels,
   setLocalModelEnabled,
   suggestedLocalModels,
+  suggestedVisionModels,
 } = await import("../src/local-models.mjs");
 
 const LIST = `NAME                ID              SIZE      MODIFIED
@@ -296,10 +297,12 @@ test("the listing renders for a person, not only for the tray", () => {
   const rendered = renderLocalModels(snapshot);
 
   // The checkbox is what offers a model to Codex, so it leads each row.
-  assert.match(rendered, /\[x\] llama3\.2:3b\s+2\.0 GB\s+chat\s+· loaded/);
+  assert.match(rendered, /\[x\] llama3\.2:3b\s+2\.0 GB\s+code\s+· loaded/);
   // A model Codex cannot drive must say so where the choice is made.
-  assert.match(rendered, /\[ \] gemma3:4b\s+3\.3 GB\s+vision only \(no tools\)/);
-  assert.match(rendered, /Available to download:/);
+  assert.match(rendered, /\[ \] gemma3:4b\s+3\.3 GB\s+images only/);
+  // The two groups answer different questions and are never merged.
+  assert.match(rendered, /For coding — calls tools, holds enough context:/);
+  assert.match(rendered, /For reading images only — cannot code:/);
   assert.match(rendered, /control local-models install /);
 });
 
@@ -309,5 +312,27 @@ test("an empty machine reads as empty rather than as a broken table", () => {
   );
   assert.match(rendered, /Installed: none yet/);
   // The whole point of the empty state is that it says what to do next.
-  assert.match(rendered, /Available to download:/);
+  assert.match(rendered, /For coding/);
+});
+
+test("coding models are separated from image readers", () => {
+  const roomy = machineCapacity({ totalMemoryBytes: 64e9, unifiedMemory: true });
+
+  // Every coding suggestion must be able to do the job: Codex drives through
+  // tool calls, and a small window makes a model useless on real code.
+  for (const entry of suggestedLocalModels({ capacity: roomy })) {
+    assert.equal(entry.tools, true, `${entry.tag} cannot call tools`);
+    assert.ok(entry.context >= 32_768, `${entry.tag} has too little context`);
+  }
+
+  // Image readers are a different question, so they never appear as coding
+  // suggestions and are ranked by what they actually scored, not by size.
+  const vision = suggestedVisionModels({ capacity: roomy });
+  const codingTags = new Set(suggestedLocalModels({ capacity: roomy }).map((e) => e.tag));
+  assert.ok(vision.length > 0);
+  assert.ok(vision.every((entry) => !codingTags.has(entry.tag)));
+  assert.equal(vision[0].accuracy, "accurate");
+  // The smallest reader scored zero on text, so size must not float it up.
+  assert.notEqual(vision[0].tag, "moondream");
+  assert.ok(vision.at(-1).accuracy === "captions-only");
 });

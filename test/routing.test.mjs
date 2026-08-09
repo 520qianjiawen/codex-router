@@ -3356,3 +3356,61 @@ test("the prompt-token estimate can be switched off", async () => {
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+test("a turn with no image reaches a text-only model untouched", async () => {
+  // The vision bridge rewrites turns that carry images. A turn that carries
+  // none must reach the model exactly as Codex sent it: no injected evidence
+  // block, no engine lookup, and above all no failure when the operator has
+  // no vision engine at all.
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayRequests.push(await bodyJson(request));
+    json(response, 200, { route: "external" });
+  });
+  const native = await mockServer(async (_request, response) => {
+    json(response, 200, { id: "unused", output: [] });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    // No vision engine is reachable here, which is the state that would break
+    // an unconditional bridge.
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  const input = [
+    {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "explain this function" }],
+    },
+  ];
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CHATGPT_SESSION_TOKEN",
+        "Content-Type": "application/json",
+      },
+      // deepseek reads no images, so it is exactly the model the bridge exists
+      // for — and exactly the one that must not be touched without an image.
+      body: JSON.stringify({ model: "deepseek/deepseek-v4-pro", stream: false, input }),
+    });
+
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(gatewayRequests.length, 1);
+    // Byte-for-byte the same turn: no evidence block, no substitution notice,
+    // no extra part of any kind.
+    assert.deepEqual(gatewayRequests[0].input, input);
+    // And nothing anywhere in the forwarded body mentions the bridge.
+    assert.doesNotMatch(JSON.stringify(gatewayRequests[0]), /vision|image|could not read/i);
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    await closeServer(native.server);
+  }
+});
