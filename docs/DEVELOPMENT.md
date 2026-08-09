@@ -82,6 +82,12 @@ the deterministic `--models` form), and everything defaults conservatively
 when unanswered. The stored entries in `user-models.json` are plain local
 state — edit any value in place and re-run `./bin/install` to apply.
 
+The deterministic `--models` form is additive so adding one model cannot
+discard other curated entries or their hand-tuned metadata. Non-interactive
+pruning is explicit with `--remove id1,id2` and does not require a provider
+network request. The interactive picker remains authoritative: deselecting an
+entry there removes it.
+
 A curated model inherits a request profile from the provider's registry
 models when it has any. The catalog-only resellers ship none, so curation
 also offers `auto-tool-choice` (`--request-profile` in the deterministic

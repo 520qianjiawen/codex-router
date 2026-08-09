@@ -18,6 +18,10 @@ const modelsOption = (() => {
   const index = process.argv.indexOf("--models");
   return index === -1 ? undefined : process.argv[index + 1];
 })();
+const removeOption = (() => {
+  const index = process.argv.indexOf("--remove");
+  return index === -1 ? undefined : process.argv[index + 1];
+})();
 const apply = process.argv.includes("--apply");
 const noApply = process.argv.includes("--no-apply");
 const effortsOption = (() => {
@@ -56,7 +60,7 @@ const REQUEST_PROFILE_DESCRIPTIONS = {
 function usage() {
   console.error(
     "Usage: curate-models.mjs PROVIDER [--models id1,id2 | interactive] " +
-      "[--apply|--no-apply] [--efforts minimal,low,medium,high,xhigh] " +
+      "[--remove id1,id2] [--apply|--no-apply] [--efforts minimal,low,medium,high,xhigh] " +
       `[--request-profile ${Object.keys(REQUEST_PROFILE_DESCRIPTIONS).join("|")}]`,
   );
   process.exit(2);
@@ -74,6 +78,24 @@ export function parseRequestProfile(raw) {
     );
   }
   return profile;
+}
+
+export function planCuration({ mine, chosen, removals, interactive }) {
+  const removalSet = new Set(removals);
+  const kept = mine.filter((model) => !removalSet.has(model.upstreamModel));
+  const chosenIds = [...new Set(chosen)];
+  const chosenSet = new Set(chosenIds);
+  // The interactive picker remains authoritative: deselection is an explicit
+  // removal. The deterministic --models form is additive and keeps everything
+  // it did not name, including hand-tuned metadata.
+  const surviving = interactive
+    ? kept.filter((model) => chosenSet.has(model.upstreamModel))
+    : kept;
+  const existingIds = new Set(surviving.map((model) => model.upstreamModel));
+  return {
+    surviving,
+    additions: chosenIds.filter((id) => !existingIds.has(id)),
+  };
 }
 
 export function parseEfforts(raw) {
@@ -175,25 +197,54 @@ function applyInstall() {
 
 async function main() {
   for (const warning of USER_MODEL_WARNINGS) console.error(warning);
-  const discovery = await discoverProviderModels(providerId);
   const existing = readUserModels();
   const mine = existing.filter((model) => model.provider === providerId);
   const others = existing.filter((model) => model.provider !== providerId);
   const curated = new Set(mine.map((model) => model.upstreamModel));
+  if (modelsOption !== undefined && removeOption !== undefined) {
+    throw new Error("Use --models to add models or --remove to prune them, not both.");
+  }
+  if (modelsOption !== undefined && (!modelsOption.trim() || modelsOption.startsWith("--"))) {
+    throw new Error("--models requires at least one model id.");
+  }
+  if (removeOption !== undefined && (!removeOption.trim() || removeOption.startsWith("--"))) {
+    throw new Error("--remove requires at least one model id.");
+  }
+  const removals = (removeOption || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const id of removals) {
+    if (!curated.has(id)) {
+      throw new Error(
+        `${id} is not a curated ${providerId} model. Curated: ${[...curated].join(", ") || "none"}`,
+      );
+    }
+  }
+
+  // Removing local curation must not depend on provider credentials or network
+  // availability. Discovery is needed only for additions and the picker.
+  const discovery = removeOption === undefined
+    ? await discoverProviderModels(providerId)
+    : { unregistered: [] };
   const candidates = [...new Set([...discovery.unregistered, ...curated])].sort();
 
-  if (candidates.length === 0) {
+  if (candidates.length === 0 && removeOption === undefined) {
     process.stdout.write(
       `Every model ${provider.displayName} advertises is already in the registry.\n`,
     );
     return;
   }
 
+  const interactiveSelection = modelsOption === undefined && removeOption === undefined;
   const chosen = modelsOption
     ? modelsOption.split(",").map((value) => value.trim()).filter(Boolean)
-    : chooseInteractively(candidates, curated);
-  for (const id of chosen) {
-    if (!candidates.includes(id)) {
+    : interactiveSelection
+      ? chooseInteractively(candidates, curated)
+      : [];
+  if (removeOption === undefined) {
+    for (const id of chosen) {
+      if (candidates.includes(id)) continue;
       throw new Error(
         `${id} is not an available candidate for ${providerId}. Candidates: ${candidates.join(", ")}`,
       );
@@ -203,13 +254,12 @@ async function main() {
   const inheritedProfile = MODELS.find(
     (model) => model.provider === providerId && model.requestProfile,
   )?.requestProfile;
-  const byUpstream = new Map(mine.map((model) => [model.upstreamModel, model]));
 
   // Metadata comes from the user, not from any online catalog: which models
   // exist is decided by the provider's own /v1/models endpoint above, and the
   // sizing/effort details are asked interactively (or default conservatively
   // in --models mode). Existing curated entries are never touched.
-  const interactive = !modelsOption && Boolean(process.stdin.isTTY);
+  const interactive = interactiveSelection && Boolean(process.stdin.isTTY);
 
   const metadataFor = (id) => {
     const metadata = { ...(flagEfforts || {}) };
@@ -256,20 +306,27 @@ async function main() {
       : undefined;
   };
 
-  const nextMine = chosen.map((id, index) => {
-    const existing = byUpstream.get(id);
-    if (existing) return existing;
-    // Ask for the metadata before the profile so the interactive prompts stay
-    // under the one "Metadata for ID" heading in the order they are printed.
-    const metadata = metadataFor(id);
-    return userModelEntry({
-      providerId,
-      upstreamId: id,
-      requestProfile: requestProfileFor(id),
-      priority: 100 + index,
-      metadata,
-    });
+  const { surviving, additions } = planCuration({
+    mine,
+    chosen,
+    removals,
+    interactive: interactiveSelection,
   });
+  const nextMine = [
+    ...surviving,
+    ...additions.map((id, index) => {
+      // Ask for metadata before the profile so interactive prompts stay under
+      // one model heading and in the order they are printed.
+      const metadata = metadataFor(id);
+      return userModelEntry({
+        providerId,
+        upstreamId: id,
+        requestProfile: requestProfileFor(id),
+        priority: 100 + mine.length + index,
+        metadata,
+      });
+    }),
+  ];
   const target = writeUserModels([...others, ...nextMine]);
   const added = nextMine.filter((model) => !curated.has(model.upstreamModel)).length;
   const removed = mine.length - (nextMine.length - added);

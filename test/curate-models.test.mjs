@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 // curate-models.mjs validates process.argv at module scope and exits when the
 // provider is missing, so give it a real invocation before importing. This is
@@ -7,11 +14,102 @@ import test from "node:test";
 // coverage of any kind.
 const savedArgv = [...process.argv];
 process.argv = [process.argv[0], "curate-models.mjs", "gemini-api"];
-const { parseEfforts, parseRequestProfile, renderRows } = await import(
+const { parseEfforts, parseRequestProfile, planCuration, renderRows } = await import(
   "../src/curate-models.mjs"
 );
 process.argv = savedArgv;
 process.exitCode = 0;
+
+const curated = (upstreamModel, metadata = {}) => ({
+  upstreamModel,
+  provider: "fireworks",
+  ...metadata,
+});
+
+test("an additive model run keeps unrelated curated metadata", () => {
+  const existing = curated("accounts/fireworks/models/kimi-k3", { contextWindow: 262144 });
+  const result = planCuration({
+    mine: [existing],
+    chosen: ["accounts/fireworks/models/deepseek-v4-flash"],
+    removals: [],
+    interactive: false,
+  });
+  assert.deepEqual(result.surviving, [existing]);
+  assert.deepEqual(result.additions, ["accounts/fireworks/models/deepseek-v4-flash"]);
+});
+
+test("an additive model run is idempotent and deduplicates input", () => {
+  const existing = curated("accounts/fireworks/models/kimi-k3");
+  const result = planCuration({
+    mine: [existing],
+    chosen: [existing.upstreamModel, existing.upstreamModel],
+    removals: [],
+    interactive: false,
+  });
+  assert.deepEqual(result.surviving, [existing]);
+  assert.deepEqual(result.additions, []);
+});
+
+test("explicit removal prunes only the named curated model", () => {
+  const kept = curated("accounts/fireworks/models/kimi-k3");
+  const removed = curated("accounts/fireworks/models/deepseek-v4-flash");
+  const result = planCuration({
+    mine: [kept, removed],
+    chosen: [],
+    removals: [removed.upstreamModel],
+    interactive: false,
+  });
+  assert.deepEqual(result.surviving, [kept]);
+  assert.deepEqual(result.additions, []);
+});
+
+test("--remove edits local curation without provider credentials or discovery", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "curate-models-remove-"));
+  const file = path.join(dir, "user-models.json");
+  const kept = curated("accounts/fireworks/models/kimi-k3");
+  const removed = curated("accounts/fireworks/models/deepseek-v4-flash");
+  writeFileSync(file, JSON.stringify({ version: 1, models: [kept, removed] }));
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(root, "src", "curate-models.mjs"),
+        "fireworks",
+        "--remove",
+        removed.upstreamModel,
+        "--no-apply",
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          FIREWORKS_API_KEY: "",
+          MODEL_ROUTER_USER_MODELS: file,
+          MODEL_ROUTER_STATE_DIR: dir,
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const stored = JSON.parse(readFileSync(file, "utf8"));
+    assert.deepEqual(stored.models, [kept]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("interactive deselection remains authoritative", () => {
+  const kept = curated("accounts/fireworks/models/kimi-k3");
+  const removed = curated("accounts/fireworks/models/deepseek-v4-flash");
+  const result = planCuration({
+    mine: [kept, removed],
+    chosen: [kept.upstreamModel, "accounts/fireworks/models/glm-5.2"],
+    removals: [],
+    interactive: true,
+  });
+  assert.deepEqual(result.surviving, [kept]);
+  assert.deepEqual(result.additions, ["accounts/fireworks/models/glm-5.2"]);
+});
 
 test("efforts are returned in the documented order, not the order typed", () => {
   // The stored model advertises these to the picker, where an arbitrary order
