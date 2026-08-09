@@ -335,6 +335,9 @@ function normalizeBody(buffer, contentType, route) {
     delete payload.store;
     delete payload.logit_bias;
   }
+  // Fireworks rejects this OpenAI search parameter instead of ignoring it.
+  // Other provider payloads keep it unchanged.
+  if (provider.id === "fireworks") delete payload.web_search_options;
   if (Array.isArray(payload.messages)) {
     payload.messages = sanitizeChatToolHistory(payload.messages, provider);
   }

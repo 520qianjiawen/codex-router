@@ -1133,6 +1133,9 @@ async function summarize(request, payload, route, signal) {
   };
   delete body.previous_response_id;
   delete body.client_metadata;
+  // Compaction re-enters the same provider as the routed turn; Fireworks
+  // rejects this OpenAI search parameter at that boundary too.
+  if (providerForModel(route)?.id === "fireworks") delete body.web_search_options;
   const upstream = await fetch(`${GATEWAY_BASE}/responses`, {
     method: "POST",
     headers: routedHeaders(),
@@ -1383,6 +1386,7 @@ async function handleResponses(request, response, requestUrl) {
         delete routed.reasoning;
         delete routed.reasoning_effort;
       }
+      if (provider?.id === "fireworks") delete routed.web_search_options;
       target = `${GATEWAY_BASE}/responses`;
       headers = routedHeaders();
       routedBody = Buffer.from(JSON.stringify(routed), "utf8");

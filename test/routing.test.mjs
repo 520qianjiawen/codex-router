@@ -3188,6 +3188,156 @@ test("router strips empty text parts and drops the messages left with nothing", 
   }
 });
 
+function curatedFireworksModel() {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "routing-fireworks-model-"));
+  const file = path.join(dir, "user-models.json");
+  writeFileSync(
+    file,
+    JSON.stringify({
+      version: 1,
+      models: [
+        {
+          slug: "fireworks/test-model",
+          gatewayModel: "fireworks-test-model",
+          upstreamModel: "accounts/fireworks/models/test-model",
+          provider: "fireworks",
+          listed: true,
+          displayName: "Fireworks Test Model",
+          description: "Test fixture.",
+          priority: 500,
+          defaultEffort: "high",
+          reasoningLevels: [{ effort: "high", description: "Adaptive reasoning" }],
+          contextWindow: 131072,
+          autoCompact: 110000,
+          inputModalities: ["text"],
+          compHash: "fireworks-test-model-user-v1",
+        },
+      ],
+    }),
+    "utf8",
+  );
+  return { dir, file, gatewayModel: "fireworks-test-model" };
+}
+
+test("API forwarder strips web_search_options for Fireworks", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push(await bodyJson(request));
+    json(response, 200, { choices: [] });
+  });
+  const curated = curatedFireworksModel();
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    FIREWORKS_API_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    FIREWORKS_API_KEY: "TEST_FIREWORKS_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const response = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: curated.gatewayModel,
+          web_search_options: { search_context_size: "medium" },
+          client_metadata: { workspace: "caller-owned" },
+          messages: [{ role: "user", content: "test" }],
+        }),
+      },
+    );
+    assert.equal(response.status, 200, forwarder.testErrors());
+    assert.equal(upstreamRequests[0].model, "accounts/fireworks/models/test-model");
+    assert.equal(upstreamRequests[0].web_search_options, undefined);
+    assert.equal(upstreamRequests[0].client_metadata, undefined);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+    rmSync(curated.dir, { recursive: true, force: true });
+  }
+});
+
+test("router strips Fireworks web_search_options on routed and compaction requests", async () => {
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayRequests.push(await bodyJson(request));
+    json(response, 200, {
+      id: "resp-summary",
+      object: "response",
+      output: [
+        {
+          type: "message",
+          content: [{ type: "output_text", text: "compact summary" }],
+        },
+      ],
+    });
+  });
+  const curated = curatedFireworksModel();
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    MODEL_ROUTER_USER_MODELS: curated.file,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const headers = {
+    Authorization: `Bearer ${CALLER_KEY}`,
+    "Content-Type": "application/json",
+  };
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const routed = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: "fireworks/test-model",
+        input: "routed test",
+        web_search_options: { search_context_size: "medium" },
+        client_metadata: { workspace: "caller-owned" },
+      }),
+    });
+    assert.equal(routed.status, 200, router.testErrors());
+    assert.equal(gatewayRequests[0].model, curated.gatewayModel);
+    assert.equal(gatewayRequests[0].web_search_options, undefined);
+    assert.equal(gatewayRequests[0].client_metadata, undefined);
+
+    const compact = await fetch(`${routerBase(routerPort)}/responses/compact`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: "fireworks/test-model",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "keep me" }],
+          },
+        ],
+        web_search_options: { search_context_size: "medium" },
+        client_metadata: { workspace: "caller-owned" },
+      }),
+    });
+    assert.equal(compact.status, 200, router.testErrors());
+    assert.equal(gatewayRequests[1].model, curated.gatewayModel);
+    assert.equal(gatewayRequests[1].web_search_options, undefined);
+    assert.equal(gatewayRequests[1].client_metadata, undefined);
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(curated.dir, { recursive: true, force: true });
+  }
+});
+
 test("router redirects native background turns to the configured routed model", async () => {
   const gatewayRequests = [];
   const gateway = await mockServer(async (request, response) => {
