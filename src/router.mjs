@@ -44,10 +44,14 @@ import {
 } from "./response-usage.mjs";
 import { fetchWithRetry } from "./upstream-retry.mjs";
 import {
-  CollaborationToolCallTransform,
-  flattenCollaborationHistory,
-  flattenCollaborationNamespaceTools,
-} from "./collaboration-namespace.mjs";
+  NamespaceToolCallTransform,
+  flattenNamespacedHistory,
+  flattenNamespaceTools,
+} from "./namespace-relay.mjs";
+import {
+  clarifyAppToolDescriptions,
+  mergeCodexAppTools,
+} from "./codex-app-tools.mjs";
 import { activityMetadataFromHeaders } from "./codex-session-names.mjs";
 import { translateGatewayError } from "./error-translation.mjs";
 import { recordUsageEvent } from "./usage-events.mjs";
@@ -809,7 +813,7 @@ async function visionEvidenceFor(url, engine, request, effort, question = "", re
   // A cache hit buys nothing, so it records nothing: the events file is a
   // record of spend, not of calls the router avoided.
   if (cached !== undefined) return cached;
-  const readKey = `${key} ${question}`;
+  const readKey = `${key}\u0000${question}`;
   const running = visionReadsInFlight.get(readKey);
   if (running) return running;
   // Deliberately not tied to the caller's AbortSignal. The read is shared, so
@@ -858,6 +862,75 @@ async function readVisionEvidence({ url, engine, nativeCall, effort, question, k
       durationMs: Date.now() - startedAt,
     });
   }
+}
+
+// DeepSeek thinking mode rejects a tool-call turn whose assistant message
+// carries no reasoning_content. LiteLLM's Responses->chat translation drops
+// `reasoning` input items entirely, so the reasoning text never reaches the
+// provider. Replace each reasoning item with a synthetic assistant message
+// carrying the reasoning text; LiteLLM merges it into the following
+// function_call's assistant message, and the forwarder's replay attaches it as
+// `reasoning_content` on the tool-call message. In-place, no-op when there is
+// nothing to carry.
+function carryReasoningThroughInput(input) {
+  if (!Array.isArray(input) || input.length < 2) return;
+  for (let i = 0; i < input.length - 1; i += 1) {
+    const item = input[i];
+    if (item?.type !== "reasoning") continue;
+    const text = reasoningItemText(item);
+    if (!text) continue;
+    const next = input[i + 1];
+    // DeepSeek emits reasoning directly before a function_call, or before an
+    // empty assistant message that announces the call. Carry the reasoning in
+    // both cases; otherwise LiteLLM's Responses->chat translation drops it and
+    // the tool-call turn 400s for missing `reasoning_content`.
+    const nextIsCall = next?.type === "function_call";
+    const nextIsEmptyAssistant =
+      next?.type === "message" &&
+      next?.role === "assistant" &&
+      assistantMessageText(next) === "";
+    if (!nextIsCall && !nextIsEmptyAssistant) continue;
+    // Replace the reasoning item with an assistant message carrying its text.
+    input[i] = {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text }],
+    };
+  }
+}
+
+// Text of an assistant message item, or "" when it has no readable text.
+function assistantMessageText(item) {
+  if (!Array.isArray(item?.content)) return "";
+  return item.content
+    .map((part) => (part && typeof part.text === "string" ? part.text : ""))
+    .join("");
+}
+
+function reasoningItemText(item) {
+  const summary = item.summary;
+  if (typeof summary === "string" && summary) return summary;
+  if (Array.isArray(summary)) {
+    const text = summary
+      .map((part) => (part && typeof part.text === "string" ? part.text : undefined))
+      .filter(Boolean)
+      .join("\n");
+    if (text) return text;
+  }
+  const content = item.content;
+  if (typeof content === "string" && content) return content;
+  // Some thinking providers (DeepSeek among them) return reasoning with
+  // `content` as an array of output_text parts rather than a summary string.
+  // Without this, the reasoning never reaches the chat history and the
+  // following tool-call turn 400s for missing `reasoning_content`.
+  if (Array.isArray(content)) {
+    const text = content
+      .map((part) => (part && typeof part.text === "string" ? part.text : undefined))
+      .filter(Boolean)
+      .join("\n");
+    if (text) return text;
+  }
+  return undefined;
 }
 
 // Text-only models get their images read by a vision-capable model the
@@ -1351,28 +1424,59 @@ async function handleResponses(request, response, requestUrl) {
     let target;
     let headers;
     let routedBody;
-    let collaborationFlattened = false;
+    let namespacesFlattened = false;
+    let flattenedNamespaces = new Map();
     if (route) {
       const input = await bridgeVisionInput(
         await normalizeRoutedAgentInput(request, payload.input, controller.signal),
         route,
         request,
       );
+      // DeepSeek thinking mode requires the assistant's reasoning to be
+      // replayed on tool-call turns, but LiteLLM's Responses->chat translation
+      // drops `reasoning` input items entirely. Merge each reasoning summary
+      // into the following assistant function_call message's content so the
+      // translation carries it; the forwarder then attaches it as
+      // `reasoning_content` on the tool-call message.
+      carryReasoningThroughInput(input);
       const provider = providerForModel(route);
-      // LiteLLM's Responses -> Chat Completions bridge drops namespace tools.
-      // Chat-completions providers need the collaboration namespace flattened
-      // into ordinary functions; the response transform maps calls back.
+      // LiteLLM's Responses -> Chat Completions bridge drops namespace tools,
+      // which is how the client ships the collaboration runtime, the app
+      // toolset (threads, automations, navigation), and every MCP server
+      // (node_repl, peekaboo, github, ...). Chat-completions providers need
+      // every namespace flattened into ordinary functions; the response
+      // transform maps calls back to the client's native namespace shape.
       if (provider?.protocol !== "openai-responses") {
-        const flattened = flattenCollaborationNamespaceTools(payload.tools);
-        collaborationFlattened = flattened.flattened;
-        if (collaborationFlattened) payload.tools = flattened.tools;
+        // Relay the app's full native toolset (threads, automations, app
+        // navigation) to the provider. The client registers these tools with
+        // deferLoading and executes the calls natively, but only sends a
+        // reduced codex_app namespace on routed requests; merge the deferred
+        // definitions in so routed models see what native models see. The
+        // router never executes these calls -- the app owns thread, automation,
+        // and navigation state -- it only relays definitions and results.
+        const merged = mergeCodexAppTools(payload.tools);
+        if (merged.merged) payload.tools = merged.tools;
+        // Weaker custom models guessed create_thread's argument shape 11
+        // times in the live session instead of reading the schema. Make the
+        // app-enforced contract explicit in the relayed description.
+        payload.tools = clarifyAppToolDescriptions(payload.tools);
+        const flattened = flattenNamespaceTools(payload.tools);
+        namespacesFlattened = flattened.flattened;
+        if (namespacesFlattened) {
+          payload.tools = flattened.tools;
+          flattenedNamespaces = flattened.namespaces;
+        }
+      }
+      let routedInput = input;
+      // The stored call history must use the same tool names as the tool
+      // list, or the model copies the bare names out of its own transcript.
+      if (namespacesFlattened) {
+        routedInput = flattenNamespacedHistory(routedInput, flattenedNamespaces);
       }
       const routed = {
         ...payload,
         model: route.gatewayModel,
-        // The stored call history must use the same tool names as the tool
-        // list, or the model copies the bare names out of its own transcript.
-        input: collaborationFlattened ? flattenCollaborationHistory(input) : input,
+        input: routedInput,
       };
       // Native OpenAI traffic keeps client_metadata; routed providers do not
       // consume it and the strict ones reject the unknown field.
@@ -1483,8 +1587,8 @@ async function handleResponses(request, response, requestUrl) {
       },
     );
     const transforms = [usageTransform];
-    if (collaborationFlattened) {
-      transforms.push(new CollaborationToolCallTransform());
+    if (namespacesFlattened) {
+      transforms.push(new NamespaceToolCallTransform(flattenedNamespaces));
     }
     await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, transforms);
     const usage = usageTransform?.tokenUsage();

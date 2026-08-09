@@ -2931,6 +2931,10 @@ test("API forwarder routes opencode Go chat, Messages, and Responses surfaces", 
   const forwarder = run("api-forwarder.mjs", {
     CODEX_ROUTER_API_PORT: String(forwarderPort),
     OPENCODE_GO_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    // The forwarder resolves OPENCODE_API_KEY before OPENCODE_GO_API_KEY, and
+    // run() inherits the developer's real key from process.env. Pin both to
+    // the sentinel so the test never asserts against (or prints) a real key.
+    OPENCODE_API_KEY: "TEST_OPENCODE_GO_API_KEY",
     OPENCODE_GO_API_KEY: "TEST_OPENCODE_GO_API_KEY",
     CODEX_ROUTER_QUIET: "1",
   });

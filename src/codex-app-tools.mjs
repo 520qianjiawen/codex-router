@@ -1152,21 +1152,17 @@ export const CODEX_APP_TOOLS =
 ]
 ;
 
-import { Transform } from "node:stream";
-import { StringDecoder } from "node:string_decoder";
-
 // The Codex client registers the app toolset with deferLoading and executes
 // the calls natively even when the definitions were not in the request. The
 // router therefore relays the full set to routed providers (so the model can
-// see and call the tools), and restores the namespace on the way back so the
-// client dispatches them. It never executes an app tool itself: the app owns
-// thread, automation, and navigation state, exactly as the plan requires.
+// see and call the tools); the generic namespace relay in namespace-relay.mjs
+// restores the namespace on the way back so the client dispatches them. The
+// router never executes an app tool itself: the app owns thread, automation,
+// and navigation state.
 
-const NAMESPACE_NAMES = new Set();
 const NAMESPACE_BY_NAME = new Map();
 for (const entry of CODEX_APP_TOOLS) {
   if (entry?.type !== "namespace") continue;
-  NAMESPACE_NAMES.add(entry.name);
   for (const fn of Array.isArray(entry.tools) ? entry.tools : []) {
     if (fn?.name) NAMESPACE_BY_NAME.set(fn.name, entry.name);
   }
@@ -1184,33 +1180,33 @@ export function splitFlatCodexAppName(name) {
   return toolName ? { namespace: CODEX_APP_NAMESPACE, name: toolName } : undefined;
 }
 
-function flattenToolName(namespace, name) {
-  return `${namespace}${CODEX_APP_TOOL_DELIMITER}${name}`;
-}
+// The live session 019fe6f1 burned 11 rejected create_thread calls (~3 minutes,
+// ~2.98M tokens) because a weaker custom model guessed argument shapes instead
+// of reading the schema: the app's validator error names no wrong field, and
+// the description never said which fields are required. This appends that
+// fact to the definition the router relays, so routed models see the contract
+// the app enforces. Descriptions only inform the model; the app validates the
+// arguments against its own schema, so nothing here changes dispatch.
+const CREATE_THREAD_REQUIRED_HINT =
+  " The target object is REQUIRED; its type must be one of \"project\", " +
+  "\"projectless\", or \"chatgptWorkCloud\".";
+const REQUIRED_HINTS = new Map([["create_thread", CREATE_THREAD_REQUIRED_HINT]]);
 
-// LiteLLM's Responses -> Chat Completions bridge drops `type: "namespace"`
-// tools, which is how Codex sends the app toolset. Flatten the codex_app (and
-// plugin_management) namespaces into plain functions; other namespaces are
-// left for the bridge or passed through on Responses providers.
-export function flattenCodexAppNamespaceTools(tools) {
-  if (!Array.isArray(tools)) return { tools, flattened: false };
-  const flattened = [];
-  let changed = false;
-  for (const tool of tools) {
-    if (tool?.type === "namespace" && NAMESPACE_NAMES.has(tool.name)) {
-      for (const fn of Array.isArray(tool.tools) ? tool.tools : []) {
-        if (!fn?.name) continue;
-        flattened.push({
-          ...fn,
-          name: flattenToolName(tool.name, fn.name),
-        });
+export function clarifyAppToolDescriptions(tools) {
+  if (!Array.isArray(tools)) return tools;
+  return tools.map((tool) => {
+    if (tool?.type !== "namespace" || !Array.isArray(tool.tools)) return tool;
+    let changed = false;
+    const clarified = tool.tools.map((fn) => {
+      if (!fn?.name || !REQUIRED_HINTS.has(fn.name)) return fn;
+      if (typeof fn.description !== "string" || fn.description.includes(REQUIRED_HINTS.get(fn.name))) {
+        return fn;
       }
       changed = true;
-      continue;
-    }
-    flattened.push(tool);
-  }
-  return { tools: flattened, flattened: changed };
+      return { ...fn, description: `${fn.description}${REQUIRED_HINTS.get(fn.name)}` };
+    });
+    return changed ? { ...tool, tools: clarified } : tool;
+  });
 }
 
 // The client sends a reduced codex_app namespace (three app tools) on routed
@@ -1268,107 +1264,4 @@ export function mergeCodexAppTools(tools) {
     changed = true;
   }
   return { tools: merged, merged: changed };
-}
-
-// Flattening only the tool list leaves the model reading two different names
-// for the same tool. Rename the history to match the flattened tool list so
-// both surfaces agree (the same rule the collaboration relay follows).
-export function flattenCodexAppHistory(input) {
-  if (!Array.isArray(input)) return input;
-  return input.map((item) => {
-    if (item?.type !== "function_call") return item;
-    const namespace = NAMESPACE_BY_NAME.get(item.name);
-    if (!namespace) return item;
-    if (typeof item.name !== "string" || splitFlatCodexAppName(item.name)) return item;
-    const { namespace: _ns, ...rest } = item;
-    return { ...rest, name: flattenToolName(namespace, item.name) };
-  });
-}
-
-export function rewriteCodexAppFunctionCall(event) {
-  const item = event?.item;
-  if (!item || item.type !== "function_call") return undefined;
-  const parsed = splitFlatCodexAppName(item.name);
-  if (parsed) {
-    return {
-      ...event,
-      item: {
-        ...item,
-        name: parsed.name,
-        namespace: parsed.namespace,
-      },
-    };
-  }
-  // The model saw flattened `codex_app__*` tools but may still return the bare
-  // name. Restore the namespace so the client's app runtime dispatches the
-  // call; without it the runtime answers "unsupported call".
-  const namespace = NAMESPACE_BY_NAME.get(item.name);
-  if (namespace && item.namespace === undefined) {
-    return {
-      ...event,
-      item: {
-        ...item,
-        namespace,
-      },
-    };
-  }
-  return undefined;
-}
-
-// Rewrites LiteLLM's flattened `codex_app__*` function calls back to the
-// namespace + name shape Codex dispatches through its app runtime.
-export class CodexAppToolCallTransform extends Transform {
-  #decoder = new StringDecoder("utf8");
-  #buffer = "";
-
-  _transform(chunk, _encoding, callback) {
-    this.#buffer += this.#decoder.write(chunk);
-    this.#emitCompleteEvents();
-    callback();
-  }
-
-  _flush(callback) {
-    this.#buffer += this.#decoder.end();
-    this.#emitCompleteEvents(true);
-    callback();
-  }
-
-  #emitCompleteEvents(flush = false) {
-    const blocks = this.#buffer.split(/\r?\n\r?\n/);
-    this.#buffer = flush ? "" : blocks.pop() || "";
-    for (const block of blocks) {
-      this.push(Buffer.from(this.#rewriteBlock(block)));
-      this.push(Buffer.from("\n\n"));
-    }
-  }
-
-  #rewriteBlock(block) {
-    const lines = block.split(/\r?\n/);
-    const rewritten = [];
-    let changed = false;
-    for (const line of lines) {
-      if (!line.startsWith("data:")) {
-        rewritten.push(line);
-        continue;
-      }
-      const data = line.slice(5).trimStart();
-      if (!data || data === "[DONE]") {
-        rewritten.push(line);
-        continue;
-      }
-      try {
-        const event = JSON.parse(data);
-        const next = rewriteCodexAppFunctionCall(event);
-        if (!next) {
-          rewritten.push(line);
-          continue;
-        }
-        rewritten.push(`data: ${JSON.stringify(next)}`);
-        changed = true;
-      } catch {
-        rewritten.push(line);
-      }
-    }
-    return changed ? `${rewritten.join("\r\n")}\r\n` : block;
-  }
 }
