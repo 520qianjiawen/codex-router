@@ -9,5 +9,6 @@ case "${MODEL_ROUTER_TARGET:-codex}" in
 esac
 node src/config-manager.mjs disable
 node src/service.mjs uninstall
+node src/skills-install.mjs uninstall
 echo "The Codex integration and background service were removed."
 echo "The repository, cached native catalog, logs, and provider credentials were retained."
