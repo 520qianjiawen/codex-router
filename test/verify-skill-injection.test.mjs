@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { analyzeRollout, PACK_SKILLS } from "../scripts/verify-skill-injection.mjs";
+import { analyzeRollout, latestRollout, PACK_SKILLS } from "../scripts/verify-skill-injection.mjs";
 
 function skillsBlock(packSkills = []) {
   const roots = [
@@ -135,4 +138,23 @@ test("the pack list is the four shipped skills", () => {
     "codex-in-app-browser",
     "codex-router",
   ]);
+});
+
+test("latestRollout picks the newest jsonl recursively", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "sessions-probe-"));
+  try {
+    const day = path.join(root, "2026", "08", "10");
+    mkdirSync(day, { recursive: true });
+    const older = path.join(day, "rollout-old.jsonl");
+    const newer = path.join(day, "rollout-new.jsonl");
+    writeFileSync(older, "{}");
+    writeFileSync(newer, "{}");
+    // Bump the newer file's mtime past the older one's (same-second writes
+    // can tie); the walk keeps the last strictly-greater candidate.
+    const future = new Date(Date.now() + 5_000);
+    utimesSync(newer, future, future);
+    assert.equal(latestRollout(root), newer);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

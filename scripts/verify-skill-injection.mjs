@@ -17,7 +17,8 @@
 //
 // Usage:
 //   node scripts/verify-skill-injection.mjs <rollout.jsonl> [--expect routed|native]
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,6 +28,44 @@ export const PACK_SKILLS = [
   "codex-in-app-browser",
   "codex-computer-use",
 ];
+
+// The newest session rollout under a Codex sessions root (recursive; the app
+// stores rollouts in per-day directories). Used by --latest so the probe can
+// be run without naming a file.
+export function latestRollout(sessionsRoot) {
+  let best;
+  let bestMtime = -1;
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const candidate = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(candidate);
+      } else if (entry.name.endsWith(".jsonl")) {
+        try {
+          const mtime = statSync(candidate).mtimeMs;
+          if (mtime > bestMtime) {
+            best = candidate;
+            bestMtime = mtime;
+          }
+        } catch {
+          // unreadable file; skip
+        }
+      }
+    }
+  };
+  walk(sessionsRoot);
+  return best;
+}
+
+function defaultSessionsRoot() {
+  return path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "sessions");
+}
 
 function parseRollout(lines) {
   const events = [];
@@ -188,11 +227,21 @@ function report(result, source) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const source = process.argv[2];
-  const expectFlag = process.argv.indexOf("--expect");
-  const expect = expectFlag !== -1 ? process.argv[expectFlag + 1] : "routed";
+  const args = process.argv.slice(2);
+  const expectFlag = args.indexOf("--expect");
+  const expect = expectFlag !== -1 ? args[expectFlag + 1] : "routed";
+  let source = args.find((arg) => !arg.startsWith("--"));
+  if (!source && args.includes("--latest")) {
+    source = latestRollout(defaultSessionsRoot());
+    if (!source) {
+      console.error("verify-skill-injection: no session rollout found under ~/.codex/sessions");
+      process.exit(2);
+    }
+  }
   if (!source) {
-    console.error("Usage: verify-skill-injection.mjs <rollout.jsonl> [--expect routed|native]");
+    console.error(
+      "Usage: verify-skill-injection.mjs <rollout.jsonl> [--expect routed|native] | --latest [--expect routed|native]",
+    );
     process.exit(2);
   }
   const result = analyzeRollout(readFileSync(source, "utf8").split("\n"), { expect });
