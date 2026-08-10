@@ -19,11 +19,8 @@ function spawnCall(name, namespace, argumentsText) {
   return item;
 }
 
-test("spawn tools are exactly create_thread and send_message_to_thread", () => {
-  assert.deepEqual([...SPAWN_MODEL_TOOLS].sort(), [
-    "create_thread",
-    "send_message_to_thread",
-  ]);
+test("only create_thread is eligible for routed model inheritance", () => {
+  assert.deepEqual([...SPAWN_MODEL_TOOLS], ["create_thread"]);
 });
 
 test("routed session + omitted model injects the session model (flattened form)", () => {
@@ -37,18 +34,14 @@ test("routed session + omitted model injects the session model (flattened form)"
   });
 });
 
-test("routed session + omitted model injects the session model (namespaced form)", () => {
+test("send_message_to_thread keeps the target thread model settings", () => {
   const item = spawnCall(
     "send_message_to_thread",
     "codex_app",
     JSON.stringify({ threadId: "t1", prompt: "continue" }),
   );
   const next = injectSessionModelForSpawnCalls(item, SESSION_MODEL);
-  assert.deepEqual(JSON.parse(next.arguments), {
-    threadId: "t1",
-    prompt: "continue",
-    model: SESSION_MODEL,
-  });
+  assert.equal(next, item);
 });
 
 test("explicit model always wins and stays untouched", () => {
@@ -67,6 +60,15 @@ test("explicit model always wins and stays untouched", () => {
     JSON.stringify({ threadId: "t1", prompt: "continue", model: "gpt-5.5" }),
   );
   assert.equal(injectSessionModelForSpawnCalls(namespaced, SESSION_MODEL), namespaced);
+});
+
+test("chatgptWorkCloud create_thread calls omit model", () => {
+  const item = spawnCall(
+    "codex_app__create_thread",
+    undefined,
+    JSON.stringify({ prompt: "cloud", target: { type: "chatgptWorkCloud" } }),
+  );
+  assert.equal(injectSessionModelForSpawnCalls(item, SESSION_MODEL), item);
 });
 
 test("non-routed session + omitted model stays untouched", () => {

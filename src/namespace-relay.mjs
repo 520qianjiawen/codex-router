@@ -28,13 +28,10 @@ import { StringDecoder } from "node:string_decoder";
 
 export const NAMESPACE_DELIMITER = "__";
 
-// The tools that create or continue a thread with a model: `create_thread`
-// takes the model only when the user explicitly asked for one, and
-// `send_message_to_thread` describes its model field the same way. A routed
-// session that omits the field would otherwise leave the child on the app's
-// default model. The relay instead injects the current route slug so children
-// stay on the parent's selected provider. An explicit model always wins.
-export const SPAWN_MODEL_TOOLS = new Set(["create_thread", "send_message_to_thread"]);
+// A fresh local thread inherits the routed session model when the caller did
+// not choose one. Follow-up messages intentionally keep the target thread's
+// settings, and cloud tasks require model omission, so neither is rewritten.
+export const SPAWN_MODEL_TOOLS = new Set(["create_thread"]);
 const SPAWN_TOOL_PREFIX = `codex_app${NAMESPACE_DELIMITER}`;
 
 function isSpawnModelCall(item) {
@@ -50,7 +47,7 @@ function isSpawnModelCall(item) {
   return false;
 }
 
-// Inject the session model into spawn/continue tool calls that omitted it.
+// Inject the session model into local create_thread calls that omitted it.
 // `model` is the routed session's model (route.slug). Returns a rewritten
 // item when the call is one of SPAWN_MODEL_TOOLS, carries no explicit model,
 // and a session model is available; otherwise returns the item untouched.
@@ -66,6 +63,7 @@ export function injectSessionModelForSpawnCalls(item, model) {
   }
   if (typeof args !== "object" || args === null || Array.isArray(args)) return item;
   if (args.model !== undefined) return item;
+  if (args.target?.type === "chatgptWorkCloud") return item;
   return { ...item, arguments: JSON.stringify({ ...args, model }) };
 }
 

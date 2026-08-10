@@ -40,3 +40,35 @@ turns.
 1. Use the tools you were given. Do not build workarounds.
 2. Read the companion skill before the relevant work.
 3. When a call fails, fix the arguments from the skill, then retry.
+
+## Spawned threads and model inheritance
+
+For a new local Codex thread, omit the `model` field unless the user
+explicitly requested one. The router selects the parent routed model. An
+explicit model is never overridden. Follow-up messages retain the target
+thread's settings, and cloud tasks choose their model outside this relay.
+
+## What the token and usage numbers mean
+
+- The router meter records provider-reported counts verbatim. When the
+  provider reports `input_tokens: 0`, the router substitutes a byte-based
+  estimate and stores it in a separate `estimatedInputTokens` field; the
+  provider's zero is preserved in the row. Treat `estimatedInputTokens` as
+  an approximation, never as a real provider count.
+- A turn whose upstream stream dies mid-flight is recorded with status 502
+  and a `streamAborted` marker. A client cancel records status 0. If you see
+  many `streamAborted` rows, the upstream connection is flaky; do not treat
+  them as model behavior.
+- The app's displayed context window is 95% of the model's advertised
+  window. The per-turn input number you see in the app can include the
+  estimate; the running total can therefore exceed the real context usage.
+
+## If the session seems to stop mid-task
+
+Check the meter at `~/.codex/codex-router/usage-events.jsonl` for the
+session's model first. Causes, in order of likelihood: a spawned thread died
+on a native usage limit while the parent waited; an upstream stream dropped
+mid-flight; the app compacted early on inflated estimated totals; the router
+restarted. The router service restarts are normally supervised by launchd
+and are not a production crash loop unless the log shows repeated exits
+without an external trigger.
