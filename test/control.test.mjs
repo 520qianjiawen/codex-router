@@ -496,6 +496,17 @@ test("signed routing rolls back catalog and config after a forced post-publicati
       },
     ],
   };
+  const staleMergedCatalog = {
+    models: [
+      ...originalCatalog.models,
+      {
+        slug: "deepseek/deepseek-v4-flash",
+        display_name: "DeepSeek V4 Flash",
+        visibility: "list",
+        priority: 6,
+      },
+    ],
+  };
   writeFileSync(
     configPath,
     `model_provider = "custom"
@@ -529,7 +540,7 @@ api_key = "ROLLBACK_QUERY_SECRET"
   );
   writeFileSync(
     path.join(stateDir, "merged-models.json"),
-    `${JSON.stringify(originalCatalog, null, 2)}\n`,
+    `${JSON.stringify(staleMergedCatalog, null, 2)}\n`,
     { mode: 0o600 },
   );
   const environment = {
@@ -555,9 +566,12 @@ api_key = "ROLLBACK_QUERY_SECRET"
     assert.match(restoredConfig, /base_url = "https:\/\/direct\.invalid\/v1"/);
     assert.match(restoredConfig, /api_key = "ROLLBACK_QUERY_SECRET"/);
     assert.doesNotMatch(restoredConfig, /codex-router-signed-provider-managed/);
-    assert.deepEqual(
-      JSON.parse(readFileSync(path.join(stateDir, "merged-models.json"), "utf8")),
-      originalCatalog,
+    const safeCatalog = JSON.parse(
+      readFileSync(path.join(stateDir, "merged-models.json"), "utf8"),
+    );
+    assert.equal(
+      safeCatalog.models.some((model) => model.slug === "deepseek/deepseek-v4-flash"),
+      false,
     );
     assert.equal(
       existsSync(path.join(stateDir, "signed-provider-mode.json")),

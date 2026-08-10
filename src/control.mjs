@@ -509,17 +509,15 @@ async function setSignedRouting(desired) {
       // rebuild succeeds. If it does not, keep the signed router transport in
       // place: external entries against the router are safer than sending one
       // through a provider endpoint we no longer own.
-      if (catalog.status !== 75) {
-        const safeCatalog = runCatalog("off", { allowTestFault: false });
-        if (safeCatalog.status !== 0) {
-          throw new AggregateError(
-            [
-              new Error((catalog.stderr || "Codex model catalog could not be refreshed.").trim()),
-              new Error((safeCatalog.stderr || "The native-only rollback catalog failed.").trim()),
-            ],
-            "Signed routing remains active because the catalog could not be rolled back safely.",
-          );
-        }
+      const safeCatalog = runCatalog("off", { allowTestFault: false });
+      if (safeCatalog.status !== 0) {
+        throw new AggregateError(
+          [
+            new Error((catalog.stderr || "Codex model catalog could not be refreshed.").trim()),
+            new Error((safeCatalog.stderr || "The native-only rollback catalog failed.").trim()),
+          ],
+          "Signed routing remains active because the catalog could not be rolled back safely.",
+        );
       }
       const rollback = runConfig("signed-disable");
       if (rollback.status !== 0) {
