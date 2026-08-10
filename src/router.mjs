@@ -422,7 +422,7 @@ function responseWithBody(upstream, body) {
 // a complete bounded body through the ordinary usage observer; an oversized,
 // stalled, or failed body has unknowable usage and is canceled without
 // inventing token counts.
-async function observeRejectedRetryUsage(upstream) {
+async function observeRejectedRetryUsage(upstream, signal) {
   if (!upstream?.body) return undefined;
   const reader = upstream.body.getReader();
   const observer = new ResponseUsageTransform(
@@ -460,6 +460,7 @@ async function observeRejectedRetryUsage(upstream) {
   } catch {
     void reader.cancel().catch(() => {});
     observer.destroy();
+    signal?.throwIfAborted();
     return undefined;
   }
 }
@@ -1866,7 +1867,17 @@ async function handleResponses(request, response, requestUrl) {
         if (!compatibleRetry) {
           const rejectedResponse =
             preparedRetry?.rejectedResponse ?? preparedRetry?.response ?? upstream2;
-          retryUsage = await observeRejectedRetryUsage(rejectedResponse);
+          retryUsage = await observeRejectedRetryUsage(
+            rejectedResponse,
+            controller.signal,
+          );
+          const rejectedClientWalkedAway =
+            clientGone || (response.destroyed && !response.writableFinished);
+          if (rejectedClientWalkedAway) {
+            emptyCompletion = false;
+            controller.abort();
+            controller.signal.throwIfAborted();
+          }
           await rejectedResponse.body?.cancel().catch(() => {});
           writeEmptyCompletionError(
             response,
@@ -1972,6 +1983,10 @@ async function handleResponses(request, response, requestUrl) {
     // A client that walked away (canceled generation, closed stream) is not
     // a router failure; only surface errors the router or upstream produced.
     if (clientGone) {
+      // Once the retry has started, a disconnect can make its outcome
+      // unknowable. Do not report the first attempt's empty classification as
+      // the terminal outcome of a turn the client canceled mid-retry.
+      emptyCompletion = false;
       finalStatus = 0;
       activityStatus = 0;
       if (!usageRecorded) {

@@ -911,6 +911,66 @@ test("a client cancel during the retry meters and logs status zero", async () =>
   }
 });
 
+test("a client cancel while an incompatible retry body stalls is not a protocol error", async () => {
+  let posts = 0;
+  let retryBodyStartedResolve;
+  const retryBodyStarted = new Promise((resolve) => {
+    retryBodyStartedResolve = resolve;
+  });
+  const gw = await gateway((_request, response) => {
+    posts += 1;
+    if (posts === 1) {
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.end(EMPTY_SSE);
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.write('{"id":"stalled-retry","usage":');
+    retryBodyStartedResolve();
+  });
+  const routerPort = await openPort();
+  const router = run(routerEnv(gw.port, routerPort));
+
+  try {
+    await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+    let responseStarted = false;
+    const base = new URL(`${callerBaseUrl(routerPort, CALLER_KEY)}/responses`);
+    const request = http.request(
+      {
+        host: "127.0.0.1",
+        port: routerPort,
+        path: base.pathname,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer codex-caller-auth",
+        },
+      },
+      () => {
+        responseStarted = true;
+      },
+    );
+    request.on("error", () => {});
+    request.end(JSON.stringify(TURN_BODY));
+
+    await retryBodyStarted;
+    request.destroy();
+
+    const [event] = await waitForUsageEvents(router.stateDir, 1, router);
+    assert.equal(posts, 2);
+    assert.equal(responseStarted, false, "the staged response head must remain hidden");
+    assert.equal(event.status, 0);
+    assert.equal(event.emptyCompletion, undefined);
+    assert.equal(event.emptyCompletionRetried, true);
+    assert.match(await waitForLog(router, /timing .*status=0 /), /timing .*status=0 /);
+    const health = await fetch(`http://127.0.0.1:${routerPort}/health`).then((r) => r.json());
+    assert.equal(health.activity.state, "idle");
+  } finally {
+    await stopChild(router);
+    await closeServer(gw.server);
+  }
+});
+
 test("a headerless SSE retry is relayed through the normal pipeline", async () => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
