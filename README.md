@@ -938,6 +938,33 @@ absolute window placement. See the
 [Windows and Linux tray guide](docs/DESKTOP-TRAY.md) for prerequisites,
 packaging, and the platform behavior matrix.
 
+## Skills for custom models
+
+Custom models (anything routed through codex-router instead of the built-in
+OpenAI backend) get the Codex app's full native toolset — threads,
+automations, the in-app browser, computer use — in the flattened form the
+provider accepts. Weaker models sometimes need guidance to call those tools
+correctly, so the installer adds a small skill pack to `~/.codex/skills/`:
+
+- `codex-router` — orientation: how flattened `codex_app__` / `mcp__` tools
+  work and when to read the companion skills.
+- `codex-app-threads` — exact argument shapes for thread operations
+  (create, list, read, message, wait, fork, archive, pin) and automations.
+- `codex-in-app-browser` — driving the in-app browser through
+  `mcp__node_repl__js`.
+- `codex-computer-use` — driving local apps through the `@oai/sky` runtime.
+
+The skills live in `skills/` in this repository. `bin/install` copies them
+to `~/.codex/skills/` (each directory is marked `.codex-router-managed`);
+`bin/uninstall` removes exactly those, never a skill you wrote yourself. A
+name collision with an existing skill of your own is skipped, not
+overwritten. To install or remove them by hand:
+
+```sh
+node src/skills-install.mjs install
+node src/skills-install.mjs uninstall
+```
+
 ## Common commands
 
 ```sh

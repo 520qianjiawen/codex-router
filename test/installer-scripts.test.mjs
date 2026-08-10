@@ -355,3 +355,33 @@ test("the documented rollback behaviour matches the exit-2 contract", () => {
   assert.match(docs, /exits 2/);
   assert.match(docs, /the update is kept/);
 });
+
+// The skill-pack install is best-effort and must never roll the router back.
+// Two structural properties guard that: --prepare-only must exit before the
+// skills step touches ~/.codex/skills, and the skills step must run after the
+// rollback trap is disarmed, so a skills failure cannot undo config/service.
+test("prepare-only exits before the skills step", () => {
+  const source = readScript("bin", "install");
+  const prepareExit = source.indexOf("Dependencies and local Codex router files are prepared");
+  const skillsStep = source.indexOf("skills-install.mjs install");
+  assert.notEqual(prepareExit, -1, "bin/install must keep the prepare-only exit");
+  assert.notEqual(skillsStep, -1, "bin/install must call the skills step");
+  assert.ok(prepareExit < skillsStep, "--prepare-only must exit before the skills step");
+});
+
+test("the skills step runs after the rollback trap is disarmed", () => {
+  const source = readScript("bin", "install");
+  const trapDisarmed = source.indexOf("trap - EXIT HUP INT TERM");
+  const skillsStep = source.indexOf("skills-install.mjs install");
+  assert.notEqual(trapDisarmed, -1, "bin/install must disarm the rollback trap");
+  assert.notEqual(skillsStep, -1, "bin/install must call the skills step");
+  assert.ok(trapDisarmed < skillsStep, "skills step must run after the trap is disarmed");
+});
+
+test("uninstall removes the managed skills", () => {
+  const source = readScript("bin", "uninstall");
+  assert.match(source, /skills-install\.mjs uninstall/, "bin/uninstall must remove the managed skills");
+  const uninstallStep = source.indexOf("skills-install.mjs uninstall");
+  const serviceStep = source.indexOf("src/service.mjs uninstall");
+  assert.ok(serviceStep < uninstallStep, "skills removal must follow the service removal");
+});

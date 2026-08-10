@@ -18,6 +18,7 @@ import {
   TARGET,
 } from "./paths.mjs";
 import { providerSelectionStatus } from "./provider-selection.mjs";
+import { packSkillNames } from "./skills-install.mjs";
 
 function gitValue(args) {
   try {
@@ -65,6 +66,16 @@ function atomicWrite(value) {
 
 export function recordInstall() {
   const previous = readInstallManifest();
+  // The skills field is derived from the checkout's skills/ directory, not
+  // from post-install filesystem state: bin/install records the manifest
+  // before the skills step runs, so managedSkillNames() would report the
+  // previous run's state. The checkout source is deterministic at this point
+  // and correct for provenance, because the skills installed moments later
+  // come from that same checkout.
+  const skills = {
+    names: packSkillNames(),
+    count: packSkillNames().length,
+  };
   const current = {
     commit: gitValue(["rev-parse", "HEAD"]),
     branch: gitValue(["branch", "--show-current"]),
@@ -75,6 +86,7 @@ export function recordInstall() {
     platform: process.platform,
     packageManager: process.env.CODEX_ROUTER_PACKAGE_MANAGER || null,
     providers: providerSelectionStatus().providers,
+    skills,
   };
   const previousEntry = previous?.current;
   const history = [

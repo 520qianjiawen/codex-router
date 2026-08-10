@@ -21,6 +21,7 @@ import { waitForRouterHealth } from "./router-health.mjs";
 import {
   CALLER_SECRET_PATH,
   CODEX_AGENTS_DIR,
+  CODEX_HOME,
   CONFIG_PATH,
   INTERNAL_SECRET_PATH,
   LITELLM_CONFIG_PATH,
@@ -28,6 +29,11 @@ import {
   PORTS,
   SOURCE_ROOT,
 } from "./paths.mjs";
+import { CODEX_APP_TOOLS } from "./codex-app-tools.mjs";
+import {
+  skillPackStatus,
+  skillRequiredFields,
+} from "./skills-install.mjs";
 import { cliSessionDescriptor } from "./cli-session-credential.mjs";
 import { credentialLabel, credentialStatus } from "./provider-credentials.mjs";
 import { providerNeedsCuration } from "./provider-onboarding.mjs";
@@ -633,6 +639,73 @@ add(
       : `not ready on 127.0.0.1:${PORTS.router} after ${serviceLoaded ? 30 : 2} seconds; ${health.error}`,
   "Run ./bin/doctor --fix. If it still fails, create a support bundle.",
 );
+
+// The skill pack that teaches custom routed models the native tools. Checks
+// are read-only; the fixes re-run ./bin/install, which refreshes exactly the
+// marker-owned directories.
+{
+  const status = skillPackStatus(CODEX_HOME);
+  add(
+    status.missing.length === 0 ? "ok" : "fail",
+    "Codex skill pack",
+    status.missing.length === 0
+      ? `${status.managed.length} verified managed skill(s)`
+      : `missing: ${status.missing.join(", ")}`,
+    "./bin/install",
+  );
+  add(
+    status.stale.length === 0 ? "ok" : "warn",
+    "Codex skill pack freshness",
+    status.stale.length === 0
+      ? "verified skills match the checkout"
+      : `verified skills differ from the checkout: ${status.stale.join(", ")}`,
+    "./bin/install (replaces managed skills)",
+  );
+  if (status.collisions.length > 0) {
+    add(
+      "warn",
+      "Codex skill pack collisions",
+      `existing skills not verified as codex-router-owned: ${status.collisions.join(", ")}`,
+      "rename or remove the conflicting skills, then run ./bin/install",
+    );
+  }
+  if (!status.ownershipStateValid || status.staleOwnership.length > 0) {
+    add(
+      "warn",
+      "Codex skill pack ownership",
+      !status.ownershipStateValid
+        ? "private ownership state is malformed; no existing skill will be replaced"
+        : `stale ownership records: ${status.staleOwnership.join(", ")}`,
+      "run ./bin/install; unverified existing content will be preserved",
+    );
+  }
+  // The declaration comes from the skill itself, then is compared with the
+  // app snapshot. This makes the check evidence about the shipped skill text
+  // rather than a comparison between two JavaScript literals.
+  const expectedRequired = skillRequiredFields();
+  const codexApp = CODEX_APP_TOOLS.find((entry) => entry.name === "codex_app");
+  const toolsByName = new Map((codexApp?.tools || []).map((fn) => [fn.name, fn]));
+  const drift = [];
+  if (!expectedRequired) {
+    drift.push("skill declaration is missing or malformed");
+  } else {
+    for (const [name, expected] of Object.entries(expectedRequired)) {
+      const fn = toolsByName.get(name);
+      const have = [...(fn?.inputSchema?.required || [])].sort();
+      if (!fn || JSON.stringify(have) !== JSON.stringify([...expected].sort())) {
+        drift.push(`${name} (skill declares [${expected.join(", ")}], snapshot requires [${have.join(", ")}])`);
+      }
+    }
+  }
+  add(
+    drift.length === 0 ? "ok" : "warn",
+    "Codex skill pack schema match",
+    drift.length === 0
+      ? "skill declaration matches the app toolset snapshot"
+      : `skill shapes drifted from the snapshot: ${drift.join("; ")}`,
+    "co-revise the skill pack together with src/codex-app-tools.mjs",
+  );
+}
 
 if (codex && catalogOk) {
   try {
