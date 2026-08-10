@@ -1707,18 +1707,18 @@ async function handleResponses(request, response, requestUrl) {
           emptyCompletionRetried ? " empty-completion-retried=true" : ""
         }${emptyCompletion ? " empty-completion=true" : ""}`,
       );
-      // Timestamped per-request timing for latency diagnosis. The router log
-      // has no timestamps elsewhere, so this line is the one place to see how
-      // long a turn actually took, how long the upstream took to start
-      // answering, and whether the provider reported any prefix-cache hits.
-      // `cached_tokens` is the provider's own number (when it reports one);
-      // a steady zero here means the provider is not reporting cache hits.
-      console.error(
-        `[codex-router] timing at=${new Date().toISOString()} model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${finalStatus} total_ms=${Date.now() - startedAt} upstream_ms=${upstreamLatencyMs} out_tokens=${usage?.outputTokens ?? 0} cached_tokens=${usage?.cachedInputTokens ?? 0}${
-          estimatedInputTokens ? ` est_input=${estimatedInputTokens}` : ""
-        }`,
-      );
     }
+    // Timestamped per-request timing for latency diagnosis. Never gated on
+    // QUIET: the production LaunchAgent hard-sets CODEX_ROUTER_QUIET=1 and
+    // this line is the one place to see how long a turn took, how long the
+    // upstream took to start answering, and whether the provider reported any
+    // prefix-cache hits. `cached_tokens` is the provider's own number (when
+    // it reports one); a steady zero here means no cache hits are reported.
+    console.error(
+      `[codex-router] timing at=${new Date().toISOString()} model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${finalStatus} total_ms=${Date.now() - startedAt} upstream_ms=${upstreamLatencyMs} out_tokens=${usage?.outputTokens ?? 0} cached_tokens=${usage?.cachedInputTokens ?? 0}${
+        estimatedInputTokens ? ` est_input=${estimatedInputTokens}` : ""
+      }`,
+    );
   } catch (error) {
     // A client that walked away (canceled generation, closed stream) is not
     // a router failure; only surface errors the router or upstream produced.

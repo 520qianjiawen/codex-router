@@ -34,7 +34,9 @@ function run(env) {
       CODEX_ROUTER_INTERNAL_KEY: INTERNAL_KEY,
       KIMI_INTERNAL_KEY: INTERNAL_KEY,
       CODEX_ROUTER_SHOW_ALL_MODELS: "1",
-      // QUIET deliberately stays off: the timing line is what this test reads.
+      // The production LaunchAgent hard-sets CODEX_ROUTER_QUIET=1; the timing
+      // line must fire anyway, so the test runs in that exact mode.
+      CODEX_ROUTER_QUIET: "1",
       ...env,
     },
     stdio: ["ignore", "ignore", "pipe"],
