@@ -61,6 +61,17 @@ export async function smokeTestModel(model, options = {}) {
 }
 
 async function main() {
+  if (process.argv.includes("--help")) {
+    process.stdout.write(`Usage: smoke-test [MODEL...] --yes [--json]
+
+Makes one quota-consuming live request per requested or enabled provider. Pass
+--yes to confirm provider usage.
+`);
+    return;
+  }
+  if (!process.argv.includes("--yes")) {
+    throw new Error("Live smoke tests may use provider quota; pass --yes to confirm.");
+  }
   const requested = process.argv.slice(2).filter((value) => !value.startsWith("--"));
   const models = requested.length
     ? requested

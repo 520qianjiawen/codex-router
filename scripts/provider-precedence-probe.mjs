@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -18,13 +19,30 @@ import { fileURLToPath } from "node:url";
 
 import { callerBaseUrl } from "../src/caller-auth.mjs";
 import { buildMergedCatalog } from "../src/catalog.mjs";
+import { codexSpawnTarget, findCodexBinary } from "../src/codex-binary.mjs";
 import { writeLiteLlmConfig } from "../src/litellm-config.mjs";
 import { MODEL_BY_SLUG, PROVIDERS } from "../src/model-registry.mjs";
 
 const SOURCE_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const LIVE_STATE_DIR = path.join(CODEX_HOME, "codex-router");
-const CODEX_BIN = process.env.CODEX_BIN || "/Applications/ChatGPT.app/Contents/Resources/codex";
+if (process.argv.includes("--help")) {
+  process.stdout.write(`Usage: node scripts/provider-precedence-probe.mjs --live --yes
+
+Runs isolated live requests against one external provider and the signed-in
+ChatGPT plan. Both flags are required because the probe consumes quota.
+`);
+  process.exit(0);
+}
+if (!process.argv.includes("--live") || !process.argv.includes("--yes")) {
+  console.error("The precedence probe consumes provider and ChatGPT quota; pass --live --yes to confirm.");
+  process.exit(2);
+}
+const CODEX_BIN = findCodexBinary();
+if (!CODEX_BIN) {
+  console.error("The Codex binary was not found. Install Codex or set CODEX_BIN to its CLI binary.");
+  process.exit(1);
+}
 const EXTERNAL_MODEL = "clinepass/kimi-k3";
 const NATIVE_MODEL = process.env.CODEX_ROUTER_NATIVE_PROBE_MODEL || "gpt-5.6-sol";
 const EXTERNAL_MARKER = `ROUTER_CANONICAL_${Date.now()}`;
@@ -116,7 +134,9 @@ function runCodex({ model, marker, routerBaseUrl, catalogPath }) {
       SOURCE_ROOT,
       `Reply with exactly ${marker}. Do not call tools.`,
     ];
-    const child = spawn(CODEX_BIN, args, {
+    const { command, options } = codexSpawnTarget(CODEX_BIN);
+    const child = spawn(command, args, {
+      ...options,
       cwd: SOURCE_ROOT,
       env: { ...process.env, CODEX_HOME, MODEL_ROUTER_TARGET: "codex" },
       stdio: ["ignore", "pipe", "pipe"],
@@ -179,7 +199,11 @@ try {
   if (!existsSync(liveCredential)) {
     throw new Error("The existing protected ClinePass credential is unavailable.");
   }
-  symlinkSync(liveCredential, path.join(temporaryState, clinepass.credential.file));
+  if (process.platform === "win32") {
+    linkSync(liveCredential, path.join(temporaryState, clinepass.credential.file));
+  } else {
+    symlinkSync(liveCredential, path.join(temporaryState, clinepass.credential.file));
+  }
 
   const nativeCatalogPath = path.join(LIVE_STATE_DIR, "native-models.json");
   const nativeCatalog = JSON.parse(readFileSync(nativeCatalogPath, "utf8"));
@@ -232,7 +256,12 @@ try {
     child: api,
   });
   const gateway = start(
-    path.join(SOURCE_ROOT, ".venv", "bin", "litellm"),
+    path.join(
+      SOURCE_ROOT,
+      ".venv",
+      process.platform === "win32" ? "Scripts" : "bin",
+      process.platform === "win32" ? "litellm.exe" : "litellm",
+    ),
     ["--config", litellmPath, "--host", "127.0.0.1", "--port", String(gatewayPort)],
     baseEnv,
   );
