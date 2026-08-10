@@ -123,10 +123,10 @@ async function closeServer(server) {
 // (captured live): plain tools, collaboration, a reduced codex_app, and MCP
 // namespaces -- including mcp__node_repl, the in-app browser / computer-use
 // runtime, and a server whose namespace name contains the delimiter.
-function routedRequestPayload() {
+function routedRequestPayload(stream = true) {
   return {
     model: "opencode-go/deepseek-v4-flash",
-    stream: true,
+    stream,
     input: [
       { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
       {
@@ -233,6 +233,32 @@ function gatewaySseBody() {
   ].join("");
 }
 
+function gatewayJsonBody() {
+  return {
+    id: "resp_json",
+    output: [
+      {
+        type: "function_call",
+        name: "mcp__node_repl__js",
+        call_id: "call_browser",
+        arguments: "{}",
+      },
+      {
+        type: "function_call",
+        name: "codex_app__create_thread",
+        call_id: "call_thread",
+        arguments: "{}",
+      },
+      {
+        type: "function_call",
+        name: "exec_command",
+        call_id: "call_exec",
+        arguments: "{}",
+      },
+    ],
+  };
+}
+
 function functionCallsFromSse(body) {
   const calls = new Map();
   for (const line of body.split(/\r?\n/)) {
@@ -251,11 +277,16 @@ function functionCallsFromSse(body) {
   return calls;
 }
 
-async function scenario() {
+async function scenario(stream = true) {
   const gatewayBodies = [];
   const gateway = await mockServer(async (request, response) => {
     if (request.url === "/v1/responses") {
-      gatewayBodies.push(await bodyJson(request));
+      const gatewayBody = await bodyJson(request);
+      gatewayBodies.push(gatewayBody);
+      if (gatewayBody.stream === false) {
+        json(response, 200, gatewayJsonBody());
+        return;
+      }
       const body = Buffer.from(gatewaySseBody(), "utf8");
       response.writeHead(200, {
         "Content-Type": "text/event-stream",
@@ -280,7 +311,7 @@ async function scenario() {
         Authorization: "Bearer CODEX_CALLER_SECRET",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(routedRequestPayload()),
+      body: JSON.stringify(routedRequestPayload(stream)),
     });
     assert.equal(response.status, 200, `router status ${response.status}`);
     const clientBody = await response.text();
@@ -358,4 +389,22 @@ test("routed request flattens every namespace to the gateway and restores calls 
   // The router never executed any app tool: the gateway saw exactly one
   // request and the client saw exactly the relayed calls.
   assert.equal(first.gatewayBodies.length, 1);
+});
+
+test("non-streaming routed responses restore namespace calls before client dispatch", async () => {
+  const result = await scenario(false);
+  assert.equal(result.gatewayBodies.length, 1);
+  assert.equal(result.gatewayBodies[0].stream, false);
+
+  const client = JSON.parse(result.clientBody);
+  assert.deepEqual(
+    { name: client.output[0].name, namespace: client.output[0].namespace },
+    { name: "js", namespace: "mcp__node_repl" },
+  );
+  assert.deepEqual(
+    { name: client.output[1].name, namespace: client.output[1].namespace },
+    { name: "create_thread", namespace: "codex_app" },
+  );
+  assert.equal(client.output[2].name, "exec_command");
+  assert.equal(client.output[2].namespace, undefined);
 });

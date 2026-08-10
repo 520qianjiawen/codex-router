@@ -73,6 +73,10 @@ export function injectSessionModelForSpawnCalls(item, model) {
   return { ...item, arguments: JSON.stringify({ ...args, model }) };
 }
 
+const MAX_JSON_CAPTURE_BYTES = 64 * 1024 * 1024;
+const SSE_FIELD_LINE = /^(?:event|data):/m;
+const SSE_SNIFF_BYTES = 512;
+
 // Flatten every namespace entry into plain functions named
 // `<namespace>__<tool>`. Returns the set of namespaces that were flattened
 // (name -> tool names) so callers can rename history and restore calls.
@@ -170,53 +174,135 @@ export function buildNamespaceLookups(namespaces) {
 // name (some models emit the unqualified form) is restored only when it is
 // unambiguous across every flattened namespace; a collision stays untouched
 // rather than guessing which runtime owns it.
-export function rewriteNamespaceFunctionCall(event, lookups) {
-  const item = event?.item;
+function rewriteNamespaceFunctionCallItem(item, lookups) {
   if (!item || item.type !== "function_call") return undefined;
   const resolved = lookups.flatToNative.get(item.name);
   if (resolved) {
     return {
-      ...event,
-      item: {
-        ...item,
-        name: resolved.name,
-        namespace: resolved.namespace,
-      },
+      ...item,
+      name: resolved.name,
+      namespace: resolved.namespace,
     };
   }
   const owners = lookups.bareToNamespaces.get(item.name);
   if (item.namespace === undefined && owners && owners.size === 1) {
     const [namespace] = [...owners];
     return {
-      ...event,
-      item: {
-        ...item,
-        namespace,
-      },
+      ...item,
+      namespace,
     };
   }
   return undefined;
 }
 
+export function rewriteNamespaceFunctionCall(event, lookups) {
+  const item = rewriteNamespaceFunctionCallItem(event?.item, lookups);
+  return item ? { ...event, item } : undefined;
+}
+
+function rewriteOutputItems(output, lookups) {
+  if (!Array.isArray(output)) return undefined;
+  let changed = false;
+  const rewritten = output.map((item) => {
+    const next = rewriteNamespaceFunctionCallItem(item, lookups);
+    if (!next) return item;
+    changed = true;
+    return next;
+  });
+  return changed ? rewritten : undefined;
+}
+
+// Non-streaming Responses return completed function calls in an `output`
+// array instead of SSE `item` events. Restore both shapes through the same
+// exact request-local lookup so stream mode cannot change dispatch semantics.
+// Returns a copy only when at least one call was restored.
+export function rewriteNamespaceResponsePayload(payload, lookups) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  let rewritten = rewriteNamespaceFunctionCall(payload, lookups) || payload;
+  let changed = rewritten !== payload;
+
+  const output = rewriteOutputItems(rewritten.output, lookups);
+  if (output) {
+    rewritten = { ...rewritten, output };
+    changed = true;
+  }
+
+  const responseOutput = rewriteOutputItems(rewritten.response?.output, lookups);
+  if (responseOutput) {
+    rewritten = {
+      ...rewritten,
+      response: { ...rewritten.response, output: responseOutput },
+    };
+    changed = true;
+  }
+  return changed ? rewritten : undefined;
+}
+
 // Rewrites LiteLLM's flattened `<namespace>__<tool>` function calls back to
 // the namespace + name shape Codex dispatches through its app runtime.
 export class NamespaceToolCallTransform extends Transform {
+  #eventStream;
   #decoder = new StringDecoder("utf8");
   #buffer = "";
+  #pending = Buffer.alloc(0);
+  #released = false;
+  #undeclared;
   #lookups;
 
-  constructor(namespaces) {
+  constructor(namespaces, contentType = "") {
     super();
     this.#lookups = buildNamespaceLookups(namespaces);
+    const declared = String(contentType).toLowerCase();
+    this.#eventStream = declared.includes("text/event-stream");
+    this.#undeclared = !this.#eventStream && !declared.includes("json");
   }
 
   _transform(chunk, _encoding, callback) {
+    if (this.#undeclared && chunk.length) {
+      this.#undeclared = false;
+      this.#eventStream = SSE_FIELD_LINE.test(
+        chunk.subarray(0, SSE_SNIFF_BYTES).toString("utf8"),
+      );
+    }
+    if (!this.#eventStream) {
+      if (this.#released) {
+        this.push(chunk);
+        callback();
+        return;
+      }
+      this.#pending = this.#pending.length ? Buffer.concat([this.#pending, chunk]) : chunk;
+      if (this.#pending.length > MAX_JSON_CAPTURE_BYTES) {
+        this.push(this.#pending);
+        this.#pending = Buffer.alloc(0);
+        this.#released = true;
+      }
+      callback();
+      return;
+    }
     this.#buffer += this.#decoder.write(chunk);
     this.#emitCompleteEvents();
     callback();
   }
 
   _flush(callback) {
+    if (!this.#eventStream) {
+      const body = this.#pending;
+      this.#pending = Buffer.alloc(0);
+      if (this.#released || !body.length) {
+        if (body.length) this.push(body);
+        callback();
+        return;
+      }
+      try {
+        const payload = JSON.parse(body.toString("utf8"));
+        const rewritten = rewriteNamespaceResponsePayload(payload, this.#lookups);
+        this.push(rewritten ? Buffer.from(JSON.stringify(rewritten), "utf8") : body);
+      } catch {
+        this.push(body);
+      }
+      callback();
+      return;
+    }
     this.#buffer += this.#decoder.end();
     this.#emitCompleteEvents(true);
     callback();
@@ -247,7 +333,7 @@ export class NamespaceToolCallTransform extends Transform {
       }
       try {
         const event = JSON.parse(data);
-        const next = rewriteNamespaceFunctionCall(event, this.#lookups);
+        const next = rewriteNamespaceResponsePayload(event, this.#lookups);
         if (!next) {
           rewritten.push(line);
           continue;
