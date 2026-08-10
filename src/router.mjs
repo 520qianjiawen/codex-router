@@ -389,10 +389,79 @@ function sumEstimatedInputTokens(first, second) {
   return first + second;
 }
 
-function isEventStreamResponse(upstream) {
-  return String(upstream?.headers?.get("content-type") || "")
-    .toLowerCase()
-    .includes("text/event-stream");
+const HEADERLESS_SSE_SNIFF_BYTES = 256;
+const HEADERLESS_SSE_SNIFF_MS = 30_000;
+const HEADERLESS_SSE_PREFIX =
+  /^(?:\uFEFF)?(?:(?::[^\r\n]*)?\r?\n)*(?:event|data|id|retry):/;
+const HEADERLESS_SSE_TIMEOUT = Symbol("headerless-sse-timeout");
+
+async function readHeaderlessSseChunk(reader, timeoutMs) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(HEADERLESS_SSE_TIMEOUT), timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([reader.read(), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// A retry without Content-Type is still compatible when its bytes prove it is
+// SSE. Peek through one tee branch, then relay the untouched branch through
+// the normal transforms. A headerless JSON body is rejected before any of it
+// reaches the client, preserving the deterministic protocol-error contract.
+async function prepareEventStreamRetry(upstream) {
+  const contentType = String(upstream?.headers?.get("content-type") || "").trim();
+  if (contentType.toLowerCase().includes("text/event-stream")) {
+    return { response: upstream, pipelineContentType: contentType };
+  }
+  if (contentType || !upstream?.body) return undefined;
+
+  const [probe, relay] = upstream.body.tee();
+  const reader = probe.getReader();
+  let prefix = Buffer.alloc(0);
+  let compatible = false;
+  const deadline = Date.now() + HEADERLESS_SSE_SNIFF_MS;
+  try {
+    while (prefix.length < HEADERLESS_SSE_SNIFF_BYTES) {
+      const result = await readHeaderlessSseChunk(
+        reader,
+        Math.max(0, deadline - Date.now()),
+      );
+      if (result === HEADERLESS_SSE_TIMEOUT || result.done) break;
+      if (result.value?.byteLength) {
+        const remaining = HEADERLESS_SSE_SNIFF_BYTES - prefix.length;
+        prefix = Buffer.concat([
+          prefix,
+          Buffer.from(result.value).subarray(0, remaining),
+        ]);
+        if (HEADERLESS_SSE_PREFIX.test(prefix.toString("utf8"))) {
+          compatible = true;
+          break;
+        }
+      }
+    }
+  } catch (error) {
+    void reader.cancel().catch(() => {});
+    void relay.cancel().catch(() => {});
+    throw error;
+  }
+
+  if (!compatible) {
+    await Promise.allSettled([reader.cancel(), relay.cancel()]);
+    return undefined;
+  }
+  void reader.cancel().catch(() => {});
+  return {
+    response: new Response(relay, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: upstream.headers,
+    }),
+    pipelineContentType: "text/event-stream",
+  };
 }
 
 // `pipeResponse` stages the upstream head before the first body byte. The
@@ -1730,9 +1799,11 @@ async function handleResponses(request, response, requestUrl) {
         finalStatus = 502;
       }
       if (upstream2) {
-        const compatibleRetry =
-          upstream2.ok && upstream2.body && isEventStreamResponse(upstream2);
-        if (!compatibleRetry) {
+        const preparedRetry =
+          upstream2.ok && upstream2.body
+            ? await prepareEventStreamRetry(upstream2)
+            : undefined;
+        if (!preparedRetry) {
           await upstream2.body?.cancel().catch(() => {});
           writeEmptyCompletionError(
             response,
@@ -1745,8 +1816,9 @@ async function handleResponses(request, response, requestUrl) {
           );
           finalStatus = 502;
         } else {
+          upstream2 = preparedRetry.response;
           clearStagedResponseHead(response);
-          const retryContentType = upstream2.headers.get("content-type") || "";
+          const retryContentType = preparedRetry.pipelineContentType;
           const secondPipeline = createResponsePipeline(retryContentType);
           retryUsageTransform = secondPipeline.usageObserver;
           retryEmptyCompletionGuard = secondPipeline.guard;
@@ -1757,7 +1829,12 @@ async function handleResponses(request, response, requestUrl) {
             secondPipeline.transforms,
             { leaveOpen: true },
           );
-          if (secondPipeline.guard.isEmpty()) {
+          const retryClientWalkedAway =
+            clientGone || (response.destroyed && !response.writableFinished);
+          if (retryClientWalkedAway) {
+            finalStatus = 0;
+            if (secondPipeline.guard.hasContent()) emptyCompletion = false;
+          } else if (secondPipeline.guard.isEmpty()) {
             writeEmptyCompletionError(
               response,
               "empty_completion",

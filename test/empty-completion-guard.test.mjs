@@ -123,6 +123,74 @@ test("a tool-call turn is not empty and its terminal events survive", async () =
   assert.match(body, /response\.completed/);
 });
 
+test("custom tool input events count as content", async () => {
+  const input = [
+    "event: response.custom_tool_call_input.delta",
+    'data: {"type":"response.custom_tool_call_input.delta","delta":"move pointer"}',
+    "",
+    "event: response.completed",
+    'data: {"type":"response.completed","response":{"output":[]}}',
+    "",
+  ].join("\n");
+  const { body, empty } = await runGuard(input);
+  assert.equal(empty, false);
+  assert.equal(body, input);
+});
+
+test("a completed custom tool call counts as content", async () => {
+  const input = [
+    "event: response.completed",
+    `data: ${JSON.stringify({
+      type: "response.completed",
+      response: {
+        output: [{ type: "custom_tool_call", name: "computer", input: "move pointer" }],
+      },
+    })}`,
+    "",
+  ].join("\n");
+  const { body, empty } = await runGuard(input);
+  assert.equal(empty, false);
+  assert.equal(body, input);
+});
+
+test("refusal events count as content", async () => {
+  const input = [
+    "event: response.refusal.delta",
+    'data: {"type":"response.refusal.delta","delta":"I cannot help with that."}',
+    "",
+    "event: response.completed",
+    'data: {"type":"response.completed","response":{"output":[]}}',
+    "",
+  ].join("\n");
+  const { body, empty } = await runGuard(input);
+  assert.equal(empty, false);
+  assert.equal(body, input);
+});
+
+test("refusal output parts count as content", async () => {
+  const input = [
+    "event: response.content_part.done",
+    'data: {"type":"response.content_part.done","part":{"type":"refusal","refusal":"I cannot help with that."}}',
+    "",
+    "event: response.completed",
+    `data: ${JSON.stringify({
+      type: "response.completed",
+      response: {
+        output: [
+          {
+            type: "message",
+            content: [{ type: "refusal", refusal: "I cannot help with that." }],
+          },
+        ],
+      },
+    })}`,
+    "",
+  ].join("\n");
+  const { body, empty } = await runGuard(input);
+  assert.equal(empty, false);
+  assert.equal(body, input);
+});
+
 test("a stream that ends with only [DONE] is empty", async () => {
   const input = [
     'event: response.created',

@@ -19,27 +19,25 @@ function isTerminalEvent(eventType, dataText) {
   );
 }
 
-function itemHasText(item) {
+function partHasContent(part) {
+  if (!part || typeof part !== "object") return false;
+  return (
+    (typeof part.text === "string" && part.text.length > 0) ||
+    (typeof part.refusal === "string" && part.refusal.length > 0)
+  );
+}
+
+function itemHasContent(item) {
   if (!item || typeof item !== "object") return false;
-  if (Array.isArray(item.content)) {
-    return item.content.some(
-      (part) =>
-        part &&
-        typeof part === "object" &&
-        typeof part.text === "string" &&
-        part.text.length > 0,
-    );
-  }
-  return typeof item.text === "string" && item.text.length > 0;
+  if (item.type === "function_call" || item.type === "custom_tool_call") return true;
+  if (item.type && item.type !== "message") return false;
+  if (Array.isArray(item.content)) return item.content.some(partHasContent);
+  return partHasContent(item);
 }
 
 function outputHasContent(output) {
   if (!Array.isArray(output)) return false;
-  return output.some((item) => {
-    if (!item || typeof item !== "object") return false;
-    if (item.type === "function_call") return true;
-    return item.type === "message" && itemHasText(item);
-  });
+  return output.some(itemHasContent);
 }
 
 // Chat-completions SSE carries no `event:` line at all: the content lives in
@@ -56,7 +54,7 @@ function chunkHasChatContent(data) {
     if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) return true;
     if (typeof delta.content === "string") return delta.content.length > 0;
     // Some gateways send content as an array of parts, same as Responses.
-    if (Array.isArray(delta.content)) return itemHasText(delta);
+    if (Array.isArray(delta.content)) return itemHasContent(delta);
     return false;
   });
 }
@@ -73,15 +71,31 @@ function isContentEvent(eventType, data) {
     if (/(?:^|\.)output_text\.done$/.test(eventType)) {
       return typeof data?.text === "string" && data.text.length > 0;
     }
-    if (/function_call_arguments\.(?:delta|done)$/.test(eventType)) return true;
+    if (/(?:^|\.)refusal\.delta$/.test(eventType)) {
+      return typeof data?.delta === "string" && data.delta.length > 0;
+    }
+    if (/(?:^|\.)refusal\.done$/.test(eventType)) {
+      return typeof data?.refusal === "string" && data.refusal.length > 0;
+    }
+    if (
+      /(?:function_call_arguments|custom_tool_call_input)\.(?:delta|done)$/.test(
+        eventType,
+      )
+    ) {
+      return true;
+    }
+    if (
+      eventType === "response.content_part.added" ||
+      eventType === "response.content_part.done"
+    ) {
+      return partHasContent(data?.part);
+    }
     if (
       eventType === "response.output_item.added" ||
       eventType === "response.output_item.done" ||
       eventType === "message.output_item.done"
     ) {
-      const item = data?.item;
-      if (item?.type === "function_call") return true;
-      return item?.type === "message" && itemHasText(item);
+      return itemHasContent(data?.item);
     }
     // The completed payload carries the full output on some gateways -- the
     // whole turn arrives in one terminal event with no deltas ahead of it. A

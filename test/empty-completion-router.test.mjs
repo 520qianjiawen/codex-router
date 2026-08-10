@@ -53,6 +53,81 @@ const CONTENT_SSE = [
   "",
 ].join("\n");
 
+const CUSTOM_TOOL_CALL_SSE = [
+  "event: response.created",
+  'data: {"type":"response.created","sequence_number":0,"response":{"id":"r-custom-tool"}}',
+  "",
+  "event: response.custom_tool_call_input.delta",
+  'data: {"type":"response.custom_tool_call_input.delta","sequence_number":1,"item_id":"ctc_1","delta":"move pointer"}',
+  "",
+  "event: response.custom_tool_call_input.done",
+  'data: {"type":"response.custom_tool_call_input.done","sequence_number":2,"item_id":"ctc_1","input":"move pointer"}',
+  "",
+  "event: response.completed",
+  `data: ${JSON.stringify({
+    type: "response.completed",
+    sequence_number: 3,
+    response: {
+      id: "r-custom-tool",
+      output: [
+        {
+          id: "ctc_1",
+          type: "custom_tool_call",
+          call_id: "call_custom_1",
+          name: "computer",
+          input: "move pointer",
+        },
+      ],
+    },
+  })}`,
+  "",
+  "event: response.done",
+  'data: {"type":"response.done","sequence_number":4,"response":{"id":"r-custom-tool"}}',
+  "",
+].join("\n");
+
+const REFUSAL_EVENT_SSE = [
+  "event: response.created",
+  'data: {"type":"response.created","sequence_number":0,"response":{"id":"r-refusal-event"}}',
+  "",
+  "event: response.refusal.delta",
+  'data: {"type":"response.refusal.delta","sequence_number":1,"delta":"I cannot help with that."}',
+  "",
+  "event: response.refusal.done",
+  'data: {"type":"response.refusal.done","sequence_number":2,"refusal":"I cannot help with that."}',
+  "",
+  "event: response.completed",
+  'data: {"type":"response.completed","sequence_number":3,"response":{"id":"r-refusal-event","output":[]}}',
+  "",
+  "event: response.done",
+  'data: {"type":"response.done","sequence_number":4,"response":{"id":"r-refusal-event"}}',
+  "",
+].join("\n");
+
+const REFUSAL_OUTPUT_SSE = [
+  "event: response.created",
+  'data: {"type":"response.created","sequence_number":0,"response":{"id":"r-refusal-output"}}',
+  "",
+  "event: response.completed",
+  `data: ${JSON.stringify({
+    type: "response.completed",
+    sequence_number: 1,
+    response: {
+      id: "r-refusal-output",
+      output: [
+        {
+          type: "message",
+          content: [{ type: "refusal", refusal: "I cannot help with that." }],
+        },
+      ],
+    },
+  })}`,
+  "",
+  "event: response.done",
+  'data: {"type":"response.done","sequence_number":2,"response":{"id":"r-refusal-output"}}',
+  "",
+].join("\n");
+
 // The same two turns with the provider's own token counts attached, so a test
 // can check what a retried turn reports as spend.
 const EMPTY_SSE_METERED = [
@@ -588,6 +663,161 @@ test("a transport-failed retry keeps first-attempt usage, cache, and markers", a
       await waitForLog(router, /timing .*status=502 .*cached_tokens=60/),
       /timing .*status=502 .*cached_tokens=60/,
     );
+  } finally {
+    await stopChild(router);
+    await closeServer(gw.server);
+  }
+});
+
+for (const [name, body, expected] of [
+  ["custom tool input", CUSTOM_TOOL_CALL_SSE, /move pointer/],
+  ["refusal events", REFUSAL_EVENT_SSE, /response\.refusal\.delta/],
+  ["completed refusal output", REFUSAL_OUTPUT_SSE, /I cannot help with that/],
+]) {
+  test(`valid ${name} is content and is never retried`, async () => {
+    let posts = 0;
+    const gw = await gateway((_request, response) => {
+      posts += 1;
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.end(body);
+    });
+    const routerPort = await openPort();
+    const router = run(routerEnv(gw.port, routerPort));
+
+    try {
+      await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+      const result = await readRouted(routerPort, TURN_BODY);
+      assert.equal(result.status, 200);
+      assert.match(result.body, expected);
+      assert.equal(posts, 1, "valid Responses output must not trigger an empty retry");
+
+      const [event] = await waitForUsageEvents(router.stateDir, 1, router);
+      assert.equal(event.status, 200);
+      assert.equal(event.emptyCompletion, undefined);
+      assert.equal(event.emptyCompletionRetried, undefined);
+    } finally {
+      await stopChild(router);
+      await closeServer(gw.server);
+    }
+  });
+}
+
+test("a client cancel during the retry meters and logs status zero", async () => {
+  let posts = 0;
+  const gw = await gateway((_request, response) => {
+    posts += 1;
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    if (posts === 1) {
+      response.end(EMPTY_SSE);
+      return;
+    }
+    response.write(
+      [
+        "event: response.created",
+        'data: {"type":"response.created","sequence_number":0,"response":{"id":"r-retry-cancel"}}',
+        "",
+        "event: response.output_text.delta",
+        'data: {"type":"response.output_text.delta","sequence_number":1,"delta":"started"}',
+        "",
+        "",
+      ].join("\n"),
+    );
+  });
+  const routerPort = await openPort();
+  const router = run(routerEnv(gw.port, routerPort));
+
+  try {
+    await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+    await new Promise((resolve) => {
+      const base = new URL(`${callerBaseUrl(routerPort, CALLER_KEY)}/responses`);
+      const request = http.request(
+        {
+          host: "127.0.0.1",
+          port: routerPort,
+          path: base.pathname,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer codex-caller-auth",
+          },
+        },
+        (response) => {
+          response.once("data", () => {
+            request.destroy();
+            resolve();
+          });
+        },
+      );
+      request.once("error", resolve);
+      request.end(JSON.stringify(TURN_BODY));
+    });
+
+    const [event] = await waitForUsageEvents(router.stateDir, 1, router);
+    assert.equal(posts, 2);
+    assert.equal(event.status, 0);
+    assert.equal(event.emptyCompletion, undefined);
+    assert.equal(event.emptyCompletionRetried, true);
+    assert.match(await waitForLog(router, /timing .*status=0 /), /timing .*status=0 /);
+    const health = await fetch(`http://127.0.0.1:${routerPort}/health`).then((r) => r.json());
+    assert.equal(health.activity.state, "idle");
+  } finally {
+    await stopChild(router);
+    await closeServer(gw.server);
+  }
+});
+
+test("a headerless SSE retry is relayed through the normal pipeline", async () => {
+  let posts = 0;
+  const gw = await gateway((_request, response) => {
+    posts += 1;
+    if (posts === 1) {
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.end(EMPTY_SSE);
+      return;
+    }
+    response.writeHead(200, { "X-Upstream-Attempt": "retry" });
+    response.write(CONTENT_SSE.slice(0, 3));
+    setImmediate(() => response.end(CONTENT_SSE.slice(3)));
+  });
+  const routerPort = await openPort();
+  const router = run(routerEnv(gw.port, routerPort));
+
+  try {
+    await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+    const result = await readRouted(routerPort, TURN_BODY);
+    assert.equal(result.status, 200);
+    assert.match(result.body, /Recovered/);
+    assert.equal(result.headers["content-type"], undefined);
+    assert.equal(result.headers["x-upstream-attempt"], "retry");
+    assert.equal(posts, 2);
+  } finally {
+    await stopChild(router);
+    await closeServer(gw.server);
+  }
+});
+
+test("a headerless non-SSE retry is still a deterministic protocol error", async () => {
+  let posts = 0;
+  const gw = await gateway((_request, response) => {
+    posts += 1;
+    if (posts === 1) {
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.end(EMPTY_SSE);
+      return;
+    }
+    response.writeHead(200);
+    response.end(JSON.stringify({ secret: "headerless json must not be relayed" }));
+  });
+  const routerPort = await openPort();
+  const router = run(routerEnv(gw.port, routerPort));
+
+  try {
+    await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+    const result = await readRouted(routerPort, TURN_BODY);
+    assert.equal(result.status, 502);
+    assert.match(result.body, /empty_completion_retry_protocol_error/);
+    assert.doesNotMatch(result.body, /headerless json must not be relayed/);
+    assert.equal(posts, 2);
   } finally {
     await stopChild(router);
     await closeServer(gw.server);
