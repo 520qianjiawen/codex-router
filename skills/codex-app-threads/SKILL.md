@@ -7,8 +7,7 @@ description: Create, list, read, message, wait on, fork, rename, archive, and pi
 
 # Codex App Threads
 
-The tools are `codex_app__*` (for example `codex_app__create_thread`). Call
-them with these exact shapes.
+The tools are `codex_app__*` (for example `codex_app__create_thread`). Use these exact shapes.
 
 Do NOT prefix them with `mcp__codex_apps__` — that is a different set of MCP
 servers (github, linear, notion) that exist in your tool list; the thread
@@ -93,8 +92,6 @@ or needs attention wins. Use `timeoutMs: 0` for an immediate snapshot.
 
 ## Automations
 
-`automation_update` creates, updates, views, or deletes recurring
-automations. Use it when the user asks for a scheduled task, reminder,
-recurring run, follow-up, or to watch or monitor something. Pass a `mode`
-(`create`, `update`, `view`, or `delete`), a `name`, a `prompt`, and an
-`rrule` recurrence rule.
+`automation_update` creates, updates, views, or deletes recurring automations.
+Use it for a scheduled task, reminder, follow-up, or monitor. Pass a `mode`
+(`create`, `update`, `view`, or `delete`), `name`, `prompt`, and `rrule`.

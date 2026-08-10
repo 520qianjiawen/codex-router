@@ -123,9 +123,9 @@ async function closeServer(server) {
 // (captured live): plain tools, collaboration, a reduced codex_app, and MCP
 // namespaces -- including mcp__node_repl, the in-app browser / computer-use
 // runtime, and a server whose namespace name contains the delimiter.
-function routedRequestPayload(stream = true) {
+function routedRequestPayload(stream = true, model = "opencode-go/deepseek-v4-flash") {
   return {
-    model: "opencode-go/deepseek-v4-flash",
+    model,
     stream,
     input: [
       { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
@@ -223,6 +223,27 @@ function gatewaySseBody() {
       type: "response.output_item.done",
       item: {
         type: "function_call",
+        name: "codex_app__send_message_to_thread",
+        call_id: "call_followup",
+        arguments: JSON.stringify({ threadId: "thread_1", prompt: "continue" }),
+      },
+    }),
+    sseEvent({
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "codex_app__create_thread",
+        call_id: "call_cloud_thread",
+        arguments: JSON.stringify({
+          prompt: "cloud",
+          target: { type: "chatgptWorkCloud" },
+        }),
+      },
+    }),
+    sseEvent({
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
         name: "collaboration__spawn_agent",
         call_id: "call_agent",
         arguments: "{}",
@@ -266,9 +287,56 @@ function gatewayJsonBody() {
       },
       {
         type: "function_call",
+        name: "codex_app__send_message_to_thread",
+        call_id: "call_followup",
+        arguments: JSON.stringify({ threadId: "thread_1", prompt: "continue" }),
+      },
+      {
+        type: "function_call",
+        name: "codex_app__create_thread",
+        call_id: "call_cloud_thread",
+        arguments: JSON.stringify({
+          prompt: "cloud",
+          target: { type: "chatgptWorkCloud" },
+        }),
+      },
+      {
+        type: "function_call",
         name: "exec_command",
         call_id: "call_exec",
         arguments: "{}",
+      },
+    ],
+  };
+}
+
+function responsesProviderSseBody() {
+  return [
+    sseEvent({
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "create_thread",
+        namespace: "codex_app",
+        call_id: "call_native_thread",
+        arguments: JSON.stringify({ prompt: "hi", target: { type: "projectless" } }),
+      },
+    }),
+    sseEvent({ type: "response.completed" }),
+    "data: [DONE]\n\n",
+  ].join("");
+}
+
+function responsesProviderJsonBody() {
+  return {
+    id: "resp_native_json",
+    output: [
+      {
+        type: "function_call",
+        name: "create_thread",
+        namespace: "codex_app",
+        call_id: "call_native_thread",
+        arguments: JSON.stringify({ prompt: "hi", target: { type: "projectless" } }),
       },
     ],
   };
@@ -292,17 +360,24 @@ function functionCallsFromSse(body) {
   return calls;
 }
 
-async function scenario(stream = true) {
+async function scenario(
+  stream = true,
+  {
+    model = "opencode-go/deepseek-v4-flash",
+    sseBody = gatewaySseBody,
+    jsonBody = gatewayJsonBody,
+  } = {},
+) {
   const gatewayBodies = [];
   const gateway = await mockServer(async (request, response) => {
     if (request.url === "/v1/responses") {
       const gatewayBody = await bodyJson(request);
       gatewayBodies.push(gatewayBody);
       if (gatewayBody.stream === false) {
-        json(response, 200, gatewayJsonBody());
+        json(response, 200, jsonBody());
         return;
       }
-      const body = Buffer.from(gatewaySseBody(), "utf8");
+      const body = Buffer.from(sseBody(), "utf8");
       response.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Content-Length": String(body.length),
@@ -326,7 +401,7 @@ async function scenario(stream = true) {
         Authorization: "Bearer CODEX_CALLER_SECRET",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(routedRequestPayload(stream)),
+      body: JSON.stringify(routedRequestPayload(stream, model)),
     });
     assert.equal(response.status, 200, `router status ${response.status}`);
     const clientBody = await response.text();
@@ -376,12 +451,9 @@ test("routed request flattens every namespace to the gateway and restores calls 
   const historyCall = outgoing.input.find((item) => item?.type === "function_call");
   assert.equal(historyCall.name, "codex_app__create_thread");
   assert.equal(historyCall.namespace, undefined);
-  // A routed session that spawns a thread without an explicit model inherits
-  // the session's model, so the child bills the same custom provider instead
-  // of dying on the quota-blocked native default.
-  assert.deepEqual(JSON.parse(historyCall.arguments), {
-    model: "opencode-go/deepseek-v4-flash",
-  });
+  // Historical calls are evidence, not fresh outbound actions. Rewriting
+  // their model would change the transcript the provider is meant to see.
+  assert.deepEqual(JSON.parse(historyCall.arguments), {});
 
   // Function calls streaming back are restored to the client's native
   // namespace shape so the app dispatches them itself.
@@ -399,6 +471,14 @@ test("routed request flattens every namespace to the gateway and restores calls 
   });
   assert.deepEqual(JSON.parse(calls.get("call_explicit_thread").arguments), {
     model: "gpt-5.6-terra",
+  });
+  assert.deepEqual(JSON.parse(calls.get("call_followup").arguments), {
+    threadId: "thread_1",
+    prompt: "continue",
+  });
+  assert.deepEqual(JSON.parse(calls.get("call_cloud_thread").arguments), {
+    prompt: "cloud",
+    target: { type: "chatgptWorkCloud" },
   });
   assert.deepEqual(
     { name: calls.get("call_agent").name, namespace: calls.get("call_agent").namespace },
@@ -436,6 +516,50 @@ test("non-streaming routed responses restore namespace calls before client dispa
     { name: client.output[2].name, namespace: client.output[2].namespace },
     { name: "create_thread", namespace: "codex_app" },
   );
-  assert.equal(client.output[3].name, "exec_command");
-  assert.equal(client.output[3].namespace, undefined);
+  assert.deepEqual(JSON.parse(client.output[3].arguments), {
+    threadId: "thread_1",
+    prompt: "continue",
+  });
+  assert.deepEqual(
+    { name: client.output[3].name, namespace: client.output[3].namespace },
+    { name: "send_message_to_thread", namespace: "codex_app" },
+  );
+  assert.deepEqual(JSON.parse(client.output[4].arguments), {
+    prompt: "cloud",
+    target: { type: "chatgptWorkCloud" },
+  });
+  assert.deepEqual(
+    { name: client.output[4].name, namespace: client.output[4].namespace },
+    { name: "create_thread", namespace: "codex_app" },
+  );
+  assert.equal(client.output[5].name, "exec_command");
+  assert.equal(client.output[5].namespace, undefined);
+});
+
+test("Responses-native routed providers inherit the model on fresh local thread calls", async () => {
+  const options = {
+    model: "opencode-go-responses/gpt-5.6-luna",
+    sseBody: responsesProviderSseBody,
+    jsonBody: responsesProviderJsonBody,
+  };
+  const streamed = await scenario(true, options);
+  assert.equal(streamed.gatewayBodies[0].model, "opencode-go-responses-gpt-5-6-luna");
+  assert.ok(
+    streamed.gatewayBodies[0].tools.some((tool) => tool?.type === "namespace"),
+    "Responses-native tools stay namespaced",
+  );
+  const streamedCall = functionCallsFromSse(streamed.clientBody).get("call_native_thread");
+  assert.deepEqual(JSON.parse(streamedCall.arguments), {
+    prompt: "hi",
+    target: { type: "projectless" },
+    model: "opencode-go-responses/gpt-5.6-luna",
+  });
+
+  const nonStreaming = await scenario(false, options);
+  const nonStreamingCall = JSON.parse(nonStreaming.clientBody).output[0];
+  assert.deepEqual(JSON.parse(nonStreamingCall.arguments), {
+    prompt: "hi",
+    target: { type: "projectless" },
+    model: "opencode-go-responses/gpt-5.6-luna",
+  });
 });

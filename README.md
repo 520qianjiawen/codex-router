@@ -969,17 +969,20 @@ node src/skills-install.mjs uninstall
 against the checkout, free of name collisions, and matching the app
 toolset snapshot the router relays.
 
-To verify the pack actually reaches a session, run the probe against a
-rollout after using a custom model in the app:
+To inspect rollout evidence for the pack, run the read-only check after using
+a custom model in the app:
 
 ```sh
 node scripts/verify-skill-injection.mjs ~/.codex/sessions/2026/08/09/rollout-*.jsonl
+node scripts/verify-skill-injection.mjs --latest --expect routed
 ```
 
-It asserts the session listed a pack skill, that the model read it, that
-`create_thread` calls carried the required fields, and (with
-`--expect native`) that native sessions never read the pack. The browser
-and computer-use bootstrap one-liners are live-only and flagged as such.
+It accepts only a standalone app-injected developer block with a turn ID, then
+correlates a same-turn tool call referencing the skill path with its output and
+checks same-turn `create_thread` arguments. With `--expect native`, that
+completed pack-path call is an error. Because arbitrary exec code is opaque,
+the rollout proves a completed path-referencing call, not that the command read
+specific bytes. Browser and computer-use execution remains live-only.
 
 ## Common commands
 

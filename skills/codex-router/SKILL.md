@@ -43,17 +43,10 @@ turns.
 
 ## Spawned threads and model inheritance
 
-When you create or continue a thread with `create_thread` or
-`send_message_to_thread`, omit the `model` field unless the user explicitly
-asked for a specific model. The router injects the session's own model into
-the call, so the new thread uses the same custom provider as you. An
-explicit model you send is never overridden.
-
-Never override a spawned agent's model to a native OpenAI model such as
-`gpt-5.6-luna` unless the user explicitly requires it. Native models can be
-quota-blocked on the account (the error reads "You've hit your usage
-limit"); a blocked spawn dies in seconds while the parent keeps waiting,
-which looks like a stopped session. Inherit your own model instead.
+For a new local Codex thread, omit the `model` field unless the user
+explicitly requested one. The router selects the parent routed model. An
+explicit model is never overridden. Follow-up messages retain the target
+thread's settings, and cloud tasks choose their model outside this relay.
 
 ## What the token and usage numbers mean
 

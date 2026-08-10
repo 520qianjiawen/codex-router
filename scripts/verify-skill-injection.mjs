@@ -1,22 +1,8 @@
 #!/usr/bin/env node
-// Verify that the codex-router skill pack actually reaches routed sessions.
-//
-// Given a Codex session rollout (jsonl), assert:
-//   (a) the app's <skills_instructions> block lists a pack skill under an
-//       r0 root (the user ~/.codex/skills directory);
-//   (b) the model read that SKILL.md before acting;
-//   (c) every create_thread call carries prompt and target (the two required
-//       fields the pack teaches);
-//   (d) on a native GPT session the pack skill is never read (guards the
-//       description scoping);
-//   (e) reported separately: the browser and computer-use bootstrap one-liners
-//       must be exercised against the live app runtime -- a rollout cannot
-//       prove they execute, so the script flags them as live-only.
-//
-// Read-only and deterministic. Exit code is non-zero when any assertion fails.
-//
-// Usage:
-//   node scripts/verify-skill-injection.mjs <rollout.jsonl> [--expect routed|native]
+// Inspect a Codex rollout for turn-scoped evidence that the managed skill pack
+// was injected by the app and then referenced by a completed model tool call.
+// This is deliberately an evidence check, not a live execution probe: an
+// arbitrary exec call cannot prove from the rollout alone that bytes were read.
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -29,9 +15,6 @@ export const PACK_SKILLS = [
   "codex-computer-use",
 ];
 
-// The newest session rollout under a Codex sessions root (recursive; the app
-// stores rollouts in per-day directories). Used by --latest so the probe can
-// be run without naming a file.
 export function latestRollout(sessionsRoot) {
   let best;
   let bestMtime = -1;
@@ -54,7 +37,7 @@ export function latestRollout(sessionsRoot) {
             bestMtime = mtime;
           }
         } catch {
-          // unreadable file; skip
+          // Unreadable rollout; keep looking.
         }
       }
     }
@@ -69,72 +52,129 @@ function defaultSessionsRoot() {
 
 function parseRollout(lines) {
   const events = [];
-  for (const line of lines) {
+  for (const [index, line] of lines.entries()) {
     if (!line.trim()) continue;
     try {
-      events.push(JSON.parse(line));
+      events.push({ index, event: JSON.parse(line) });
     } catch {
-      // tolerate a non-JSON line (never in real rollouts)
+      // A damaged unrelated line does not become trusted evidence.
     }
   }
   return events;
 }
 
-// Find every injected text block (user and developer message content) so the
-// skills_instructions listing can be located. The app lands the block in a
-// user message on some sessions and a developer message on others.
-function injectedTexts(events) {
-  const texts = [];
-  for (const event of events) {
-    const payload = event?.payload || {};
-    if (!["user", "developer"].includes(payload.role)) continue;
-    if (typeof payload.content === "string") {
-      texts.push(payload.content);
-    }
-    if (Array.isArray(payload.content)) {
-      for (const part of payload.content) {
-        if (part?.type === "input_text" && typeof part.text === "string") {
-          texts.push(part.text);
-        }
-      }
-    }
-  }
-  return texts;
+function eventTurnId(event) {
+  const payload = event?.payload;
+  const candidates = [
+    payload?.internal_chat_message_metadata_passthrough?.turn_id,
+    payload?.item?.internal_chat_message_metadata_passthrough?.turn_id,
+    event?.internal_chat_message_metadata_passthrough?.turn_id,
+  ];
+  return candidates.find((value) => typeof value === "string" && value.trim())?.trim();
 }
 
-function skillsInstructions(texts) {
-  const block = texts.find((text) => text.includes("<skills_instructions>"));
-  return block || undefined;
+function eventItem(event) {
+  return event?.payload?.item || event?.payload || {};
+}
+
+function completeSkillsBlock(text) {
+  if (typeof text !== "string") return false;
+  const trimmed = text.trim();
+  return /^<skills_instructions>[\s\S]*<\/skills_instructions>$/.test(trimmed);
 }
 
 function listedPackSkills(block) {
-  const listed = new Set();
-  for (const skill of PACK_SKILLS) {
-    if (block.includes(`(file: r0/${skill}/SKILL.md)`)) listed.add(skill);
-  }
-  return [...listed];
+  return PACK_SKILLS.filter((skill) => block.includes(`(file: r0/${skill}/SKILL.md)`));
 }
 
-function modelReadsPackSkill(events) {
-  const reads = new Set();
-  for (const event of events) {
-    const item = event?.payload?.item || event?.payload || {};
-    if (item.type !== "function_call" || item.name !== "exec_command") continue;
-    const args = typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments || {});
-    for (const skill of PACK_SKILLS) {
-      if (args.includes(`${skill}/SKILL.md`) && reads.size < PACK_SKILLS.length) {
-        reads.add(skill);
-      }
+function r0Root(block) {
+  const match = block.match(/^r0\s*=\s*(.+?)\s*$/m);
+  return match?.[1]?.replace(/^['"]|['"]$/g, "");
+}
+
+function trustedInjections(events) {
+  const candidates = [];
+  for (const { index, event } of events) {
+    const payload = event?.payload;
+    if (event?.type !== "response_item") continue;
+    if (payload?.type !== "message" || payload.role !== "developer") continue;
+    if (!Array.isArray(payload.content)) continue;
+    const turnId = eventTurnId(event);
+    if (!turnId) continue;
+    for (const part of payload.content) {
+      if (part?.type !== "input_text" || !completeSkillsBlock(part.text)) continue;
+      candidates.push({
+        index,
+        turnId,
+        block: part.text.trim(),
+        listed: listedPackSkills(part.text),
+      });
     }
   }
-  return [...reads];
+  return candidates;
 }
 
-function createThreadCalls(events) {
+function sourceForToolCall(item) {
+  if (item?.type === "custom_tool_call" && item.name === "exec") {
+    return typeof item.input === "string" ? item.input : JSON.stringify(item.input || {});
+  }
+  if (item?.type === "function_call" && item.name === "exec_command") {
+    return typeof item.arguments === "string"
+      ? item.arguments
+      : JSON.stringify(item.arguments || {});
+  }
+  return undefined;
+}
+
+function exactSkillForSource(source, block) {
+  if (!source) return undefined;
+  const root = r0Root(block);
+  return PACK_SKILLS.find((skill) => {
+    const aliases = [`r0/${skill}/SKILL.md`];
+    if (root) aliases.push(path.join(root, skill, "SKILL.md"));
+    return aliases.some((candidate) => source.includes(candidate));
+  });
+}
+
+function matchingOutput(events, call, turnId) {
+  if (typeof call.callId !== "string" || !call.callId) return false;
+  return events.some(({ index, event }) => {
+    if (index <= call.index || eventTurnId(event) !== turnId) return false;
+    const item = eventItem(event);
+    return (
+      ["custom_tool_call_output", "function_call_output"].includes(item?.type) &&
+      item.call_id === call.callId
+    );
+  });
+}
+
+function modelPackReads(events, injection) {
+  if (!injection) return { issued: [], completed: [], issuedWithoutOutput: [] };
+  const issued = [];
+  for (const { index, event } of events) {
+    if (index <= injection.index || eventTurnId(event) !== injection.turnId) continue;
+    const item = eventItem(event);
+    const skill = exactSkillForSource(sourceForToolCall(item), injection.block);
+    if (!skill) continue;
+    issued.push({ skill, callId: item.call_id, index });
+  }
+  const completedCalls = issued.filter((call) => matchingOutput(events, call, injection.turnId));
+  return {
+    issued,
+    completed: [...new Set(completedCalls.map((call) => call.skill))],
+    issuedWithoutOutput: issued.filter(
+      (call) => !completedCalls.some((completed) => completed === call),
+    ),
+  };
+}
+
+function createThreadCalls(events, injection) {
+  if (!injection) return [];
   const calls = [];
-  for (const event of events) {
-    const item = event?.payload?.item || event?.payload || {};
-    if (item.type !== "function_call") continue;
+  for (const { index, event } of events) {
+    if (index <= injection.index || eventTurnId(event) !== injection.turnId) continue;
+    const item = eventItem(event);
+    if (item?.type !== "function_call") continue;
     const flat = item.name === "codex_app__create_thread";
     const native = item.name === "create_thread" && item.namespace === "codex_app";
     if (!flat && !native) continue;
@@ -144,107 +184,164 @@ function createThreadCalls(events) {
     } catch {
       args = {};
     }
-    calls.push({ flat, native, hasPrompt: Object.hasOwn(args, "prompt"), hasTarget: Object.hasOwn(args, "target"), args });
+    calls.push({
+      flat,
+      native,
+      hasPrompt: Object.hasOwn(args, "prompt"),
+      hasTarget: Object.hasOwn(args, "target"),
+      args,
+    });
   }
   return calls;
 }
 
 function sessionModel(events) {
-  const meta = events.find((event) => event?.type === "session_meta");
-  const settings = events
+  const parsed = events.map(({ event }) => event);
+  const meta = parsed.find((event) => event?.type === "session_meta");
+  const settings = parsed
     .map((event) => event?.payload?.thread_settings || event?.payload)
     .find((payload) => payload?.model);
   return meta?.payload?.model || settings?.model || undefined;
 }
 
 export function analyzeRollout(lines, { expect = "routed" } = {}) {
+  if (!["routed", "native"].includes(expect)) {
+    throw new Error(`invalid expectation: ${expect}`);
+  }
   const events = parseRollout(lines);
-  const texts = injectedTexts(events);
-  const block = skillsInstructions(texts);
-  const listed = block ? listedPackSkills(block) : [];
-  const reads = modelReadsPackSkill(events);
-  const calls = createThreadCalls(events);
+  const injection = trustedInjections(events).at(-1);
+  const listed = injection?.listed || [];
+  const readEvidence = modelPackReads(events, injection);
+  const reads = readEvidence.completed;
+  const calls = createThreadCalls(events, injection);
   const model = sessionModel(events);
   const malformed = calls.filter((call) => !call.hasPrompt || !call.hasTarget);
+  const packComplete = listed.length === PACK_SKILLS.length;
 
   const assertions = [
     {
-      name: "(a) skills_instructions lists a pack skill under r0",
-      pass: listed.length > 0,
-      detail: block
-        ? listed.length > 0
-          ? `listed: ${listed.join(", ")}`
-          : "no pack skill listed in the skills_instructions block"
-        : "no <skills_instructions> block found",
+      name: "(a) app developer injection lists the managed pack under r0",
+      pass: Boolean(injection) && packComplete,
+      detail: !injection
+        ? "no standalone developer <skills_instructions> block with a turn_id"
+        : packComplete
+          ? `turn ${injection.turnId}; listed: ${listed.join(", ")}`
+          : `turn ${injection.turnId}; missing: ${PACK_SKILLS.filter((skill) => !listed.includes(skill)).join(", ")}`,
     },
     {
-      name: "(b) the model read a pack SKILL.md before acting",
-      pass: reads.length > 0,
-      detail: reads.length > 0 ? `read: ${reads.join(", ")}` : "no pack SKILL.md read found",
-    },
-    {
-      name: "(c) every create_thread call carries prompt and target",
-      pass: calls.length > 0 && malformed.length === 0,
+      name: "(b) routed model completed a same-turn tool call referencing pack SKILL.md",
+      pass: expect === "native" ? true : reads.length > 0,
       detail:
-        calls.length === 0
-          ? "no create_thread calls in this rollout"
-          : `${calls.length} call(s), ${malformed.length} missing prompt and/or target`,
+        expect === "native"
+          ? "skipped for native expectation"
+          : reads.length > 0
+            ? `referenced: ${reads.join(", ")}`
+            : readEvidence.issuedWithoutOutput.length > 0
+              ? "skill read issued, output not observed"
+              : "no same-turn completed tool call referenced pack SKILL.md after injection",
     },
     {
-      name: "(d) native sessions never read a pack skill",
+      name: "(c) same-turn create_thread calls carry prompt and target",
+      pass: expect === "native" ? true : calls.length > 0 && malformed.length === 0,
+      detail:
+        expect === "native"
+          ? "skipped for native expectation"
+          : calls.length === 0
+            ? "no same-turn create_thread calls after injection"
+            : `${calls.length} call(s), ${malformed.length} missing prompt and/or target`,
+    },
+    {
+      name: "(d) native sessions do not complete a same-turn pack-path tool call",
       pass: expect === "native" ? reads.length === 0 : true,
       detail:
         expect === "native"
           ? reads.length === 0
-            ? "no pack skill read (scoping holds)"
-            : `pack skill(s) read on a native session: ${reads.join(", ")}`
-          : `skipped (expect=${expect})`,
+            ? "no completed pack-path tool call after the trusted injection"
+            : `pack skill path(s) referenced on a native session: ${reads.join(", ")}`
+          : "skipped for routed expectation",
     },
     {
       name: "(e) browser and computer-use bootstraps execute (live-only)",
       pass: undefined,
-      detail:
-        "not provable from a rollout; exercise the bootstrap one-liners in a live routed session",
+      detail: "not provable from a rollout; exercise them in a live routed session",
     },
   ];
 
   const failed = assertions.filter((assertion) => assertion.pass === false);
-  return { model, listed, reads, calls, assertions, failed, ok: failed.length === 0 };
+  return {
+    model,
+    turnId: injection?.turnId,
+    listed,
+    reads,
+    readCalls: readEvidence.issued,
+    issuedWithoutOutput: readEvidence.issuedWithoutOutput,
+    calls,
+    assertions,
+    failed,
+    ok: failed.length === 0,
+  };
+}
+
+export function parseCliArgs(args) {
+  let expect = "routed";
+  let latest = false;
+  let source;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--expect") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error("--expect requires routed or native");
+      if (!["routed", "native"].includes(value)) throw new Error(`invalid --expect value: ${value}`);
+      expect = value;
+      index += 1;
+    } else if (arg === "--latest") {
+      if (latest) throw new Error("--latest may be supplied only once");
+      latest = true;
+    } else if (arg.startsWith("--")) {
+      throw new Error(`unknown option: ${arg}`);
+    } else if (source) {
+      throw new Error("only one rollout path may be supplied");
+    } else {
+      source = arg;
+    }
+  }
+  if (latest && source) throw new Error("choose either a rollout path or --latest");
+  if (!latest && !source) throw new Error("a rollout path or --latest is required");
+  return { expect, latest, source };
 }
 
 function report(result, source) {
   console.log(`verify-skill-injection: ${path.basename(source)} (model ${result.model || "unknown"})`);
   for (const assertion of result.assertions) {
-    const verdict =
-      assertion.pass === undefined ? "LIVE" : assertion.pass ? "PASS" : "FAIL";
+    const verdict = assertion.pass === undefined ? "LIVE" : assertion.pass ? "PASS" : "FAIL";
     console.log(`  ${verdict.padEnd(5)} ${assertion.name}: ${assertion.detail}`);
   }
-  if (result.failed.length > 0) {
-    console.log(`FAILED: ${result.failed.length} assertion(s)`);
-  } else {
-    console.log("OK: all rollout-checkable assertions passed");
-  }
+  console.log(
+    result.failed.length > 0
+      ? `FAILED: ${result.failed.length} assertion(s)`
+      : "OK: all rollout-checkable assertions passed",
+  );
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2);
-  const expectFlag = args.indexOf("--expect");
-  const expect = expectFlag !== -1 ? args[expectFlag + 1] : "routed";
-  let source = args.find((arg) => !arg.startsWith("--"));
-  if (!source && args.includes("--latest")) {
-    source = latestRollout(defaultSessionsRoot());
-    if (!source) {
-      console.error("verify-skill-injection: no session rollout found under ~/.codex/sessions");
-      process.exit(2);
-    }
-  }
-  if (!source) {
+  let parsed;
+  try {
+    parsed = parseCliArgs(process.argv.slice(2));
+  } catch (error) {
+    console.error(`verify-skill-injection: ${error.message}`);
     console.error(
       "Usage: verify-skill-injection.mjs <rollout.jsonl> [--expect routed|native] | --latest [--expect routed|native]",
     );
     process.exit(2);
   }
-  const result = analyzeRollout(readFileSync(source, "utf8").split("\n"), { expect });
+  const source = parsed.latest ? latestRollout(defaultSessionsRoot()) : parsed.source;
+  if (!source) {
+    console.error("verify-skill-injection: no session rollout found under ~/.codex/sessions");
+    process.exit(2);
+  }
+  const result = analyzeRollout(readFileSync(source, "utf8").split("\n"), {
+    expect: parsed.expect,
+  });
   report(result, source);
   process.exit(result.ok ? 0 : 1);
 }
