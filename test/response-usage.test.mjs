@@ -34,6 +34,31 @@ test("normalizes Responses and Chat Completions token usage", () => {
   );
 });
 
+test("captures provider-reported prefix-cache hits when they exist", () => {
+  // OpenAI-compatible shape: cached prefix inside input_tokens_details.
+  assert.deepEqual(
+    normalizeTokenUsage({
+      input_tokens: 100,
+      output_tokens: 5,
+      input_tokens_details: { cached_tokens: 90 },
+    }),
+    { inputTokens: 100, outputTokens: 5, totalTokens: 105, cachedInputTokens: 90 },
+  );
+  // Chat-completions shape used by DeepSeek-style APIs.
+  assert.deepEqual(
+    tokenUsageFromPayload({
+      usage: { prompt_tokens: 100, completion_tokens: 5, prompt_cache_hit_tokens: 80 },
+    }),
+    { inputTokens: 100, outputTokens: 5, totalTokens: 105, cachedInputTokens: 80 },
+  );
+  // A provider that reports no cache fields stays unchanged: the key is
+  // absent, not zero, so old rows keep their exact shape.
+  assert.deepEqual(
+    normalizeTokenUsage({ input_tokens: 3, output_tokens: 1 }),
+    { inputTokens: 3, outputTokens: 1, totalTokens: 4 },
+  );
+});
+
 test("captures final SSE usage without changing streamed bytes", async () => {
   const body = [
     "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",

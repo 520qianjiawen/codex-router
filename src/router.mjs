@@ -1530,6 +1530,12 @@ async function handleResponses(request, response, requestUrl) {
       },
     );
     upstreamRetries = retries;
+    // Time until the upstream chain answered the request. Everything before
+    // this is router-side work (body read, normalization, flattening, vision
+    // bridge) plus the upstream's own time to produce response headers. For a
+    // routed turn that means the full router -> litellm -> api-forwarder ->
+    // provider path, so a stall here is the provider's, not the router's.
+    const upstreamLatencyMs = Date.now() - startedAt;
     // Gateway error bodies leak LiteLLM's internal exception chain, which
     // reads like a router bug. Rewrite them to name the provider that failed.
     // Native traffic passes through untouched: OpenAI errors are already clear.
@@ -1700,6 +1706,17 @@ async function handleResponses(request, response, requestUrl) {
         }${estimatedInputTokens ? ` estimated-input-tokens=${estimatedInputTokens}` : ""}${
           emptyCompletionRetried ? " empty-completion-retried=true" : ""
         }${emptyCompletion ? " empty-completion=true" : ""}`,
+      );
+      // Timestamped per-request timing for latency diagnosis. The router log
+      // has no timestamps elsewhere, so this line is the one place to see how
+      // long a turn actually took, how long the upstream took to start
+      // answering, and whether the provider reported any prefix-cache hits.
+      // `cached_tokens` is the provider's own number (when it reports one);
+      // a steady zero here means the provider is not reporting cache hits.
+      console.error(
+        `[codex-router] timing at=${new Date().toISOString()} model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${finalStatus} total_ms=${Date.now() - startedAt} upstream_ms=${upstreamLatencyMs} out_tokens=${usage?.outputTokens ?? 0} cached_tokens=${usage?.cachedInputTokens ?? 0}${
+          estimatedInputTokens ? ` est_input=${estimatedInputTokens}` : ""
+        }`,
       );
     }
   } catch (error) {

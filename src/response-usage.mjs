@@ -50,10 +50,21 @@ export function normalizeTokenUsage(value) {
       ? (inputTokens || 0) + (outputTokens || 0)
       : undefined);
   if (totalTokens === undefined) return undefined;
+  // Providers that do prefix caching report the shared prefix they did not
+  // have to re-process. DeepSeek-style APIs name it prompt_cache_hit_tokens;
+  // OpenAI-compatible shapes carry it in input_tokens_details /
+  // prompt_tokens_details.cached_tokens. The router forwards it for
+  // diagnostics so the meter can show whether caching is actually happening.
+  const cachedInputTokens = tokenCount(
+    value.input_tokens_details?.cached_tokens ??
+      value.prompt_tokens_details?.cached_tokens ??
+      value.prompt_cache_hit_tokens,
+  );
   return {
     inputTokens: inputTokens || 0,
     outputTokens: outputTokens || 0,
     totalTokens,
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
   };
 }
 
