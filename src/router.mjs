@@ -1570,8 +1570,9 @@ async function handleResponses(request, response, requestUrl) {
     // predicate is structural (this request, these bytes, an explicit zero),
     // so it cannot fire on a provider that reports correctly and it disables
     // itself the moment the upstream starts reporting again.
+    const upstreamContentType = upstream.headers.get("content-type") || "";
     const usageTransform = new ResponseUsageTransform(
-      upstream.headers.get("content-type") || "",
+      upstreamContentType,
       {
         estimatedInputTokens:
           ZERO_INPUT_ESTIMATE && route
@@ -1581,7 +1582,7 @@ async function handleResponses(request, response, requestUrl) {
     );
     const transforms = [usageTransform];
     if (namespacesFlattened) {
-      transforms.push(new NamespaceToolCallTransform(flattenedNamespaces));
+      transforms.push(new NamespaceToolCallTransform(flattenedNamespaces, upstreamContentType));
     }
     await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, transforms);
     const usage = usageTransform?.tokenUsage();
