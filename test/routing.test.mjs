@@ -3734,6 +3734,36 @@ test("router substitutes a prompt-token estimate a provider reported as zero", a
     assert.equal(substituted.estimatedInputTokens, estimate);
     await waitForStderr(router, new RegExp(`estimated-input-tokens=${estimate}\\b`));
 
+    // Exercise the router's real route metadata, not just the estimator in
+    // isolation: an accepted request can never be reported above the model's
+    // declared context window.
+    const contextWindow = 1_048_576;
+    const oversizedBody = JSON.stringify({
+      model: "opencode-go/deepseek-v4-flash",
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "x".repeat(contextWindow * 4) }],
+        },
+      ],
+    });
+    const capped = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body: oversizedBody,
+    });
+    assert.equal(capped.status, 200);
+    const cappedCompleted = JSON.parse(
+      (await capped.text())
+        .split("\n")
+        .find((line) => line.startsWith("data:") && line.includes("response.completed"))
+        .slice(5),
+    );
+    assert.equal(cappedCompleted.response.usage.input_tokens, contextWindow);
+    const cappedEvents = await waitForUsageEvents(stateDir, 2, router);
+    assert.equal(cappedEvents.at(-1).estimatedInputTokens, contextWindow);
+
     // A provider that reports correctly is left alone on the very same route.
     reportedInputTokens = 4_321;
     const reported = await fetch(`${routerBase(routerPort)}/responses`, {
@@ -3743,12 +3773,12 @@ test("router substitutes a prompt-token estimate a provider reported as zero", a
     });
     assert.equal(reported.status, 200);
     assert.match(await reported.text(), /"input_tokens":4321/);
-    const events = await waitForUsageEvents(stateDir, 2, router);
+    const events = await waitForUsageEvents(stateDir, 3, router);
     const honest = events.at(-1);
     assert.equal(honest.inputTokens, 4_321);
     assert.equal("estimatedInputTokens" in honest, false);
-    assert.equal(router.testErrors().match(/estimated-input-tokens=/g).length, 1);
-    assert.equal(gatewayBodies.length, 2);
+    assert.equal(router.testErrors().match(/estimated-input-tokens=/g).length, 2);
+    assert.equal(gatewayBodies.length, 3);
   } finally {
     await stopChild(router);
     await closeServer(gateway.server);

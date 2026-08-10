@@ -204,36 +204,24 @@ test("only an explicit zero prompt count is substituted", () => {
   );
 });
 
-// Lane L4 fixture: a response.completed event in the exact shape the overnight
-// baseline recorded from opencode-go/deepseek-v4-flash (work/baseline/
-// usage-events.jsonl row 2026-08-09T21:47:16.132Z, inputTokens:0 with
-// estimatedInputTokens:507920). The predicate has to fire on this shape and
-// only on this shape: an explicit numeric zero and nothing else.
+// Synthetic Lane L4 regression fixture reconstructed from the recorded
+// telemetry and the response.completed shape used by the #95 reproducer. The
+// router did not retain the upstream payload, so the fixture is deliberately
+// labelled as a reconstruction rather than captured provider evidence.
 const LANE_L4_FIXTURE_PATH = new URL("./fixtures/upstream-zero-usage.json", import.meta.url);
 
 function laneL4Fixture() {
-  try {
-    const fixture = JSON.parse(readFileSync(LANE_L4_FIXTURE_PATH, "utf8"));
-    return {
-      upstream: fixture.upstreamSse.data,
-      estimate: fixture.recorded.estimatedInputTokens,
-      outputTokens: fixture.upstreamSse.data.response.usage.output_tokens,
-    };
-  } catch {
-    // The evidence file lives outside the router repo and is not part of a
-    // cherry-picked checkout, so the test falls back to the recorded shape.
-    return {
-      upstream: {
-        type: "response.completed",
-        response: {
-          id: "resp_routed",
-          usage: { input_tokens: 0, output_tokens: 469, total_tokens: 469 },
-        },
-      },
-      estimate: 507_920,
-      outputTokens: 469,
-    };
-  }
+  const fixture = JSON.parse(readFileSync(LANE_L4_FIXTURE_PATH, "utf8"));
+  assert.equal(fixture.provenance, "synthetic-reconstruction");
+  assert.equal(fixture.upstreamSse?.event, "response.completed");
+  assert.equal(fixture.upstreamSse?.data?.type, "response.completed");
+  assert.equal(typeof fixture.recorded?.estimatedInputTokens, "number");
+  assert.equal(typeof fixture.upstreamSse?.data?.response?.usage?.output_tokens, "number");
+  return {
+    upstream: fixture.upstreamSse.data,
+    estimate: fixture.recorded.estimatedInputTokens,
+    outputTokens: fixture.upstreamSse.data.response.usage.output_tokens,
+  };
 }
 
 test("the fixture upstream zero is substituted and only the estimate is added", async () => {
