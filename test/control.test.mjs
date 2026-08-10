@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -477,6 +477,91 @@ test("model-set switches the login-free model and rejects unavailable models", (
       () => runControl("model-set", "gpt-5.6-sol"),
       /enabled, authenticated/,
       "model-set must reject native models",
+    );
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("signed routing rolls back catalog and config after a forced post-publication failure", () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-signed-rollback-"));
+  const configPath = path.join(stateDir, "config.toml");
+  const originalCatalog = {
+    models: [
+      {
+        slug: "gpt-5.6-sol",
+        display_name: "GPT-5.6-Sol",
+        visibility: "list",
+        priority: 10,
+      },
+    ],
+  };
+  writeFileSync(
+    configPath,
+    `model_provider = "custom"
+
+[model_providers.custom]
+name = "CC Switch"
+base_url = "https://direct.invalid/v1"
+
+[model_providers.custom.query_params]
+api_key = "ROLLBACK_QUERY_SECRET"
+`,
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    path.join(stateDir, "enabled-providers.json"),
+    `${JSON.stringify({ version: 1, providers: ["deepseek"] })}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(path.join(stateDir, "deepseek-api-key.secret"), "test-provider-key\n", {
+    mode: 0o600,
+  });
+  writeFileSync(
+    path.join(stateDir, "caller-secret"),
+    "test-control-caller-capability-with-sufficient-length\n",
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    path.join(stateDir, "native-models.json"),
+    `${JSON.stringify(originalCatalog)}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    path.join(stateDir, "merged-models.json"),
+    `${JSON.stringify(originalCatalog, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  const environment = {
+    ...process.env,
+    CODEX_HOME: stateDir,
+    CODEX_BIN: process.execPath,
+    MODEL_ROUTER_TARGET: "codex",
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    MODEL_ROUTER_TEST_FAIL_AFTER_CATALOG_WRITE: "1",
+  };
+  try {
+    assert.throws(
+      () =>
+        execFileSync(
+          process.execPath,
+          [path.join(root, "src", "control.mjs"), "signed-routing", "on"],
+          { cwd: root, encoding: "utf8", env: environment, stdio: "pipe" },
+        ),
+      /catalog|publication/i,
+    );
+    const restoredConfig = readFileSync(configPath, "utf8");
+    assert.match(restoredConfig, /^model_provider = "custom"$/m);
+    assert.match(restoredConfig, /base_url = "https:\/\/direct\.invalid\/v1"/);
+    assert.match(restoredConfig, /api_key = "ROLLBACK_QUERY_SECRET"/);
+    assert.doesNotMatch(restoredConfig, /codex-router-signed-provider-managed/);
+    assert.deepEqual(
+      JSON.parse(readFileSync(path.join(stateDir, "merged-models.json"), "utf8")),
+      originalCatalog,
+    );
+    assert.equal(
+      existsSync(path.join(stateDir, "signed-provider-mode.json")),
+      false,
     );
   } finally {
     rmSync(stateDir, { recursive: true, force: true });

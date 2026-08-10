@@ -3,6 +3,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -41,16 +42,34 @@ import {
 const refresh = process.argv.includes("--refresh-native");
 const bundled = process.argv.includes("--bundled-native");
 
-function atomicJson(target, value) {
+function atomicContents(target, contents) {
   mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
   const temporary = `${target}.tmp.${process.pid}`;
-  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, {
+  writeFileSync(temporary, contents, {
     encoding: "utf8",
     mode: 0o600,
   });
   protectPrivateFile(temporary);
   renameSync(temporary, target);
   protectPrivateFile(target);
+}
+
+function atomicJson(target, value) {
+  atomicContents(target, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function fileSnapshot(target) {
+  return existsSync(target)
+    ? { present: true, contents: readFileSync(target, "utf8") }
+    : { present: false };
+}
+
+function restoreFileSnapshot(target, snapshot) {
+  if (snapshot.present) {
+    atomicContents(target, snapshot.contents);
+  } else if (existsSync(target)) {
+    unlinkSync(target);
+  }
 }
 
 function captureNative() {
@@ -621,24 +640,51 @@ function main() {
         }),
         aliases: {},
       };
-  atomicJson(MERGED_CATALOG_PATH, {
-    models: merged.map((model) =>
-      hiddenModels.has(String(model.slug))
-        ? { ...model, visibility: "hide" }
-        : model,
-    ),
-  });
-  atomicJson(NATIVE_ALIAS_PATH, { version: 1, aliases });
-  writeAnnouncedAt(announcedAt);
-  // Codex offers every file in the agents directory by name, so a model
-  // switched off as a subagent needs its definition gone as well. Without
-  // this, switching it off changes multi_agent_version and nothing else, and
-  // the model still answers when it is spawned by name.
-  const routedAgents = syncRoutedCodexAgents(
-    routedCatalog || loginFree
-      ? subagentEligibleModels(routedModels, multiAgentSettings)
-      : [],
+  const snapshots = new Map(
+    [MERGED_CATALOG_PATH, NATIVE_ALIAS_PATH, ANNOUNCED_MODELS_PATH]
+      .map((target) => [target, fileSnapshot(target)]),
   );
+  let routedAgents;
+  try {
+    atomicJson(NATIVE_ALIAS_PATH, { version: 1, aliases });
+    writeAnnouncedAt(announcedAt);
+    atomicJson(MERGED_CATALOG_PATH, {
+      models: merged.map((model) =>
+        hiddenModels.has(String(model.slug))
+          ? { ...model, visibility: "hide" }
+          : model,
+      ),
+    });
+    if (process.env.MODEL_ROUTER_TEST_FAIL_AFTER_CATALOG_WRITE === "1") {
+      throw new Error("Forced failure after model catalog publication.");
+    }
+    // Codex offers every file in the agents directory by name, so a model
+    // switched off as a subagent needs its definition gone as well. Without
+    // this, switching it off changes multi_agent_version and nothing else, and
+    // the model still answers when it is spawned by name.
+    routedAgents = syncRoutedCodexAgents(
+      routedCatalog || loginFree
+        ? subagentEligibleModels(routedModels, multiAgentSettings)
+        : [],
+    );
+  } catch (error) {
+    const restoreErrors = [];
+    for (const [target, snapshot] of [...snapshots].reverse()) {
+      try {
+        restoreFileSnapshot(target, snapshot);
+      } catch (restoreError) {
+        restoreErrors.push(restoreError);
+      }
+    }
+    if (restoreErrors.length) {
+      throw new AggregateError(
+        [error, ...restoreErrors],
+        "Model catalog update failed and its previous files could not be restored.",
+      );
+    }
+    if (error && typeof error === "object") error.catalogRollbackSafe = true;
+    throw error;
+  }
   process.stdout.write(
     `${JSON.stringify({
       path: MERGED_CATALOG_PATH,
@@ -672,6 +718,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (error?.code === "foreign_state_owner") {
       console.error(error.message);
       process.exit(1);
+    }
+    // Exit 75 tells an orchestrating mode switch that the requested catalog
+    // was not published and every prior catalog file was restored. A generic
+    // failure cannot make that guarantee and must leave the router transport
+    // active until a native-only catalog can be proven.
+    if (error?.catalogRollbackSafe) {
+      console.error(error.message);
+      process.exit(75);
     }
     throw error;
   }

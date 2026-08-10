@@ -461,28 +461,32 @@ async function setSignedRouting(desired) {
     }
   }
   const command = desired === "on" ? "signed-enable" : "signed-disable";
-  const runConfig = () => spawnSync(
+  const runConfig = (configCommand = command) => spawnSync(
     process.execPath,
-    [path.join(REPO_ROOT, "src", "config-manager.mjs"), command],
+    [path.join(REPO_ROOT, "src", "config-manager.mjs"), configCommand],
     {
       cwd: REPO_ROOT,
       env: { ...process.env, MODEL_ROUTER_TARGET: "codex" },
       encoding: "utf8",
     },
   );
-  const runCatalog = () => spawnSync(
-    process.execPath,
-    [path.join(REPO_ROOT, "src", "catalog.mjs")],
-    {
+  const runCatalog = (routing = desired, { allowTestFault = true } = {}) => {
+    const environment = {
+      ...process.env,
+      MODEL_ROUTER_TARGET: "codex",
+      MODEL_ROUTER_SIGNED_ROUTING: routing === "on" ? "1" : "0",
+    };
+    if (!allowTestFault) delete environment.MODEL_ROUTER_TEST_FAIL_AFTER_CATALOG_WRITE;
+    return spawnSync(
+      process.execPath,
+      [path.join(REPO_ROOT, "src", "catalog.mjs")],
+      {
       cwd: REPO_ROOT,
-      env: {
-        ...process.env,
-        MODEL_ROUTER_TARGET: "codex",
-        MODEL_ROUTER_SIGNED_ROUTING: desired === "on" ? "1" : "0",
-      },
+      env: environment,
       encoding: "utf8",
-    },
-  );
+      },
+    );
+  };
   // Enabling routes the transport first, so a partially completed operation
   // can only hide external models. Disabling hides them first, so they can
   // never escape through the restored direct provider endpoint.
@@ -500,15 +504,33 @@ async function setSignedRouting(desired) {
   }
   if (catalog.status !== 0) {
     if (desired === "on") {
-      spawnSync(
-        process.execPath,
-        [path.join(REPO_ROOT, "src", "config-manager.mjs"), "signed-disable"],
-        {
-          cwd: REPO_ROOT,
-          env: { ...process.env, MODEL_ROUTER_TARGET: "codex" },
-          encoding: "utf8",
-        },
-      );
+      // A catalog process can fail after replacing one of its files. Before
+      // restoring the user's direct provider, prove that a clean native-only
+      // rebuild succeeds. If it does not, keep the signed router transport in
+      // place: external entries against the router are safer than sending one
+      // through a provider endpoint we no longer own.
+      if (catalog.status !== 75) {
+        const safeCatalog = runCatalog("off", { allowTestFault: false });
+        if (safeCatalog.status !== 0) {
+          throw new AggregateError(
+            [
+              new Error((catalog.stderr || "Codex model catalog could not be refreshed.").trim()),
+              new Error((safeCatalog.stderr || "The native-only rollback catalog failed.").trim()),
+            ],
+            "Signed routing remains active because the catalog could not be rolled back safely.",
+          );
+        }
+      }
+      const rollback = runConfig("signed-disable");
+      if (rollback.status !== 0) {
+        throw new AggregateError(
+          [
+            new Error((catalog.stderr || "Codex model catalog could not be refreshed.").trim()),
+            new Error((rollback.stderr || "Signed router configuration rollback failed.").trim()),
+          ],
+          "The catalog was made native-only, but signed router configuration could not be restored.",
+        );
+      }
     }
     throw new Error((catalog.stderr || "Codex model catalog could not be refreshed.").trim());
   }
