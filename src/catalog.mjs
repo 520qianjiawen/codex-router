@@ -31,6 +31,7 @@ import { readHiddenModels } from "./model-picker-state.mjs";
 import { buildNativeAliasAssignments } from "./native-alias.mjs";
 import { selectedConfiguredListedModels, configuredProviderIds } from "./provider-selection.mjs";
 import { assertStateOwnership } from "./state-owner.mjs";
+import { scanTomlDocument, tomlStringValue } from "./toml-structure.mjs";
 import { applyVisionBridge, resolveVisionEngine } from "./vision-bridge.mjs";
 import { readVisionBridgeSettings } from "./vision-bridge-state.mjs";
 import { nativeVisionEngines } from "./vision-engines.mjs";
@@ -229,10 +230,12 @@ function loginFreeConfigured() {
   if (override === "1") return true;
   if (override === "0") return false;
   if (!existsSync(CONFIG_PATH)) return false;
-  const config = readFileSync(CONFIG_PATH, "utf8");
-  const firstTable = config.search(/^\s*\[/m);
-  const root = firstTable === -1 ? config : config.slice(0, firstTable);
-  return root.match(/^\s*model_provider\s*=\s*["\']([^"\']+)["\']/m)?.[1] === "codex-router";
+  try {
+    const document = scanTomlDocument(readFileSync(CONFIG_PATH, "utf8"));
+    return tomlStringValue(document, [], "model_provider") === "codex-router";
+  } catch {
+    return false;
+  }
 }
 
 // A merged catalog is useful only when the selected Codex transport reaches
@@ -243,29 +246,29 @@ function loginFreeConfigured() {
 export function routedCatalogConfigured(contents, override = process.env.MODEL_ROUTER_SIGNED_ROUTING) {
   if (override === "1") return true;
   if (override === "0") return false;
-  const firstTable = String(contents || "").search(/^\s*\[/m);
-  const root = firstTable === -1 ? String(contents || "") : String(contents || "").slice(0, firstTable);
-  const provider = root.match(/^\s*model_provider\s*=\s*["\']([^"\']+)["\']/m)?.[1];
-  if (!provider || provider === "openai") {
-    const baseUrl = root.match(/^\s*openai_base_url\s*=\s*["']([^"']+)["']/m)?.[1];
-    // Before first install there is no managed URL yet, but the catalog still
-    // has to be buildable. Once an URL is present, only the caller-capability
-    // endpoint proves that OpenAI traffic actually reaches this router.
-    return baseUrl === undefined || isManagedCallerBaseUrl(baseUrl);
-  }
+  try {
+    const document = scanTomlDocument(contents);
+    const provider = tomlStringValue(document, [], "model_provider");
+    if (!provider || provider === "openai") {
+      const baseUrl = tomlStringValue(document, [], "openai_base_url");
+      // Before first install there is no managed URL yet, but the catalog
+      // still has to be buildable. Once an URL is present, only the caller-
+      // capability endpoint proves that OpenAI traffic reaches this router.
+      return baseUrl === undefined || isManagedCallerBaseUrl(baseUrl);
+    }
 
-  const providerId = provider.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const header = new RegExp(
-    `^\\s*\\[\\s*model_providers\\.(?:${providerId}|["']${providerId}["'])\\s*\\]\\s*(?:#.*)?$`,
-    "m",
-  );
-  const match = header.exec(String(contents || ""));
-  if (!match) return false;
-  const rest = String(contents || "").slice(match.index + match[0].length);
-  const nextTable = rest.search(/^\s*\[/m);
-  const table = nextTable === -1 ? rest : rest.slice(0, nextTable);
-  const baseUrl = table.match(/^\s*base_url\s*=\s*["']([^"']+)["']/m)?.[1];
-  return Boolean(baseUrl && isManagedCallerBaseUrl(baseUrl));
+    const providerPath = ["model_providers", provider];
+    const directTables = document.headers.filter(
+      ({ path: tablePath }) =>
+        tablePath.length === providerPath.length &&
+        tablePath.every((part, index) => part === providerPath[index]),
+    );
+    if (directTables.length !== 1) return false;
+    const baseUrl = tomlStringValue(document, providerPath, "base_url");
+    return Boolean(baseUrl && isManagedCallerBaseUrl(baseUrl));
+  } catch {
+    return false;
+  }
 }
 
 function routedCatalogActive() {

@@ -248,10 +248,10 @@ restart, not request transport.
 5. Disable CC Switch's **Launch on Startup** setting after the profile is safely
    current. This is defense in depth, not a functional dependency; the Router
    profile remains useful for deliberate recovery.
-6. Replace/remove the Router tray's current signed-provider toggle. A future
-   toggle may only add/remove the `base_url` and HTTP transport fields inside
-   `[model_providers.custom]`, with an exact snapshot and drift check. It must
-   never change root `model_provider`.
+6. Use the Router tray's signed-provider toggle after the dedicated profile is
+   current. The shipped toggle snapshots the complete selected provider tree,
+   replaces it with the authenticated Router transport, and restores it only
+   after an ownership check. It never changes root `model_provider`.
 7. Start Codex Router and test through a temporary Codex process first, using
    `model_provider = "custom"` with the exact live provider table. Require both
    an exact response marker and a correlated Router usage event for one native
@@ -277,7 +277,7 @@ different backend because `encrypted_content` is backend-bound
 
 Keep CC Switch for now, but use it only as the durable owner of the single
 `custom` provider identity and its recovery snapshot. Do not use its local
-proxy, do not use the Router's signed-provider toggle, and do not uninstall CC
-Switch until the dedicated profile has passed the desktop task-visibility gate.
-Once that gate passes, the app can be uninstalled if desired while preserving
+proxy. Use the Router's signed-provider toggle to route that identity only
+after the dedicated profile has passed the desktop task-visibility gate. Once
+that gate passes, CC Switch can be uninstalled if desired while preserving
 `~/.cc-switch`; it is not required at request time.
