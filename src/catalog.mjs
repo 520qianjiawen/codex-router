@@ -3,12 +3,14 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { protectPrivateFile } from "./file-security.mjs";
+import { isManagedCallerBaseUrl } from "./caller-auth.mjs";
 import {
   ANNOUNCED_MODELS_PATH,
   CONFIG_PATH,
@@ -29,6 +31,7 @@ import { readHiddenModels } from "./model-picker-state.mjs";
 import { buildNativeAliasAssignments } from "./native-alias.mjs";
 import { selectedConfiguredListedModels, configuredProviderIds } from "./provider-selection.mjs";
 import { assertStateOwnership } from "./state-owner.mjs";
+import { scanTomlDocument, tomlStringValue } from "./toml-structure.mjs";
 import { applyVisionBridge, resolveVisionEngine } from "./vision-bridge.mjs";
 import { readVisionBridgeSettings } from "./vision-bridge-state.mjs";
 import { nativeVisionEngines } from "./vision-engines.mjs";
@@ -40,16 +43,34 @@ import {
 const refresh = process.argv.includes("--refresh-native");
 const bundled = process.argv.includes("--bundled-native");
 
-function atomicJson(target, value) {
+function atomicContents(target, contents) {
   mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
   const temporary = `${target}.tmp.${process.pid}`;
-  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, {
+  writeFileSync(temporary, contents, {
     encoding: "utf8",
     mode: 0o600,
   });
   protectPrivateFile(temporary);
   renameSync(temporary, target);
   protectPrivateFile(target);
+}
+
+function atomicJson(target, value) {
+  atomicContents(target, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function fileSnapshot(target) {
+  return existsSync(target)
+    ? { present: true, contents: readFileSync(target, "utf8") }
+    : { present: false };
+}
+
+function restoreFileSnapshot(target, snapshot) {
+  if (snapshot.present) {
+    atomicContents(target, snapshot.contents);
+  } else if (existsSync(target)) {
+    unlinkSync(target);
+  }
 }
 
 function captureNative() {
@@ -209,10 +230,50 @@ function loginFreeConfigured() {
   if (override === "1") return true;
   if (override === "0") return false;
   if (!existsSync(CONFIG_PATH)) return false;
-  const config = readFileSync(CONFIG_PATH, "utf8");
-  const firstTable = config.search(/^\s*\[/m);
-  const root = firstTable === -1 ? config : config.slice(0, firstTable);
-  return root.match(/^\s*model_provider\s*=\s*["\']([^"\']+)["\']/m)?.[1] === "codex-router";
+  try {
+    const document = scanTomlDocument(readFileSync(CONFIG_PATH, "utf8"));
+    return tomlStringValue(document, [], "model_provider") === "codex-router";
+  } catch {
+    return false;
+  }
+}
+
+// A merged catalog is useful only when the selected Codex transport reaches
+// this router. The built-in OpenAI provider uses the managed root base URL;
+// the dedicated signed provider carries the same URL explicitly. Any other
+// custom provider (for example a configuration switcher) owns the endpoint and
+// would make external picker entries misleading.
+export function routedCatalogConfigured(contents, override = process.env.MODEL_ROUTER_SIGNED_ROUTING) {
+  if (override === "1") return true;
+  if (override === "0") return false;
+  try {
+    const document = scanTomlDocument(contents);
+    const provider = tomlStringValue(document, [], "model_provider");
+    if (!provider || provider === "openai") {
+      const baseUrl = tomlStringValue(document, [], "openai_base_url");
+      // Before first install there is no managed URL yet, but the catalog
+      // still has to be buildable. Once an URL is present, only the caller-
+      // capability endpoint proves that OpenAI traffic reaches this router.
+      return baseUrl === undefined || isManagedCallerBaseUrl(baseUrl);
+    }
+
+    const providerPath = ["model_providers", provider];
+    const directTables = document.headers.filter(
+      ({ path: tablePath }) =>
+        tablePath.length === providerPath.length &&
+        tablePath.every((part, index) => part === providerPath[index]),
+    );
+    if (directTables.length !== 1) return false;
+    const baseUrl = tomlStringValue(document, providerPath, "base_url");
+    return Boolean(baseUrl && isManagedCallerBaseUrl(baseUrl));
+  } catch {
+    return false;
+  }
+}
+
+function routedCatalogActive() {
+  const contents = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf8") : "";
+  return routedCatalogConfigured(contents);
 }
 
 function identityName(model) {
@@ -555,6 +616,7 @@ function main() {
   }
   const openaiAuthenticated = auth.authenticated;
   const loginFree = loginFreeConfigured();
+  const routedCatalog = routedCatalogActive();
   // Advertised last, and only while an engine actually resolves: Codex gates
   // the paste on `input_modalities`, so a bridge that has gone away must take
   // the advertisement with it rather than leaving a paste that 400s. This runs
@@ -582,27 +644,56 @@ function main() {
   const { models: merged, aliases } = loginFree
     ? buildLoginFreeCatalog(native, catalogModels)
     : {
-        models: buildMergedCatalog(native, catalogModels, {
+        models: buildMergedCatalog(native, routedCatalog ? catalogModels : [], {
           includeNative: openaiAuthenticated,
         }),
         aliases: {},
       };
-  atomicJson(MERGED_CATALOG_PATH, {
-    models: merged.map((model) =>
-      hiddenModels.has(String(model.slug))
-        ? { ...model, visibility: "hide" }
-        : model,
-    ),
-  });
-  atomicJson(NATIVE_ALIAS_PATH, { version: 1, aliases });
-  writeAnnouncedAt(announcedAt);
-  // Codex offers every file in the agents directory by name, so a model
-  // switched off as a subagent needs its definition gone as well. Without
-  // this, switching it off changes multi_agent_version and nothing else, and
-  // the model still answers when it is spawned by name.
-  const routedAgents = syncRoutedCodexAgents(
-    subagentEligibleModels(routedModels, multiAgentSettings),
+  const snapshots = new Map(
+    [MERGED_CATALOG_PATH, NATIVE_ALIAS_PATH, ANNOUNCED_MODELS_PATH]
+      .map((target) => [target, fileSnapshot(target)]),
   );
+  let routedAgents;
+  try {
+    atomicJson(NATIVE_ALIAS_PATH, { version: 1, aliases });
+    writeAnnouncedAt(announcedAt);
+    atomicJson(MERGED_CATALOG_PATH, {
+      models: merged.map((model) =>
+        hiddenModels.has(String(model.slug))
+          ? { ...model, visibility: "hide" }
+          : model,
+      ),
+    });
+    if (process.env.MODEL_ROUTER_TEST_FAIL_AFTER_CATALOG_WRITE === "1") {
+      throw new Error("Forced failure after model catalog publication.");
+    }
+    // Codex offers every file in the agents directory by name, so a model
+    // switched off as a subagent needs its definition gone as well. Without
+    // this, switching it off changes multi_agent_version and nothing else, and
+    // the model still answers when it is spawned by name.
+    routedAgents = syncRoutedCodexAgents(
+      routedCatalog || loginFree
+        ? subagentEligibleModels(routedModels, multiAgentSettings)
+        : [],
+    );
+  } catch (error) {
+    const restoreErrors = [];
+    for (const [target, snapshot] of [...snapshots].reverse()) {
+      try {
+        restoreFileSnapshot(target, snapshot);
+      } catch (restoreError) {
+        restoreErrors.push(restoreError);
+      }
+    }
+    if (restoreErrors.length) {
+      throw new AggregateError(
+        [error, ...restoreErrors],
+        "Model catalog update failed and its previous files could not be restored.",
+      );
+    }
+    if (error && typeof error === "object") error.catalogRollbackSafe = true;
+    throw error;
+  }
   process.stdout.write(
     `${JSON.stringify({
       path: MERGED_CATALOG_PATH,
@@ -619,6 +710,7 @@ function main() {
         : 0,
       aliased_models: Object.keys(aliases).length,
       login_free: loginFree,
+      routed_catalog_active: routedCatalog || loginFree,
       openai_authenticated: openaiAuthenticated,
       openai_auth_reason: auth.reason,
       selected_model: selectedModel() || null,
@@ -635,6 +727,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (error?.code === "foreign_state_owner") {
       console.error(error.message);
       process.exit(1);
+    }
+    // Exit 75 tells an orchestrating mode switch that the requested catalog
+    // was not published and every prior catalog file was restored. A generic
+    // failure cannot make that guarantee and must leave the router transport
+    // active until a native-only catalog can be proven.
+    if (error?.catalogRollbackSafe) {
+      console.error(error.message);
+      process.exit(75);
     }
     throw error;
   }

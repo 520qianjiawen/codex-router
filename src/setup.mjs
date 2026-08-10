@@ -450,7 +450,7 @@ async function main() {
   }
 
   if (runSmoke || (guided && confirm("Run one small live request per enabled provider?", false))) {
-    run(process.execPath, [path.join(SOURCE_ROOT, "src", "smoke-test.mjs")]);
+    run(process.execPath, [path.join(SOURCE_ROOT, "src", "smoke-test.mjs"), "--yes"]);
   }
   run(process.execPath, [path.join(SOURCE_ROOT, "src", "doctor.mjs")]);
   process.stdout.write(

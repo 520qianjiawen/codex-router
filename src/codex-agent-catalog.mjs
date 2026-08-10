@@ -38,6 +38,14 @@ function managedAgentFiles(agentsDir) {
   }
 }
 
+function writeManagedAgent(target, contents) {
+  const temporary = `${target}.tmp.${process.pid}`;
+  writeFileSync(temporary, contents, { encoding: "utf8", mode: 0o600 });
+  protectPrivateFile(temporary);
+  renameSync(temporary, target);
+  protectPrivateFile(target);
+}
+
 export function routedAgentDefinition(model) {
   const slug = String(model?.slug || "").trim();
   if (!slug || !slug.includes("/")) {
@@ -69,31 +77,59 @@ export function routedAgentDefinition(model) {
 // `agent_type` after the settings stopped allowing it.
 export function syncRoutedCodexAgents(models, agentsDir = CODEX_AGENTS_DIR) {
   mkdirSync(agentsDir, { recursive: true, mode: 0o700 });
+  const previous = new Map(
+    managedAgentFiles(agentsDir).map((entry) => [
+      entry,
+      readFileSync(path.join(agentsDir, entry), "utf8"),
+    ]),
+  );
   const written = [];
   const keep = new Set();
-  for (const model of models) {
-    const definition = routedAgentDefinition(model);
-    const target = path.join(agentsDir, definition.fileName);
-    const temporary = `${target}.tmp.${process.pid}`;
-    writeFileSync(temporary, definition.contents, { encoding: "utf8", mode: 0o600 });
-    protectPrivateFile(temporary);
-    renameSync(temporary, target);
-    protectPrivateFile(target);
-    keep.add(definition.fileName);
-    written.push({ model: model.slug, agent: definition.agentName, path: target });
-  }
-  const removed = [];
-  for (const entry of managedAgentFiles(agentsDir)) {
-    if (keep.has(entry)) continue;
-    try {
-      unlinkSync(path.join(agentsDir, entry));
-      removed.push(entry);
-    } catch {
-      // A definition that cannot be removed is reported by the doctor check
-      // rather than failing the catalog write.
+  try {
+    for (const model of models) {
+      const definition = routedAgentDefinition(model);
+      const target = path.join(agentsDir, definition.fileName);
+      writeManagedAgent(target, definition.contents);
+      keep.add(definition.fileName);
+      written.push({ model: model.slug, agent: definition.agentName, path: target });
     }
+    const removed = [];
+    for (const entry of managedAgentFiles(agentsDir)) {
+      if (keep.has(entry)) continue;
+      try {
+        unlinkSync(path.join(agentsDir, entry));
+        removed.push(entry);
+      } catch {
+        // A definition that cannot be removed is reported by the doctor check
+        // rather than failing the catalog write.
+      }
+    }
+    return { written, removed };
+  } catch (error) {
+    const restoreErrors = [];
+    for (const entry of managedAgentFiles(agentsDir)) {
+      if (previous.has(entry)) continue;
+      try {
+        unlinkSync(path.join(agentsDir, entry));
+      } catch (restoreError) {
+        restoreErrors.push(restoreError);
+      }
+    }
+    for (const [entry, contents] of previous) {
+      try {
+        writeManagedAgent(path.join(agentsDir, entry), contents);
+      } catch (restoreError) {
+        restoreErrors.push(restoreError);
+      }
+    }
+    if (restoreErrors.length) {
+      throw new AggregateError(
+        [error, ...restoreErrors],
+        "Routed agent catalog update failed and its previous files could not be restored.",
+      );
+    }
+    throw error;
   }
-  return { written, removed };
 }
 
 export function routedCodexAgentStatus(models, agentsDir = CODEX_AGENTS_DIR) {

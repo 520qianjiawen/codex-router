@@ -154,6 +154,8 @@ async function emitProbe() {
         ? {
             loginFree: Boolean(codexConfig.login_free),
             loginFreeManaged: Boolean(codexConfig.login_free_managed),
+            signedRouting: Boolean(codexConfig.signed_routing),
+            signedRoutingManaged: Boolean(codexConfig.signed_routing_managed),
           }
         : {}),
       ...(TARGET === "codex"
@@ -442,6 +444,96 @@ async function setLoginFreeMode(desired) {
   );
   if (result.status !== 0) {
     throw new Error((result.stderr || "Codex provider mode could not be changed.").trim());
+  }
+  process.stdout.write(result.stdout);
+}
+
+async function setSignedRouting(desired) {
+  if (desired !== "on" && desired !== "off") {
+    throw new Error("Usage: control signed-routing <on|off>");
+  }
+  if (desired === "on") {
+    const { selectedConfiguredListedModels } = await import("./provider-selection.mjs");
+    if (selectedConfiguredListedModels().length === 0) {
+      throw new Error(
+        "Connect and enable at least one external provider before turning on signed routing.",
+      );
+    }
+  }
+  const command = desired === "on" ? "signed-enable" : "signed-disable";
+  const runConfig = (configCommand = command) => spawnSync(
+    process.execPath,
+    [path.join(REPO_ROOT, "src", "config-manager.mjs"), configCommand],
+    {
+      cwd: REPO_ROOT,
+      env: { ...process.env, MODEL_ROUTER_TARGET: "codex" },
+      encoding: "utf8",
+    },
+  );
+  const runCatalog = (routing = desired, { allowTestFault = true } = {}) => {
+    const environment = {
+      ...process.env,
+      MODEL_ROUTER_TARGET: "codex",
+      MODEL_ROUTER_SIGNED_ROUTING: routing === "on" ? "1" : "0",
+    };
+    if (!allowTestFault) delete environment.MODEL_ROUTER_TEST_FAIL_AFTER_CATALOG_WRITE;
+    return spawnSync(
+      process.execPath,
+      [path.join(REPO_ROOT, "src", "catalog.mjs")],
+      {
+      cwd: REPO_ROOT,
+      env: environment,
+      encoding: "utf8",
+      },
+    );
+  };
+  // Enabling routes the transport first, so a partially completed operation
+  // can only hide external models. Disabling hides them first, so they can
+  // never escape through the restored direct provider endpoint.
+  let result;
+  let catalog;
+  if (desired === "on") {
+    result = runConfig();
+    if (result.status === 0) catalog = runCatalog();
+  } else {
+    catalog = runCatalog();
+    if (catalog.status === 0) result = runConfig();
+  }
+  if (result && result.status !== 0) {
+    throw new Error((result.stderr || "Signed router mode could not be changed.").trim());
+  }
+  if (catalog.status !== 0) {
+    if (desired === "on") {
+      // A catalog process can fail after replacing one of its files. Before
+      // restoring the user's direct provider, prove that a clean native-only
+      // rebuild succeeds. If it does not, keep the signed router transport in
+      // place: external entries against the router are safer than sending one
+      // through a provider endpoint we no longer own.
+      const safeCatalog = runCatalog("off", { allowTestFault: false });
+      if (safeCatalog.status !== 0) {
+        throw new AggregateError(
+          [
+            new Error((catalog.stderr || "Codex model catalog could not be refreshed.").trim()),
+            new Error((safeCatalog.stderr || "The native-only rollback catalog failed.").trim()),
+          ],
+          "Signed routing remains active because the catalog could not be rolled back safely.",
+        );
+      }
+      const rollback = runConfig("signed-disable");
+      if (rollback.status !== 0) {
+        throw new AggregateError(
+          [
+            new Error((catalog.stderr || "Codex model catalog could not be refreshed.").trim()),
+            new Error((rollback.stderr || "Signed router configuration rollback failed.").trim()),
+          ],
+          "The catalog was made native-only, but signed router configuration could not be restored.",
+        );
+      }
+    }
+    throw new Error((catalog.stderr || "Codex model catalog could not be refreshed.").trim());
+  }
+  if (!result) {
+    throw new Error("Signed router mode could not be changed.");
   }
   process.stdout.write(result.stdout);
 }
@@ -1150,6 +1242,8 @@ if (args.includes("--probe")) {
   }
 } else if (args[0] === "auth-mode") {
   await setLoginFreeMode(args[1]);
+} else if (args[0] === "signed-routing") {
+  await setSignedRouting(args[1]);
 } else if (args[0] === "model-set") {
   await setLoginFreeModel(args[1]);
 } else if (args[0] === "subagents") {

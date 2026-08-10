@@ -217,6 +217,10 @@ final class RouterStore: ObservableObject {
     snapshot.targets["codex"]?.loginFree == true
   }
 
+  var signedRouting: Bool {
+    snapshot.targets["codex"]?.signedRouting == true
+  }
+
   var maintenanceRunning: Bool {
     providerOperation == "maintenance" || providerOperation == "doctor"
   }
@@ -1046,6 +1050,22 @@ final class RouterStore: ObservableObject {
     }
   }
 
+  func setSignedRouting(_ enabled: Bool) async {
+    guard providerOperation == nil else { return }
+    providerOperation = "signed-routing"
+    defer { providerOperation = nil }
+    do {
+      _ = try await runControl(arguments: ["signed-routing", enabled ? "on" : "off"])
+      await refresh()
+      message = enabled
+        ? "Router with ChatGPT enabled. Fully quit and reopen Codex when ready."
+        : "Previous provider restored. Fully quit and reopen Codex when ready."
+    } catch {
+      await refresh()
+      message = error.localizedDescription
+    }
+  }
+
   func setSubagentMode(_ mode: String) async {
     await applyModelSettings(arguments: ["subagents", "mode", mode])
   }
@@ -1649,6 +1669,8 @@ struct RouterTarget: Decodable {
   let selectedModel: String?
   let loginFree: Bool?
   let loginFreeManaged: Bool?
+  let signedRouting: Bool?
+  let signedRoutingManaged: Bool?
   let nativeAliases: [String: String]?
   let modelSettings: ModelSettingsSnapshot?
 }
@@ -2223,6 +2245,17 @@ private struct TrayView: View {
     }
     .padding(.vertical, 2)
     settingRow(
+      title: "Use Router with ChatGPT",
+      detail: store.signedRouting
+        ? "Native GPT + external models · task history preserved"
+        : "Keep ChatGPT login and the current task history",
+      isOn: Binding(
+        get: { store.signedRouting },
+        set: { enabled in Task { await store.setSignedRouting(enabled) } }
+      ),
+      isDisabled: store.providerOperation != nil || store.loginFree
+    )
+    settingRow(
       title: "Use without OpenAI login",
       detail: store.loginFree
         ? "External providers · Codex restarts automatically"
@@ -2231,7 +2264,7 @@ private struct TrayView: View {
         get: { store.loginFree },
         set: { enabled in Task { await store.setLoginFree(enabled) } }
       ),
-      isDisabled: store.providerOperation != nil
+      isDisabled: store.providerOperation != nil || store.signedRouting
     )
     maintenanceRow
     AccordionPanel(
