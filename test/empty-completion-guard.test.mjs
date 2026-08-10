@@ -228,6 +228,29 @@ test("the pre-content byte bound fails open to one coherent original attempt", a
   assert.equal(body, EMPTY_TURN);
 });
 
+test("the pre-content time bound fails open to one coherent original attempt", async () => {
+  const split = EMPTY_TURN.indexOf("event: response.completed");
+  async function* delayedTurn() {
+    yield Buffer.from(EMPTY_TURN.slice(0, split));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    yield Buffer.from(EMPTY_TURN.slice(split));
+  }
+  const guard = new EmptyCompletionGuard("text/event-stream", { maxPreludeMs: 5 });
+  const chunks = [];
+  await pipeline(
+    Readable.from(delayedTurn()),
+    guard,
+    new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(Buffer.from(chunk));
+        callback();
+      },
+    }),
+  );
+  assert.equal(guard.isEmpty(), false);
+  assert.equal(Buffer.concat(chunks).toString("utf8"), EMPTY_TURN);
+});
+
 test("non-SSE bodies pass through byte for byte and are never empty", async () => {
   const json = JSON.stringify({
     id: "resp_1",
