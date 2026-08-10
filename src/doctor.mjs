@@ -8,7 +8,8 @@ import { routedCodexAgentStatus } from "./codex-agent-catalog.mjs";
 import { privateFileIsProtected } from "./file-security.mjs";
 import { grokCliPreflight } from "./grok-cli.mjs";
 import { detectLegacyInstallations } from "./legacy-migration.mjs";
-import { PROVIDERS } from "./model-registry.mjs";
+import { routedCatalogConfigured } from "./catalog.mjs";
+import { MODEL_BY_SLUG, PROVIDERS } from "./model-registry.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { kimiOAuthHealth } from "./oauth-status.mjs";
 import {
@@ -277,11 +278,16 @@ add(
 
 let selection = { providers: [], explicit: false };
 let requiredRoutedModels = [];
+let catalogRoutedModels = [];
 let requiredModels = new Set();
+const routedTransportActive = routedCatalogConfigured(
+  existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf8") : "",
+);
 try {
   selection = providerSelectionStatus();
   requiredRoutedModels = selectedConfiguredListedModels();
-  requiredModels = new Set(requiredRoutedModels.map((model) => model.slug));
+  catalogRoutedModels = routedTransportActive ? requiredRoutedModels : [];
+  requiredModels = new Set(catalogRoutedModels.map((model) => model.slug));
   add(
     selection.providers.length ? "ok" : "fail",
     "Enabled providers",
@@ -310,19 +316,30 @@ try {
 }
 
 let catalogModels = [];
+let catalogReadable = false;
 try {
   const catalog = JSON.parse(readFileSync(MERGED_CATALOG_PATH, "utf8"));
-  catalogModels = Array.isArray(catalog.models) ? catalog.models : [];
+  if (Array.isArray(catalog.models)) {
+    catalogModels = catalog.models;
+    catalogReadable = true;
+  }
 } catch {
   // Reported as a failed catalog check below.
 }
 const catalogOk =
-  requiredModels.size > 0 &&
-  [...requiredModels].every((slug) => catalogModels.some((model) => model.slug === slug));
+  catalogReadable &&
+  (routedTransportActive
+    ? requiredModels.size > 0 &&
+      [...requiredModels].every((slug) => catalogModels.some((model) => model.slug === slug))
+    : !catalogModels.some((model) => MODEL_BY_SLUG.has(String(model.slug))));
 add(
   catalogOk ? "ok" : "fail",
   "Merged catalog",
-  catalogOk ? `${requiredModels.size} routed models` : MERGED_CATALOG_PATH,
+  catalogOk
+    ? routedTransportActive
+      ? `${requiredModels.size} routed models`
+      : "native-only; routed transport is inactive"
+    : MERGED_CATALOG_PATH,
   "Run ./bin/refresh-catalog, or ./bin/doctor --fix if files are missing.",
 );
 // The catalog tells Codex which models to offer; the gateway config decides
@@ -341,7 +358,7 @@ add(
 let unroutable = [];
 try {
   const rendered = readFileSync(LITELLM_CONFIG_PATH, "utf8");
-  unroutable = requiredRoutedModels
+  unroutable = catalogRoutedModels
     .filter((model) => !rendered.includes(`model_name: "${model.gatewayModel}"`))
     .map((model) => model.slug);
 } catch {
@@ -352,7 +369,7 @@ add(
   "Catalog matches gateway routes",
   unroutable.length
     ? `${unroutable.length} offered model(s) have no gateway route: ${unroutable.join(", ")}`
-    : `${requiredRoutedModels.length} routed models`,
+    : `${catalogRoutedModels.length} routed models`,
   "Run ./bin/doctor --fix from the owning checkout, then fully quit and reopen Codex.",
 );
 // "Off" is a normal state and reports ok. Enabled with no resolvable engine is
@@ -402,7 +419,7 @@ if (visionSettings.enabled && !visionEngine) {
 // The same list the catalog writes definitions from, so a model switched off
 // as a subagent is expected to have no definition rather than a missing one.
 const agentStatus = routedCodexAgentStatus(
-  subagentEligibleModels(requiredRoutedModels, readMultiAgentSettings()),
+  subagentEligibleModels(catalogRoutedModels, readMultiAgentSettings()),
 );
 add(
   agentStatus.ok ? "ok" : "fail",
@@ -733,7 +750,7 @@ add(
   );
 }
 
-if (codex && catalogOk) {
+if (codex && catalogOk && routedTransportActive) {
   try {
     const parsed = JSON.parse(
       execFileSync(codex, ["debug", "models"], {
