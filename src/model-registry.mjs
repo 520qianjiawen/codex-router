@@ -367,6 +367,16 @@ function modelProblem(model, providers, slugs, gatewayModels) {
   ) {
     return `model ${model.slug} has an invalid defaultReasoningSummary`;
   }
+  // A default summary mode without summary support is a contradictory
+  // capability claim. This matters especially for user-models.json, where
+  // hand-edited metadata is skipped with a warning instead of trusted merely
+  // because each field is valid in isolation.
+  if (
+    model.defaultReasoningSummary !== undefined &&
+    model.supportsReasoningSummaries !== true
+  ) {
+    return `model ${model.slug} sets defaultReasoningSummary without reasoning-summary support`;
+  }
   if (
     model.availabilityNux !== undefined &&
     (typeof model.availabilityNux !== "string" || !model.availabilityNux.trim())

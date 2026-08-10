@@ -398,6 +398,7 @@ often for the repository to pin and live-verify individual entries:
 | Hugging Face Router | `huggingface` | `https://router.huggingface.co/v1` |
 | Google Gemini API | `gemini-api` | `https://generativelanguage.googleapis.com/v1beta/openai` |
 | GitHub Copilot | `github-copilot` | Account-specific GitHub Copilot endpoint |
+| Chutes | `chutes` | `https://llm.chutes.ai/v1` |
 
 Add a key, then pick the models you want from the provider's live catalog:
 

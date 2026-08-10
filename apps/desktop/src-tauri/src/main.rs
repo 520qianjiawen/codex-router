@@ -996,6 +996,7 @@ mod tests {
         // working without a code change here.
         assert!(validate_provider("local").is_ok());
         assert!(validate_provider("openrouter").is_ok());
+        assert!(validate_provider("chutes").is_ok());
         assert!(validate_provider("../../secret").is_err());
         assert!(validate_provider("").is_err());
         assert!(validate_provider("--flag").is_err());
@@ -1006,6 +1007,8 @@ mod tests {
         assert!(validate_provider_kind("github-copilot", ProviderKind::Oauth).is_err());
         assert!(validate_provider_kind("clinepass", ProviderKind::Api).is_ok());
         assert!(validate_provider_kind("clinepass", ProviderKind::Oauth).is_err());
+        assert!(validate_provider_kind("chutes", ProviderKind::Api).is_ok());
+        assert!(validate_provider_kind("chutes", ProviderKind::Oauth).is_err());
     }
 
     #[test]
