@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
@@ -50,6 +51,7 @@ const providerStartMarker = "# BEGIN codex-router-provider-managed";
 const providerEndMarker = "# END codex-router-provider-managed";
 const signedProviderStartMarker = "# BEGIN codex-router-signed-provider-managed";
 const signedProviderEndMarker = "# END codex-router-signed-provider-managed";
+const signedProviderSlotPrefix = "# codex-router-signed-provider-tree-slot";
 const agentConcurrencyStartMarker = "# BEGIN codex-router-agent-concurrency-managed";
 const agentConcurrencyEndMarker = "# END codex-router-agent-concurrency-managed";
 const multiAgentV2StartMarker = "# BEGIN codex-router-multi-agent-v2-managed";
@@ -436,39 +438,109 @@ function replaceRootValue(contents, key, value) {
     .trimEnd();
 }
 
-function providerHeaderValue(line) {
-  const match = String(line).match(
-    /^\s*\[\s*model_providers\.(?:"((?:\\.|[^"])*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*\]\s*(?:#.*)?$/,
-  );
-  if (!match) return undefined;
-  if (match[1] !== undefined) {
-    try {
-      return JSON.parse(`"${match[1]}"`);
-    } catch {
+function tomlBasicKey(raw) {
+  let decoded = "";
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (character !== "\\") {
+      decoded += character;
+      continue;
+    }
+    const escape = raw[++index];
+    const simple = {
+      b: "\b",
+      t: "\t",
+      n: "\n",
+      f: "\f",
+      r: "\r",
+      '"': '"',
+      "\\": "\\",
+    }[escape];
+    if (simple !== undefined) {
+      decoded += simple;
+      continue;
+    }
+    const digits = escape === "u" ? 4 : escape === "U" ? 8 : 0;
+    const code = digits ? raw.slice(index + 1, index + 1 + digits) : "";
+    if (!digits || !new RegExp(`^[0-9a-fA-F]{${digits}}$`).test(code)) {
       return undefined;
     }
+    const value = Number.parseInt(code, 16);
+    if (value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)) return undefined;
+    decoded += String.fromCodePoint(value);
+    index += digits;
   }
-  return match[2] ?? match[3];
+  return decoded;
 }
 
-function providerTableRange(contents, providerId) {
+function tomlDottedKey(raw) {
+  const parts = [];
+  let index = 0;
+  while (index < raw.length) {
+    while (/\s/.test(raw[index] || "")) index += 1;
+    if (index >= raw.length) return undefined;
+    const quote = raw[index] === '"' || raw[index] === "'" ? raw[index++] : undefined;
+    let value = "";
+    if (quote) {
+      let closed = false;
+      while (index < raw.length) {
+        if (raw[index] === quote) {
+          index += 1;
+          closed = true;
+          break;
+        }
+        if (quote === '"' && raw[index] === "\\") {
+          const escapeStart = index;
+          index += 2;
+          if (raw[escapeStart + 1] === "u") index += 4;
+          else if (raw[escapeStart + 1] === "U") index += 8;
+          value += raw.slice(escapeStart, index);
+        } else {
+          value += raw[index++];
+        }
+      }
+      if (!closed) return undefined;
+      if (quote === '"') value = tomlBasicKey(value);
+      if (value === undefined) return undefined;
+    } else {
+      const start = index;
+      while (index < raw.length && raw[index] !== "." && !/\s/.test(raw[index])) {
+        index += 1;
+      }
+      value = raw.slice(start, index);
+      if (!value || !/^[A-Za-z0-9_-]+$/.test(value)) return undefined;
+    }
+    parts.push(value);
+    while (/\s/.test(raw[index] || "")) index += 1;
+    if (index === raw.length) return parts;
+    if (raw[index] !== ".") return undefined;
+    index += 1;
+  }
+  return undefined;
+}
+
+function tableHeaderPath(line) {
+  const match = String(line).match(/^\s*\[\s*([^\[\]]+?)\s*\]\s*(?:#.*)?$/);
+  return match ? tomlDottedKey(match[1]) : undefined;
+}
+
+function providerTableRanges(contents, providerId) {
   const lines = contents.split("\n");
-  const starts = lines
-    .map((line, index) => (providerHeaderValue(line) === providerId ? index : -1))
+  const tables = lines
+    .map((line, index) => (tableHeaderPath(line) ? index : -1))
     .filter((index) => index !== -1);
-  if (starts.length > 1) {
+  const starts = tables.filter((index) => {
+    const header = tableHeaderPath(lines[index]);
+    return header?.[0] === "model_providers" && header?.[1] === providerId;
+  });
+  const direct = starts.filter((index) => tableHeaderPath(lines[index]).length === 2);
+  if (direct.length > 1) {
     throw new Error(`Refusing duplicate model provider tables for ${providerId}.`);
   }
-  if (!starts.length) return undefined;
-  let end = starts[0] + 1;
-  while (
-    end < lines.length &&
-    !/^\s*\[/.test(lines[end]) &&
-    !markerPairs.some(([marker]) => lines[end].trim() === marker)
-  ) {
-    end += 1;
-  }
-  return { lines, start: starts[0], end };
+  return starts.map((start) => {
+    const next = tables.find((index) => index > start);
+    return { lines, start, end: next ?? lines.length };
+  });
 }
 
 function replaceLineRange(contents, range, replacement) {
@@ -496,6 +568,50 @@ function managedSignedProviderBlock(providerId, baseUrl) {
   ].join("\n");
 }
 
+function signedProviderSlot(state, index) {
+  return `${signedProviderSlotPrefix} ${state.ownershipId} ${index}`;
+}
+
+function replaceProviderTreeWithManaged(contents, state) {
+  const lines = contents.split("\n");
+  const ranges = providerTableRanges(contents, state.managedProvider);
+  state.previousProviderSections = ranges.map((range) =>
+    range.lines.slice(range.start, range.end).join("\n"));
+  const replacements = new Map(
+    ranges.map((range, index) => [
+      range.start,
+      {
+        end: range.end,
+        text: [
+          signedProviderSlot(state, index),
+          ...(state.mode === "provider-table" && index === 0
+            ? [managedSignedProviderBlock(state.managedProvider, state.managedBaseUrl)]
+            : []),
+        ].join("\n"),
+      },
+    ]),
+  );
+  const output = [];
+  for (let index = 0; index < lines.length;) {
+    const replacement = replacements.get(index);
+    if (replacement) {
+      output.push(replacement.text);
+      index = replacement.end;
+    } else {
+      output.push(lines[index]);
+      index += 1;
+    }
+  }
+  let next = output.join("\n");
+  if (state.mode === "provider-table" && ranges.length === 0) {
+    next = `${next.trimEnd()}\n\n${signedProviderSlot(state, 0)}\n${managedSignedProviderBlock(
+      state.managedProvider,
+      state.managedBaseUrl,
+    )}\n`;
+  }
+  return next;
+}
+
 function signedManagedRange(contents) {
   const lines = contents.split("\n");
   const starts = lines
@@ -515,17 +631,66 @@ function signedManagedRange(contents) {
 }
 
 function signedProviderBlockIsOwned(contents, state) {
+  if (state.version === 2) {
+    const range = signedManagedRange(contents);
+    if (!range) return false;
+    const actual = range.lines.slice(range.start, range.end).join("\n");
+    return actual === managedSignedProviderBlock(state.managedProvider, state.managedBaseUrl);
+  }
+  if (state.version !== 3) return false;
+  const sections = state.previousProviderSections;
+  const expectedSlots = state.mode === "provider-table" ? Math.max(1, sections.length) : sections.length;
+  const lines = contents.split("\n");
+  const slots = lines.filter((line) => line.startsWith(`${signedProviderSlotPrefix} `));
+  if (
+    slots.length !== expectedSlots ||
+    !Array.from({ length: expectedSlots }, (_, index) => signedProviderSlot(state, index))
+      .every((slot) => slots.filter((line) => line === slot).length === 1)
+  ) {
+    return false;
+  }
+  const providerRanges = providerTableRanges(contents, state.managedProvider);
+  if (state.mode === "root-openai") return providerRanges.length === 0;
   const range = signedManagedRange(contents);
   if (!range) return false;
   const actual = range.lines.slice(range.start, range.end).join("\n");
-  return actual === managedSignedProviderBlock(state.managedProvider, state.managedBaseUrl);
+  const slotIndex = lines.indexOf(signedProviderSlot(state, 0));
+  return (
+    actual === managedSignedProviderBlock(state.managedProvider, state.managedBaseUrl) &&
+    slotIndex + 1 === range.start &&
+    providerRanges.length === 1 &&
+    providerRanges[0].start === range.start + 1
+  );
 }
 
 function restoreSignedProviderTable(contents, state) {
-  if (state.mode !== "provider-table") return contents;
+  if (state.version === 2 && state.mode !== "provider-table") return contents;
   if (!signedProviderBlockIsOwned(contents, state)) {
     throw new Error(
       `Signed routing lost ownership of model_providers.${state.managedProvider}; refusing to replace it.`,
+    );
+  }
+  if (state.version === 3) {
+    let restored = contents;
+    for (let index = state.previousProviderSections.length - 1; index >= 1; index -= 1) {
+      restored = restored.replace(
+        signedProviderSlot(state, index),
+        state.previousProviderSections[index],
+      );
+    }
+    const lines = restored.split("\n");
+    const slotIndex = lines.indexOf(signedProviderSlot(state, 0));
+    if (state.mode === "root-openai") {
+      if (slotIndex !== -1) {
+        lines.splice(slotIndex, 1, state.previousProviderSections[0]);
+      }
+      return lines.join("\n");
+    }
+    const range = signedManagedRange(restored);
+    return replaceLineRange(
+      restored,
+      { lines: range.lines, start: slotIndex, end: range.end },
+      state.previousProviderSections[0] || "",
     );
   }
   const range = signedManagedRange(contents);
@@ -534,6 +699,35 @@ function restoreSignedProviderTable(contents, state) {
     range,
     state.previousProviderTablePresent ? state.previousProviderTable : "",
   );
+}
+
+function managedSignedProviderContents(contents, managedProvider, managedBaseUrl) {
+  const state = {
+    version: 3,
+    mode: managedProvider === "openai" ? "root-openai" : "provider-table",
+    managedProvider,
+    managedBaseUrl,
+    ownershipId: randomBytes(16).toString("hex"),
+    previousProviderSections: [],
+  };
+  return {
+    state,
+    contents: replaceProviderTreeWithManaged(contents, state),
+  };
+}
+
+function signedProviderStateIsOwned(contents, state) {
+  const { rootLines } = splitRoot(contents);
+  const activeProvider = rootValue(rootLines, "model_provider") || "openai";
+  if (activeProvider !== state.managedProvider) return false;
+  if (state.version === 1) return activeProvider === signedProviderId;
+  if (state.mode === "root-openai") {
+    return (
+      isManagedRouterBaseUrl(rootValue(rootLines, "openai_base_url")) &&
+      (state.version !== 3 || signedProviderBlockIsOwned(contents, state))
+    );
+  }
+  return signedProviderBlockIsOwned(contents, state);
 }
 
 function readProviderModeState() {
@@ -595,7 +789,18 @@ function readSignedProviderModeState() {
       typeof parsed.previousProviderTablePresent === "boolean" &&
       (!parsed.previousProviderTablePresent ||
         typeof parsed.previousProviderTable === "string");
-    if (!recognizedV1 && !recognizedV2) throw new Error("invalid state");
+    const recognizedV3 =
+      parsed?.version === 3 &&
+      (parsed.mode === "root-openai" || parsed.mode === "provider-table") &&
+      typeof parsed.managedProvider === "string" &&
+      parsed.managedProvider.length > 0 &&
+      typeof parsed.managedBaseUrl === "string" &&
+      isManagedRouterBaseUrl(parsed.managedBaseUrl) &&
+      typeof parsed.ownershipId === "string" &&
+      /^[0-9a-f]{32}$/.test(parsed.ownershipId) &&
+      Array.isArray(parsed.previousProviderSections) &&
+      parsed.previousProviderSections.every((section) => typeof section === "string");
+    if (!recognizedV1 && !recognizedV2 && !recognizedV3) throw new Error("invalid state");
     return parsed;
   } catch {
     throw new Error(`Invalid signed router provider state at ${SIGNED_PROVIDER_MODE_PATH}.`);
@@ -722,13 +927,9 @@ function snapshot(contents) {
   const catalog = rootValue(rootLines, "model_catalog_json");
   const activeProvider = rootValue(rootLines, "model_provider") || "openai";
   const signedState = readSignedProviderModeState();
-  const signedActive = signedState?.version === 1
-    ? activeProvider === signedProviderId
-    : signedState?.version === 2 &&
-      activeProvider === signedState.managedProvider &&
-      (signedState.mode === "root-openai"
-        ? isManagedRouterBaseUrl(baseUrl)
-        : signedProviderBlockIsOwned(contents, signedState));
+  const signedActive = signedState
+    ? signedProviderStateIsOwned(contents, signedState)
+    : false;
   return {
     mode:
       isManagedRouterBaseUrl(baseUrl) && catalog === MERGED_CATALOG_PATH
@@ -907,7 +1108,32 @@ let clearNativeCatalogSourceAfterWrite = false;
 let activateNativeCatalogSourceAfterWrite = false;
 let pendingSignedProviderModeState;
 if (command === "enable") {
-  next = enabledContents(current);
+  const signedState = readSignedProviderModeState();
+  if (signedState?.version === 1) {
+    throw new Error(
+      "A recognized older signed-routing mode is still active; turn it off before updating the router.",
+    );
+  }
+  if (signedState) {
+    if (!signedProviderStateIsOwned(current, signedState)) {
+      throw new Error(
+        `Signed routing lost ownership while model_provider is ${
+          rootValue(splitRoot(current).rootLines, "model_provider") || "openai"
+        }; refusing to update it.`,
+      );
+    }
+    const restored = restoreSignedProviderTable(current, signedState);
+    const enabled = enabledContents(restored);
+    const refreshed = managedSignedProviderContents(
+      enabled,
+      signedState.managedProvider,
+      configuredRouterBaseUrl(),
+    );
+    next = refreshed.contents;
+    pendingSignedProviderModeState = refreshed.state;
+  } else {
+    next = enabledContents(current);
+  }
   activateNativeCatalogSourceAfterWrite = nativeCatalogNeedsActivation;
 } else if (command === "login-free-enable") {
   if (existsSync(SIGNED_PROVIDER_MODE_PATH)) {
@@ -946,44 +1172,30 @@ if (command === "enable") {
       "A recognized older signed-routing mode is still active; turn it off before enabling the task-preserving mode.",
     );
   } else if (state) {
-    if (
-      currentProvider !== state.managedProvider ||
-      (state.mode === "provider-table" && !signedProviderBlockIsOwned(current, state)) ||
-      (state.mode === "root-openai" &&
-        !isManagedRouterBaseUrl(rootValue(rootLines, "openai_base_url")))
-    ) {
+    if (!signedProviderStateIsOwned(current, state)) {
       throw new Error(
         `Signed routing lost ownership while model_provider is ${currentProvider}; turn it off before enabling it again.`,
       );
     }
-    next = current;
+    if (state.version === 2) {
+      const restored = restoreSignedProviderTable(current, state);
+      const enabled = enabledContents(restored);
+      const upgraded = managedSignedProviderContents(
+        enabled,
+        state.managedProvider,
+        configuredRouterBaseUrl(),
+      );
+      next = upgraded.contents;
+      pendingSignedProviderModeState = upgraded.state;
+    } else {
+      next = current;
+    }
   } else {
     const enabled = enabledContents(current);
     const routerBaseUrl = configuredRouterBaseUrl();
-    const mode = currentProvider === "openai" ? "root-openai" : "provider-table";
-    const providerRange = mode === "provider-table"
-      ? providerTableRange(enabled, currentProvider)
-      : undefined;
-    const previousProviderTable = providerRange
-      ? providerRange.lines.slice(providerRange.start, providerRange.end).join("\n")
-      : undefined;
-    pendingSignedProviderModeState = {
-      version: 2,
-      mode,
-      managedProvider: currentProvider,
-      managedBaseUrl: routerBaseUrl,
-      previousProviderTablePresent: Boolean(providerRange),
-      ...(providerRange ? { previousProviderTable } : {}),
-    };
-    next = mode === "provider-table"
-      ? providerRange
-        ? replaceLineRange(
-            enabled,
-            providerRange,
-            managedSignedProviderBlock(currentProvider, routerBaseUrl),
-          )
-        : `${enabled.trimEnd()}\n\n${managedSignedProviderBlock(currentProvider, routerBaseUrl)}\n`
-      : enabled;
+    const managed = managedSignedProviderContents(enabled, currentProvider, routerBaseUrl);
+    pendingSignedProviderModeState = managed.state;
+    next = managed.contents;
   }
 } else {
   const state = readProviderModeState();
@@ -1055,7 +1267,7 @@ if (command === "enable") {
         "model_provider",
         signedState.previousPresent ? signedState.previousModelProvider : undefined,
       )}\n`;
-    } else if (signedState?.version === 2) {
+    } else if (signedState?.version === 2 || signedState?.version === 3) {
       const restoredRoot = splitRoot(restored).rootLines;
       const restoredProvider = rootValue(restoredRoot, "model_provider") || "openai";
       if (restoredProvider !== signedState.managedProvider) {
@@ -1083,6 +1295,9 @@ if (existsSync(CONFIG_PATH) && !existsSync(BACKUP_PATH)) {
   copyFileSync(CONFIG_PATH, BACKUP_PATH);
 }
 if (existsSync(BACKUP_PATH)) protectPrivateFile(BACKUP_PATH);
+const previousSignedProviderModeState = pendingSignedProviderModeState
+  ? readSignedProviderModeState()
+  : undefined;
 if (pendingProviderModeState) writeProviderModeState(pendingProviderModeState);
 if (pendingSignedProviderModeState) writeSignedProviderModeState(pendingSignedProviderModeState);
 try {
@@ -1090,7 +1305,13 @@ try {
   if (activateNativeCatalogSourceAfterWrite) activateNativeCatalogSource();
 } catch (error) {
   if (pendingProviderModeState) clearProviderModeState();
-  if (pendingSignedProviderModeState) clearSignedProviderModeState();
+  if (pendingSignedProviderModeState) {
+    if (previousSignedProviderModeState) {
+      writeSignedProviderModeState(previousSignedProviderModeState);
+    } else {
+      clearSignedProviderModeState();
+    }
+  }
   if (activateNativeCatalogSourceAfterWrite) {
     try {
       atomicWrite(current);

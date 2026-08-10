@@ -344,9 +344,21 @@ function routedHeaders() {
   };
 }
 
-function nativeTarget(pathname, search) {
+function nativeTarget(pathname, search = "") {
   const withoutV1 = pathname.replace(/^\/v1(?=\/|$)/, "");
   return `${NATIVE_BASE}${withoutV1}${search}`;
+}
+
+// Provider-level query_params are applied by Codex to every request sent to
+// that provider. Signed routing temporarily reuses a user's provider identity,
+// so relaying the caller's arbitrary query string would send API keys or other
+// provider secrets to ChatGPT. Native Responses and image routes need no query
+// string. Web search owns one fixed client hint; preserve only that exact value.
+function nativeRequestSearch(requestUrl) {
+  return NATIVE_SEARCH_PATHS.has(requestUrl.pathname) &&
+    requestUrl.searchParams.get("source") === "codex"
+    ? "?source=codex"
+    : "";
 }
 
 // The safety line for an upstream retry: has the caller seen anything yet?
@@ -1496,7 +1508,7 @@ async function handleResponses(request, response, requestUrl) {
         native.input = normalizeNativeInput(payload.input);
       }
       if (!compactV1) delete native.previous_response_id;
-      target = nativeTarget(requestUrl.pathname, requestUrl.search);
+      target = nativeTarget(requestUrl.pathname);
       headers = nativeHeaders(request);
       routedBody = await compressedNativeBody(
         Buffer.from(JSON.stringify(native), "utf8"),
@@ -1701,7 +1713,7 @@ async function handleNativeRequest(request, response, requestUrl, defaultModel) 
     // retry, so every attempt carries identical bytes under identical headers.
     const imageBody = await compressedNativeBody(body, headers);
     const { response: upstream, retries: upstreamRetries } = await fetchWithRetry(
-      nativeTarget(requestUrl.pathname, requestUrl.search),
+      nativeTarget(requestUrl.pathname, nativeRequestSearch(requestUrl)),
       {
         method: "POST",
         headers,

@@ -552,11 +552,14 @@ test("router preserves native auth and isolates every external route", async () 
         }),
       ),
     );
-    const nativeResponse = await fetch(`${routerBase(routerPort)}/responses`, {
+    const nativeResponse = await fetch(
+      `${routerBase(routerPort)}/responses?api_key=PROVIDER_QUERY_SECRET&source=provider`,
+      {
       method: "POST",
       headers: { ...callerHeaders, "Content-Encoding": "zstd" },
       body: nativePayload,
-    });
+      },
+    );
     assert.equal(nativeResponse.status, 200);
 
     for (const [model, gatewayModel] of [
@@ -583,6 +586,8 @@ test("router preserves native auth and isolates every external route", async () 
     assert.equal(nativeRequests[0].headers.authorization, "Bearer CODEX_CALLER_SECRET");
     assert.equal(nativeRequests[0].headers["chatgpt-account-id"], "account-secret");
     assert.equal(nativeRequests[0].headers["x-private-header"], undefined);
+    assert.equal(nativeRequests[0].url, "/backend-api/codex/responses");
+    assert.doesNotMatch(nativeRequests[0].url, /PROVIDER_QUERY_SECRET/);
     assert.equal(nativeRequests[0].body.previous_response_id, undefined);
     // Native OpenAI traffic owns client_metadata; only routed traffic drops it.
     assert.deepEqual(nativeRequests[0].body.client_metadata, { workspace: "caller-owned" });
@@ -1051,7 +1056,7 @@ test("router sends standalone web search only to the native OpenAI backend", asy
         }),
       ),
     );
-    const search = await fetch(`${routerBase(routerPort)}/alpha/search?source=codex`, {
+    const search = await fetch(`${routerBase(routerPort)}/alpha/search?source=codex&api_key=PROVIDER_QUERY_SECRET`, {
       method: "POST",
       headers: { ...headers, "Content-Encoding": "zstd" },
       body: searchBody,
@@ -1065,6 +1070,7 @@ test("router sends standalone web search only to the native OpenAI backend", asy
 
     assert.equal(nativeRequests.length, 1);
     assert.equal(nativeRequests[0].url, "/backend-api/codex/alpha/search?source=codex");
+    assert.doesNotMatch(nativeRequests[0].url, /PROVIDER_QUERY_SECRET/);
     assert.equal(nativeRequests[0].headers.authorization, "Bearer CODEX_CALLER_SECRET");
     assert.equal(nativeRequests[0].headers["chatgpt-account-id"], "account-secret");
     assert.equal(nativeRequests[0].headers["x-codex-installation-id"], "installation-secret");

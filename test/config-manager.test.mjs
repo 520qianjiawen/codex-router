@@ -804,6 +804,21 @@ model_provider = "custom"
 name = "CC Switch"
 base_url = "https://example.invalid/v1"
 wire_api = "responses"
+
+[model_providers.custom.query_params]
+api_key = "PROVIDER_QUERY_SECRET"
+
+[profiles.work]
+model = "gpt-5.6-terra"
+
+[model_providers.custom.auth]
+token = "PROVIDER_AUTH_SECRET"
+
+[model_providers.other]
+base_url = "https://other.invalid/v1"
+
+[model_providers.custom.http_headers]
+Authorization = "Bearer PROVIDER_HEADER_SECRET"
 `;
   writeFileSync(configPath, original, { mode: 0o600 });
 
@@ -819,6 +834,13 @@ wire_api = "responses"
     assert.match(configured, new RegExp(`base_url = "http://127\\.0\\.0\\.1:46192/_codex-router/${CALLER_KEY}/v1"`));
     assert.match(configured, /requires_openai_auth = true/);
     assert.match(configured, /supports_websockets = false/);
+    assert.doesNotMatch(configured, /PROVIDER_(?:QUERY|AUTH|HEADER)_SECRET/);
+    assert.doesNotMatch(
+      configured,
+      /\[model_providers\.custom\.(?:query_params|auth|http_headers)\]/,
+    );
+    assert.match(configured, /\[model_providers\.other\]/);
+    assert.match(configured, /\[profiles\.work\]/);
     assert.equal(
       privateFileIsProtected(path.join(stateDir, "signed-provider-mode.json")),
       true,
@@ -831,11 +853,195 @@ wire_api = "responses"
     assert.match(restored, /\[model_providers\.custom\]/);
     assert.match(restored, /name = "CC Switch"/);
     assert.match(restored, /base_url = "https:\/\/example\.invalid\/v1"/);
+    assert.match(restored, /api_key = "PROVIDER_QUERY_SECRET"/);
+    assert.match(restored, /token = "PROVIDER_AUTH_SECRET"/);
+    assert.match(restored, /Authorization = "Bearer PROVIDER_HEADER_SECRET"/);
+    assert.ok(
+      restored.indexOf("[model_providers.custom.query_params]") <
+        restored.indexOf("[profiles.work]"),
+    );
+    assert.ok(
+      restored.indexOf("[model_providers.other]") <
+        restored.indexOf("[model_providers.custom.http_headers]"),
+    );
     assert.doesNotMatch(restored, /codex-router-signed-provider-managed/);
   } finally {
     rmSync(codexHome, { recursive: true, force: true });
   }
 });
+
+test("ordinary enable keeps signed routing active without reviving nested provider secrets", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-signed-update-"));
+  const stateDir = path.join(codexHome, "router-state");
+  const configPath = path.join(codexHome, "config.toml");
+  writeFileSync(
+    configPath,
+    `model_provider = "custom"
+
+[model_providers.custom]
+name = "CC Switch"
+base_url = "https://example.invalid/v1"
+
+[model_providers.custom.query_params]
+api_key = "UPDATE_QUERY_SECRET"
+
+[model_providers.custom.http_headers]
+Authorization = "Bearer UPDATE_HEADER_SECRET"
+`,
+    { mode: 0o600 },
+  );
+  try {
+    run("signed-enable", codexHome, stateDir);
+    const updated = run("enable", codexHome, stateDir);
+    assert.equal(updated.signed_routing, true);
+    assert.equal(updated.signed_routing_managed, true);
+    const active = readFileSync(configPath, "utf8");
+    assert.doesNotMatch(active, /UPDATE_(?:QUERY|HEADER)_SECRET/);
+    assert.equal(
+      (active.match(/# BEGIN codex-router-signed-provider-managed/g) || []).length,
+      1,
+    );
+    assert.equal(
+      JSON.parse(readFileSync(path.join(stateDir, "signed-provider-mode.json"), "utf8"))
+        .version,
+      3,
+    );
+
+    run("signed-disable", codexHome, stateDir);
+    const restored = readFileSync(configPath, "utf8");
+    assert.match(restored, /api_key = "UPDATE_QUERY_SECRET"/);
+    assert.match(restored, /Authorization = "Bearer UPDATE_HEADER_SECRET"/);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("ordinary update upgrades v2 signed state and captures subtables it previously left active", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-signed-v2-update-"));
+  const stateDir = path.join(codexHome, "router-state");
+  const configPath = path.join(codexHome, "config.toml");
+  const statePath = path.join(stateDir, "signed-provider-mode.json");
+  writeFileSync(
+    configPath,
+    `model_provider = "custom"
+
+[model_providers.custom]
+name = "CC Switch"
+base_url = "https://example.invalid/v1"
+
+[model_providers.custom.query_params]
+api_key = "LEGACY_V2_QUERY_SECRET"
+`,
+    { mode: 0o600 },
+  );
+  try {
+    run("signed-enable", codexHome, stateDir);
+    const v3 = JSON.parse(readFileSync(statePath, "utf8"));
+    const legacyActive = `${readFileSync(configPath, "utf8")
+      .replace(/^# codex-router-signed-provider-tree-slot.*(?:\n|$)/gm, "")
+      .trimEnd()}\n\n${v3.previousProviderSections[1]}\n`;
+    writeFileSync(configPath, legacyActive, { mode: 0o600 });
+    writeFileSync(
+      statePath,
+      `${JSON.stringify({
+        version: 2,
+        mode: "provider-table",
+        managedProvider: "custom",
+        managedBaseUrl: v3.managedBaseUrl,
+        previousProviderTablePresent: true,
+        previousProviderTable: v3.previousProviderSections[0],
+      }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+
+    const updated = run("enable", codexHome, stateDir);
+    assert.equal(updated.signed_routing, true);
+    assert.doesNotMatch(readFileSync(configPath, "utf8"), /LEGACY_V2_QUERY_SECRET/);
+    const upgraded = JSON.parse(readFileSync(statePath, "utf8"));
+    assert.equal(upgraded.version, 3);
+    assert.ok(
+      upgraded.previousProviderSections.some((section) =>
+        section.includes("LEGACY_V2_QUERY_SECRET")),
+    );
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test(
+  "refresh-catalog restores signed routing instead of leaving the selected provider direct",
+  { skip: process.platform === "win32" },
+  () => {
+    const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-signed-refresh-"));
+    const stateDir = path.join(codexHome, "router-state");
+    const configPath = path.join(codexHome, "config.toml");
+    const codexStub = path.join(codexHome, "codex-stub");
+    writeFileSync(
+      configPath,
+      `model_provider = "custom"
+
+[model_providers.custom]
+name = "CC Switch"
+base_url = "https://example.invalid/v1"
+
+[model_providers.custom.query_params]
+api_key = "REFRESH_QUERY_SECRET"
+`,
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      codexStub,
+      `#!/bin/sh
+case "$1" in
+  --version) echo 'codex-cli 99.0.0' ;;
+  login) exit 0 ;;
+  debug) echo '{"models":[{"slug":"gpt-5.6-sol","display_name":"GPT-5.6-Sol","visibility":"list","priority":10}]}' ;;
+  *) exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    try {
+      run("signed-enable", codexHome, stateDir);
+      writeFileSync(
+        path.join(stateDir, "enabled-providers.json"),
+        `${JSON.stringify({ version: 1, providers: ["deepseek"] })}\n`,
+        { mode: 0o600 },
+      );
+      writeFileSync(path.join(stateDir, "deepseek-api-key.secret"), "test-key\n", {
+        mode: 0o600,
+      });
+      execFileSync(path.join(root, "bin", "refresh-catalog"), [], {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CODEX_BIN: codexStub,
+          CODEX_HOME: codexHome,
+          CODEX_ROUTER_PORT: "46192",
+          CODEX_ROUTER_STATE_DIR: stateDir,
+          MODEL_ROUTER_STATE_DIR: stateDir,
+          MODEL_ROUTER_TARGET: "codex",
+        },
+      });
+      const status = run("status", codexHome, stateDir);
+      assert.equal(status.signed_routing, true);
+      assert.equal(status.model_provider, "custom");
+      const active = readFileSync(configPath, "utf8");
+      assert.doesNotMatch(active, /REFRESH_QUERY_SECRET/);
+      assert.match(active, /codex-router-signed-provider-managed/);
+      const catalog = JSON.parse(
+        readFileSync(path.join(stateDir, "merged-models.json"), "utf8"),
+      );
+      assert.ok(catalog.models.some((model) => model.slug === "gpt-5.6-sol"));
+      assert.ok(
+        catalog.models.some((model) => model.slug === "deepseek/deepseek-v4-flash"),
+      );
+    } finally {
+      rmSync(codexHome, { recursive: true, force: true });
+    }
+  },
+);
 
 test("signed routing restores an originally unset provider", () => {
   const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-signed-unset-"));
