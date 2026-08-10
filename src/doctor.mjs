@@ -10,7 +10,7 @@ import { grokCliPreflight } from "./grok-cli.mjs";
 import { detectLegacyInstallations } from "./legacy-migration.mjs";
 import { PROVIDERS } from "./model-registry.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
-import { kimiOAuthStatus } from "./oauth-status.mjs";
+import { kimiOAuthHealth, kimiOAuthStatus } from "./oauth-status.mjs";
 import {
   readMultiAgentSettings,
   subagentEligibleModels,
@@ -487,11 +487,22 @@ add(
 );
 
 const oauth = kimiOAuthStatus();
+const kimiHealth = kimiOAuthHealth();
+const kimiSelected = selection.providers.includes("kimi-oauth");
+// An expired access token is a normal, recoverable state: the request path
+// refreshes it with the still-valid refresh token before forwarding, so it
+// must not read as a failure here. A revoked tombstone (refresh rejected) is
+// the opposite -- the session genuinely needs `kimi login` again.
+const kimiStatus = kimiHealth.status === "revoked" ? "fail" : oauth.configured ? "ok" : kimiSelected ? "fail" : "warn";
 add(
-  oauth.configured ? "ok" : selection.providers.includes("kimi-oauth") ? "fail" : "warn",
+  kimiStatus,
   "Kimi OAuth",
-  oauth.configured ? "credential present" : `not configured; ${oauth.setup}`,
-  "Run kimi login, then rerun the doctor.",
+  oauth.configured ? kimiHealth.detail : `not configured; ${oauth.setup}`,
+  kimiHealth.status === "revoked"
+    ? kimiHealth.fix
+    : oauth.configured
+      ? kimiHealth.fix
+      : "Run kimi login, then rerun the doctor.",
 );
 const grokOauth = grokOAuthStatus();
 const grokCli = grokCliPreflight();
