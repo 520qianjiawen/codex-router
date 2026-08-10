@@ -103,6 +103,36 @@ export function kimiApiBalanceMetrics(payload, currency = "USD") {
   }];
 }
 
+export function chutesBalanceMetrics(payload) {
+  const account = payload?.data && typeof payload.data === "object" ? payload.data : payload;
+  const value = numberValue(account?.balance);
+  if (!Number.isFinite(value)) return [];
+  return [{
+    kind: "balance",
+    label: "API balance",
+    value,
+    currency: typeof account?.currency === "string" && account.currency
+      ? account.currency.toUpperCase()
+      : "USD",
+    detail: "Chutes credits remaining",
+    available: true,
+  }];
+}
+
+export function chutesSubscriptionMetrics(payload) {
+  if (payload?.subscription !== true) return [];
+  const metric = (label, detail) => quotaMetric(label, {
+    limit: detail?.cap,
+    used: detail?.usage,
+    remaining: detail?.remaining,
+    resetAt: detail?.reset_at,
+  }, "USD");
+  return [
+    metric("4-hour subscription", payload.four_hour),
+    metric("Monthly subscription", payload.monthly),
+  ].filter(Boolean);
+}
+
 
 export function grokCreditsMetrics(payload) {
   const config = payload?.config;
@@ -270,6 +300,42 @@ async function kimiApiAccount(fetchImpl) {
   const metrics = kimiApiBalanceMetrics(payload, currency);
   if (!metrics.length) throw new Error("balance response was incomplete");
   return { status: "available", source: "official-api", metrics };
+}
+
+async function chutesAccount(fetchImpl) {
+  const provider = PROVIDERS.get("chutes");
+  const credential = resolveProviderCredential(provider);
+  if (!credential) return { status: "not-configured", source: "official-api", metrics: [] };
+  const baseURL = (process.env[provider.baseUrlEnv] || provider.baseUrl).replace(/\/+$/, "");
+  if (new URL(baseURL).origin !== "https://llm.chutes.ai") {
+    return localOnly("Chutes account balance is unavailable for a custom endpoint");
+  }
+  const [accountResult, subscriptionResult] = await Promise.allSettled([
+    requestJson("https://api.chutes.ai/users/me", credential.value, {}, fetchImpl),
+    requestJson(
+      "https://api.chutes.ai/users/me/subscription_usage",
+      credential.value,
+      {},
+      fetchImpl,
+    ),
+  ]);
+  const subscriptionMetrics = subscriptionResult.status === "fulfilled"
+    ? chutesSubscriptionMetrics(subscriptionResult.value)
+    : [];
+  const balanceMetrics = accountResult.status === "fulfilled"
+    ? chutesBalanceMetrics(accountResult.value)
+    : [];
+  // Balance is an account fact, not a subscription fallback. Zero and
+  // negative values are especially important because they explain why a
+  // request may be refused after a subscription window is exhausted.
+  const metrics = [...subscriptionMetrics, ...balanceMetrics];
+  if (!metrics.length) throw new Error("Chutes account response did not include usable usage or balance data");
+  return {
+    status: "available",
+    source: "official-api",
+    metrics,
+    dashboardUrl: "https://chutes.ai/app",
+  };
 }
 
 async function kimiOAuthAccount(fetchImpl) {
@@ -486,6 +552,7 @@ async function githubCopilotAccount(fetchImpl) {
 
 async function accountUsageFor(providerId, fetchImpl) {
   try {
+    if (providerId === "chutes") return await chutesAccount(fetchImpl);
     if (providerId === "deepseek") return await deepSeekAccount(fetchImpl);
     if (providerId === "kimi-api") return await kimiApiAccount(fetchImpl);
     if (providerId === "kimi-oauth") return await kimiOAuthAccount(fetchImpl);
