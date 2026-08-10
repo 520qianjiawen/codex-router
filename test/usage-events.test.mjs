@@ -63,3 +63,40 @@ test("reading usage events folds protocol variants into their canonical provider
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+test("an aborted stream persists its marker and reads back", async () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "model-router-usage-"));
+  const previousStateDir = process.env.MODEL_ROUTER_STATE_DIR;
+  process.env.MODEL_ROUTER_STATE_DIR = stateDir;
+  try {
+    const usage = await import(`../src/usage-events.mjs?aborted=1&ts=${Date.now()}`);
+    usage.recordUsageEvent({
+      model: "opencode-go/deepseek-v4-flash",
+      provider: "opencode-go",
+      status: 502,
+      durationMs: 90,
+      streamAborted: true,
+    });
+    const [event] = usage
+      .recentUsageEvents()
+      .filter((candidate) => candidate.status === 502);
+    assert.equal(event.status, 502);
+    assert.equal(event.streamAborted, true);
+    // An ordinary turn never carries the marker, so historical rows keep
+    // their exact shape and old dashboards are unaffected.
+    usage.recordUsageEvent({
+      model: "opencode-go/deepseek-v4-flash",
+      provider: "opencode-go",
+      status: 200,
+      durationMs: 40,
+    });
+    const [ordinary] = usage
+      .recentUsageEvents()
+      .filter((candidate) => candidate.status === 200);
+    assert.equal("streamAborted" in ordinary, false);
+  } finally {
+    if (previousStateDir === undefined) delete process.env.MODEL_ROUTER_STATE_DIR;
+    else process.env.MODEL_ROUTER_STATE_DIR = previousStateDir;
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});

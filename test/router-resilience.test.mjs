@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -25,11 +32,12 @@ async function mockServer(handler) {
 }
 
 function run(env) {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "router-resilience-state-"));
   const child = spawn(process.execPath, [path.join(root, "src", "router.mjs")], {
     cwd: root,
     env: {
       ...process.env,
-      MODEL_ROUTER_STATE_DIR: mkdtempSync(path.join(os.tmpdir(), "router-resilience-state-")),
+      MODEL_ROUTER_STATE_DIR: stateDir,
       CODEX_ROUTER_CALLER_KEY: CALLER_KEY,
       CODEX_ROUTER_INTERNAL_KEY: INTERNAL_KEY,
       KIMI_INTERNAL_KEY: INTERNAL_KEY,
@@ -45,7 +53,29 @@ function run(env) {
     errors += chunk;
   });
   child.testErrors = () => errors;
+  child.stateDir = stateDir;
   return child;
+}
+
+function usageEvents(stateDir) {
+  const file = path.join(stateDir, "usage-events.jsonl");
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+// The router meters after it has already answered the client, so the request
+// can resolve before the event reaches disk. Poll rather than sleep.
+async function waitForUsageEvents(stateDir, count, child) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const events = usageEvents(stateDir);
+    if (events.length >= count) return events;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${count} usage events: ${child.testErrors()}`);
 }
 
 async function waitFor(url, child) {
@@ -172,6 +202,86 @@ test("a gateway that dies mid-stream ends the routed body and logs the cause", a
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     assert.match(router.testErrors(), /\[codex-router\] request failed: \w+: .+/);
+
+    // The turn is truncated, not successful: the meter must record a failure
+    // carrying the abort marker instead of the committed 200 the client
+    // never finished reading.
+    const [event] = await waitForUsageEvents(router.stateDir, 1, router);
+    assert.equal(event.model, "deepseek/deepseek-v4-pro");
+    assert.equal(event.provider, "deepseek");
+    assert.equal(event.status, 502);
+    assert.equal(event.streamAborted, true);
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+  }
+});
+
+// A client that cancels mid-stream is not an upstream failure: the router
+// meters the turn as 0 rather than the committed 200 or a fabricated 5xx.
+test("a client cancel mid-stream meters 0 and never claims an upstream failure", async () => {
+  const gateway = await mockServer((request, response) => {
+    if (request.method === "GET" && request.url === "/health") {
+      const payload = Buffer.from(JSON.stringify({ ok: true }), "utf8");
+      response.writeHead(200, {
+        "Content-Type": "application/json",
+        "Content-Length": String(payload.length),
+      });
+      response.end(payload);
+      return;
+    }
+    // Hold the stream open; the client is the one leaving.
+    response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8" });
+    response.write('event: response.created\ndata: {"type":"response.created"}\n\n');
+  });
+  const routerPort = await openPort();
+  const router = run({
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_OAUTH_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+    CODEX_ROUTER_GATEWAY_HEALTH_URL: `http://127.0.0.1:${gateway.port}/health`,
+  });
+
+  try {
+    await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+
+    // Read with the raw client so the cancel is a real socket hangup, the
+    // same path Codex uses when the user stops a generation.
+    await new Promise((resolve) => {
+      const request = http.request(
+        {
+          host: "127.0.0.1",
+          port: routerPort,
+          path: `${callerBaseUrl(routerPort, CALLER_KEY)}/responses`,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer codex-caller-auth",
+          },
+        },
+        (response) => {
+          response.once("data", () => {
+            request.destroy();
+            resolve();
+          });
+        },
+      );
+      request.once("error", resolve);
+      request.end(
+        JSON.stringify({ model: "deepseek/deepseek-v4-pro", input: "hello", stream: true }),
+      );
+    });
+
+    const [event] = await waitForUsageEvents(router.stateDir, 1, router);
+    assert.equal(event.model, "deepseek/deepseek-v4-pro");
+    assert.equal(event.status, 0);
+    assert.equal("streamAborted" in event, false);
+    // No 502 marker and no failure log: the cancel was never an upstream
+    // error, so it must not push the error state either.
+    assert.doesNotMatch(router.testErrors(), /request failed/);
+    const health = await fetch(`http://127.0.0.1:${routerPort}/health`).then((r) => r.json());
+    assert.equal(health.activity.state, "idle");
   } finally {
     await stopChild(router);
     await closeServer(gateway.server);
