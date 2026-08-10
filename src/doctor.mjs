@@ -31,10 +31,8 @@ import {
 } from "./paths.mjs";
 import { CODEX_APP_TOOLS } from "./codex-app-tools.mjs";
 import {
-  codexSkillsDir,
-  installedSkillsFresh,
-  managedSkillNames,
-  packSkillNames,
+  skillPackStatus,
+  skillRequiredFields,
 } from "./skills-install.mjs";
 import { cliSessionDescriptor } from "./cli-session-credential.mjs";
 import { credentialLabel, credentialStatus } from "./provider-credentials.mjs";
@@ -646,60 +644,64 @@ add(
 // are read-only; the fixes re-run ./bin/install, which refreshes exactly the
 // marker-owned directories.
 {
-  const pack = packSkillNames();
-  const managed = managedSkillNames(CODEX_HOME);
-  const missing = pack.filter((name) => !managed.includes(name));
+  const status = skillPackStatus(CODEX_HOME);
   add(
-    missing.length === 0 ? "ok" : "fail",
+    status.missing.length === 0 ? "ok" : "fail",
     "Codex skill pack",
-    missing.length === 0
-      ? `${managed.length} skill(s) installed`
-      : `missing: ${missing.join(", ")}`,
+    status.missing.length === 0
+      ? `${status.managed.length} verified managed skill(s)`
+      : `missing: ${status.missing.join(", ")}`,
     "./bin/install",
   );
-  const { fresh, stale } = installedSkillsFresh(CODEX_HOME);
   add(
-    fresh ? "ok" : "warn",
+    status.stale.length === 0 ? "ok" : "warn",
     "Codex skill pack freshness",
-    fresh ? "matches the checkout" : `differs from the checkout: ${stale.join(", ")}`,
+    status.stale.length === 0
+      ? "verified skills match the checkout"
+      : `verified skills differ from the checkout: ${status.stale.join(", ")}`,
     "./bin/install (replaces managed skills)",
   );
-  const collisions = pack.filter(
-    (name) =>
-      existsSync(path.join(codexSkillsDir(CODEX_HOME), name)) &&
-      !existsSync(path.join(codexSkillsDir(CODEX_HOME), name, ".codex-router-managed")),
-  );
-  if (collisions.length > 0) {
+  if (status.collisions.length > 0) {
     add(
       "warn",
       "Codex skill pack collisions",
-      `existing skills not managed by codex-router: ${collisions.join(", ")}`,
+      `existing skills not verified as codex-router-owned: ${status.collisions.join(", ")}`,
       "rename or remove the conflicting skills, then run ./bin/install",
     );
   }
-  // The skills hard-code the wire shapes the app validates. When the app
-  // changes a shape and the snapshot is re-captured, this check flags that
-  // the skills and the snapshot disagree so they are co-revised in one commit.
-  const expectedRequired = {
-    create_thread: ["prompt", "target"],
-    read_thread: ["threadId"],
-    send_message_to_thread: ["threadId", "prompt"],
-  };
+  if (!status.ownershipStateValid || status.staleOwnership.length > 0) {
+    add(
+      "warn",
+      "Codex skill pack ownership",
+      !status.ownershipStateValid
+        ? "private ownership state is malformed; no existing skill will be replaced"
+        : `stale ownership records: ${status.staleOwnership.join(", ")}`,
+      "run ./bin/install; unverified existing content will be preserved",
+    );
+  }
+  // The declaration comes from the skill itself, then is compared with the
+  // app snapshot. This makes the check evidence about the shipped skill text
+  // rather than a comparison between two JavaScript literals.
+  const expectedRequired = skillRequiredFields();
   const codexApp = CODEX_APP_TOOLS.find((entry) => entry.name === "codex_app");
   const toolsByName = new Map((codexApp?.tools || []).map((fn) => [fn.name, fn]));
   const drift = [];
-  for (const [name, expected] of Object.entries(expectedRequired)) {
-    const fn = toolsByName.get(name);
-    const have = [...(fn?.inputSchema?.required || [])].sort();
-    if (!fn || JSON.stringify(have) !== JSON.stringify([...expected].sort())) {
-      drift.push(`${name} (snapshot requires [${have.join(", ")}])`);
+  if (!expectedRequired) {
+    drift.push("skill declaration is missing or malformed");
+  } else {
+    for (const [name, expected] of Object.entries(expectedRequired)) {
+      const fn = toolsByName.get(name);
+      const have = [...(fn?.inputSchema?.required || [])].sort();
+      if (!fn || JSON.stringify(have) !== JSON.stringify([...expected].sort())) {
+        drift.push(`${name} (skill declares [${expected.join(", ")}], snapshot requires [${have.join(", ")}])`);
+      }
     }
   }
   add(
     drift.length === 0 ? "ok" : "warn",
     "Codex skill pack schema match",
     drift.length === 0
-      ? "skills match the app toolset snapshot"
+      ? "skill declaration matches the app toolset snapshot"
       : `skill shapes drifted from the snapshot: ${drift.join("; ")}`,
     "co-revise the skill pack together with src/codex-app-tools.mjs",
   );

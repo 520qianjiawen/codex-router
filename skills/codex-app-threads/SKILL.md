@@ -3,6 +3,8 @@ name: codex-app-threads
 description: Create, list, read, message, wait on, fork, rename, archive, and pin Codex threads (sidebar tasks), plus automations and app navigation, using the app-native codex_app tools. Use when the session uses a custom (non-OpenAI) model, for example deepseek-v4-flash or mimo-v2.5, and the user asks to create a thread or a new task or agent, list or read threads, send a message to a thread, wait for a thread, fork or rename a thread, archive or pin a thread, set up an automation or reminder, or open something in the Codex app.
 ---
 
+<!-- codex-router-required-fields: {"create_thread":["prompt","target"],"read_thread":["threadId"],"send_message_to_thread":["threadId","prompt"]} -->
+
 # Codex App Threads
 
 The tools are `codex_app__*` (for example `codex_app__create_thread`). Call
