@@ -157,6 +157,13 @@ test("provider registry exposes configured API and OAuth model families", () => 
     "GH_TOKEN",
     "GITHUB_TOKEN",
   ]);
+  const chutes = PROVIDERS.get("chutes");
+  assert.equal(chutes.baseUrl, "https://llm.chutes.ai/v1");
+  assert.equal(chutes.baseUrlEnv, "CHUTES_API_BASE_URL");
+  assert.deepEqual(chutes.credential.environment, ["CHUTES_API_KEY"]);
+  assert.equal(chutes.credential.file, "chutes-api-key.secret");
+  assert.deepEqual(chutes.credential.keychainServices, ["codex-router-chutes"]);
+  assert.equal(LISTED_MODELS.some(({ provider }) => provider === "chutes"), false);
   const clinepass = PROVIDERS.get("clinepass");
   assert.equal(clinepass.baseUrl, "https://api.cline.bot/api/v1");
   assert.equal(clinepass.baseUrlEnv, "CLINE_API_BASE_URL");

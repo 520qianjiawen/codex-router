@@ -14,7 +14,7 @@ import test from "node:test";
 const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-credentials-"));
 process.env.CODEX_HOME = path.join(testRoot, "codex");
 process.env.CODEX_ROUTER_STATE_DIR = path.join(testRoot, "state");
-for (const name of ["ANTHROPIC_API_KEY", "CLINE_API_KEY", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DEEPSEEK_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY", "XAI_API_KEY", "GROK_API_KEY"]) {
+for (const name of ["ANTHROPIC_API_KEY", "CHUTES_API_KEY", "CLINE_API_KEY", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "DEEPSEEK_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY", "XAI_API_KEY", "GROK_API_KEY"]) {
   delete process.env[name];
 }
 
@@ -77,6 +77,10 @@ test("provider credentials use protected files and remove legacy managed keys", 
     assert.equal(privateFileIsProtected(clinepassPath), true);
     assert.equal(resolveProviderCredential("clinepass")?.value, "TEST_CLINEPASS_FILE_KEY");
 
+    const chutesPath = writeProviderCredential("chutes", "TEST_CHUTES_FILE_KEY");
+    assert.equal(privateFileIsProtected(chutesPath), true);
+    assert.equal(resolveProviderCredential("chutes")?.value, "TEST_CHUTES_FILE_KEY");
+
     const legacyDirectory = path.join(process.env.CODEX_HOME, "kimi-router");
     const legacyPath = path.join(legacyDirectory, "api-key.secret");
     mkdirSync(legacyDirectory, { recursive: true, mode: 0o700 });
@@ -90,11 +94,13 @@ test("provider credentials use protected files and remove legacy managed keys", 
     assert.equal(removeProviderCredential("anthropic-api"), 1);
     assert.equal(removeProviderCredential("github-copilot"), 1);
     assert.equal(removeProviderCredential("clinepass"), 1);
+    assert.equal(removeProviderCredential("chutes"), 1);
     assert.equal(existsSync(deepSeekPath), false);
     assert.equal(existsSync(xaiPath), false);
     assert.equal(existsSync(anthropicPath), false);
     assert.equal(existsSync(copilotPath), false);
     assert.equal(existsSync(clinepassPath), false);
+    assert.equal(existsSync(chutesPath), false);
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }
