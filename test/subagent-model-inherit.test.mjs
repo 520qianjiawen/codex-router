@@ -1,0 +1,114 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  SPAWN_MODEL_TOOLS,
+  injectSessionModelForSpawnCalls,
+} from "../src/namespace-relay.mjs";
+
+const SESSION_MODEL = "opencode-go/deepseek-v4-flash";
+
+function spawnCall(name, namespace, argumentsText) {
+  const item = {
+    type: "function_call",
+    name,
+    call_id: "call_1",
+    arguments: argumentsText,
+  };
+  if (namespace !== undefined) item.namespace = namespace;
+  return item;
+}
+
+test("spawn tools are exactly create_thread and send_message_to_thread", () => {
+  assert.deepEqual([...SPAWN_MODEL_TOOLS].sort(), [
+    "create_thread",
+    "send_message_to_thread",
+  ]);
+});
+
+test("routed session + omitted model injects the session model (flattened form)", () => {
+  const item = spawnCall("codex_app__create_thread", undefined, JSON.stringify({ prompt: "hi", target: { type: "projectless" } }));
+  const next = injectSessionModelForSpawnCalls(item, SESSION_MODEL);
+  assert.notEqual(next, item);
+  assert.deepEqual(JSON.parse(next.arguments), {
+    prompt: "hi",
+    target: { type: "projectless" },
+    model: SESSION_MODEL,
+  });
+});
+
+test("routed session + omitted model injects the session model (namespaced form)", () => {
+  const item = spawnCall(
+    "send_message_to_thread",
+    "codex_app",
+    JSON.stringify({ threadId: "t1", prompt: "continue" }),
+  );
+  const next = injectSessionModelForSpawnCalls(item, SESSION_MODEL);
+  assert.deepEqual(JSON.parse(next.arguments), {
+    threadId: "t1",
+    prompt: "continue",
+    model: SESSION_MODEL,
+  });
+});
+
+test("explicit model always wins and stays untouched", () => {
+  const item = spawnCall(
+    "codex_app__create_thread",
+    undefined,
+    JSON.stringify({ prompt: "hi", model: "gpt-5.6-terra" }),
+  );
+  const next = injectSessionModelForSpawnCalls(item, SESSION_MODEL);
+  assert.equal(next, item);
+  assert.equal(JSON.parse(next.arguments).model, "gpt-5.6-terra");
+
+  const namespaced = spawnCall(
+    "send_message_to_thread",
+    "codex_app",
+    JSON.stringify({ threadId: "t1", prompt: "continue", model: "gpt-5.5" }),
+  );
+  assert.equal(injectSessionModelForSpawnCalls(namespaced, SESSION_MODEL), namespaced);
+});
+
+test("non-routed session + omitted model stays untouched", () => {
+  const item = spawnCall("codex_app__create_thread", undefined, JSON.stringify({ prompt: "hi" }));
+  // No session model available (native session): nothing to inherit.
+  assert.equal(injectSessionModelForSpawnCalls(item, undefined), item);
+  assert.equal(injectSessionModelForSpawnCalls(item, ""), item);
+  // A native-session name (not codex_app) is never a spawn target either.
+  const native = spawnCall("create_thread", undefined, JSON.stringify({ prompt: "hi" }));
+  assert.equal(injectSessionModelForSpawnCalls(native, SESSION_MODEL), native);
+});
+
+test("non-spawn tools are never touched", () => {
+  for (const item of [
+    spawnCall("codex_app__list_threads", undefined, "{}"),
+    spawnCall("codex_app__read_thread", undefined, JSON.stringify({ threadId: "t1" })),
+    spawnCall("collaboration__spawn_agent", undefined, JSON.stringify({ task_name: "x" })),
+    spawnCall("mcp__node_repl__js", undefined, "{}"),
+    // A different namespace with the same tool name is not the app's tool.
+    spawnCall("mcp__other__create_thread", undefined, JSON.stringify({ prompt: "hi" })),
+  ]) {
+    assert.equal(injectSessionModelForSpawnCalls(item, SESSION_MODEL), item, item.name);
+  }
+});
+
+test("malformed and non-call items are left alone", () => {
+  const malformed = spawnCall("codex_app__create_thread", undefined, "{not json");
+  assert.equal(injectSessionModelForSpawnCalls(malformed, SESSION_MODEL), malformed);
+  const incomplete = spawnCall("codex_app__create_thread", undefined, undefined);
+  assert.equal(injectSessionModelForSpawnCalls(incomplete, SESSION_MODEL), incomplete);
+  assert.equal(injectSessionModelForSpawnCalls(undefined, SESSION_MODEL), undefined);
+  const message = { type: "message", role: "user", content: [] };
+  assert.equal(injectSessionModelForSpawnCalls(message, SESSION_MODEL), message);
+  const nonObject = spawnCall("codex_app__create_thread", undefined, '"a string"');
+  assert.equal(injectSessionModelForSpawnCalls(nonObject, SESSION_MODEL), nonObject);
+});
+
+test("injection is idempotent once the model is present", () => {
+  const item = spawnCall(
+    "codex_app__create_thread",
+    undefined,
+    JSON.stringify({ prompt: "hi", model: SESSION_MODEL }),
+  );
+  assert.equal(injectSessionModelForSpawnCalls(item, SESSION_MODEL), item);
+});

@@ -139,6 +139,7 @@ function failingSseUpstream(message) {
 // log it, and must leave the response endable so the chunked body terminates.
 test("an upstream body that fails mid-stream ends the chunked body instead of resetting", async () => {
   let pipeError;
+  let headersCommitted;
   const logged = [];
   const transform = new Transform({
     transform(chunk, _encoding, callback) {
@@ -156,6 +157,9 @@ test("an upstream body that fails mid-stream ends the chunked body instead of re
       );
     } catch (error) {
       pipeError = error;
+      // The router keys its meter off this: an upstream failure after the
+      // head was committed must record an abort, not the committed 200.
+      headersCommitted = response.headersSent;
       // The router's top-level handler: log the cause, then terminate the
       // stream gracefully rather than destroying the socket.
       logged.push(
@@ -173,6 +177,11 @@ test("an upstream body that fails mid-stream ends the chunked body instead of re
 
   assert.equal(pipeError instanceof Error, true, "the upstream failure must surface");
   assert.equal(pipeError.message, "upstream exploded");
+  assert.equal(
+    headersCommitted,
+    true,
+    "the failure surfaced after the 200 head was already committed",
+  );
   // The message is what made this diagnosable at all; the old handler logged a
   // bare string with no error attached.
   assert.deepEqual(logged, ["[codex-router] request failed: Error: upstream exploded"]);
