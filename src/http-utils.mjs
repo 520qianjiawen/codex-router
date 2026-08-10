@@ -70,7 +70,7 @@ function isEventStream(response) {
     .includes("text/event-stream");
 }
 
-function finishResponse(response) {
+export async function finishResponse(response) {
   return new Promise((resolve) => {
     if (response.writableFinished || response.destroyed) {
       resolve();
@@ -128,16 +128,27 @@ export function endStreamedResponse(response) {
   response.end();
 }
 
-export async function pipeResponse(upstream, response, denylist, transform) {
+export async function pipeResponse(
+  upstream,
+  response,
+  denylist,
+  transform,
+  { leaveOpen = false, omitHead = false } = {},
+) {
   const transforms = transform === undefined
     ? []
     : Array.isArray(transform)
       ? transform
       : [transform];
-  response.statusCode = upstream.status;
-  copyResponseHeaders(upstream, response, denylist);
+  // `omitHead` is for relaying a second upstream into an already-started
+  // response (the empty-completion retry): the status and headers were sent
+  // with the first attempt, and `setHeader` throws once they are flushed.
+  if (!omitHead) {
+    response.statusCode = upstream.status;
+    copyResponseHeaders(upstream, response, denylist);
+  }
   if (!upstream.body) {
-    response.end();
+    if (!leaveOpen) response.end();
     return;
   }
   const source = Readable.fromWeb(upstream.body);
@@ -156,7 +167,10 @@ export async function pipeResponse(upstream, response, denylist, transform) {
     if (response.destroyed && !response.writableFinished) return;
     throw error;
   }
-  await finishResponse(response);
+  // `leaveOpen` lets the caller keep the response writable after the upstream
+  // stream ends so an empty completion can be retried against the same
+  // response; the caller is responsible for ending it (see finishResponse).
+  if (!leaveOpen) await finishResponse(response);
 }
 
 export function requireInternalAuth(request, response, secret) {

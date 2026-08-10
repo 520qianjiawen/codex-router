@@ -16,12 +16,14 @@ import {
 } from "./caller-auth.mjs";
 import {
   endStreamedResponse,
+  finishResponse,
   HOP_BY_HOP_HEADERS,
   httpErrorStatus,
   pipeResponse,
   readRequestBody,
   writeJson,
 } from "./http-utils.mjs";
+import { EmptyCompletionGuard } from "./empty-completion-guard.mjs";
 import {
   MERGED_CATALOG_PATH,
   NATIVE_CATALOG_PATH,
@@ -1594,15 +1596,81 @@ async function handleResponses(request, response, requestUrl) {
         new NamespaceToolCallTransform(flattenedNamespaces, upstreamContentType, route.slug),
       );
     }
-    await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, transforms);
-    const usage = usageTransform?.tokenUsage();
-    const estimatedInputTokens = usageTransform?.substitutedInputTokens();
+    // Routed turns get the empty-completion guard: a 200 that completes with
+    // no output text and no tool call is a failure the client cannot see (it
+    // silently records the turn as done). The guard holds the terminal events
+    // until it knows the turn produced something, so an empty one can be
+    // retried against the same request body without the client ever seeing a
+    // completed-but-empty response.
+    const emptyCompletionGuard = route
+      ? new EmptyCompletionGuard(upstreamContentType, { retried: false })
+      : undefined;
+    if (emptyCompletionGuard) transforms.push(emptyCompletionGuard);
+    const relayOpen = Boolean(emptyCompletionGuard);
+    await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, transforms, {
+      leaveOpen: relayOpen,
+    });
+    let usage = usageTransform?.tokenUsage();
+    let estimatedInputTokens = usageTransform?.substitutedInputTokens();
     // The `close` listener above sets `clientGone` when the client's socket
     // goes away, but `pipeResponse` can resolve before that event fires: the
     // response socket is already destroyed at that point. Read the state
     // directly as well so a cancel that races the close event still meters 0.
     const clientWalkedAway =
       clientGone || (response.destroyed && !response.writableFinished);
+    let finalStatus = clientWalkedAway ? 0 : upstream.status;
+    let emptyCompletion = emptyCompletionGuard?.isEmpty() === true && !clientWalkedAway;
+    let emptyCompletionRetried = false;
+    if (emptyCompletion) {
+      // The upstream answered 200 with nothing. Retry the identical request
+      // once: same bytes, same headers, same signal. The first attempt's
+      // terminal events were suppressed by the guard, so the client has not
+      // seen a completed turn yet; the retry's stream continues the one
+      // response it is already reading.
+      const { response: upstream2, retries: retries2 } = await fetchWithRetry(
+        target,
+        {
+          method: "POST",
+          headers,
+          body: routedBody,
+          signal: controller.signal,
+        },
+        {
+          retries: 0,
+          canRetry: () => nothingRelayed(response),
+          onRetry: (event) => logUpstreamRetry(event, requestedModel, requestUrl.pathname),
+        },
+      );
+      upstreamRetries += retries2;
+      const usage2 = new ResponseUsageTransform(upstreamContentType, {
+        estimatedInputTokens:
+          ZERO_INPUT_ESTIMATE && route
+            ? estimateInputTokens(routedBody, { contextWindow: route.contextWindow })
+            : undefined,
+      });
+      const guard2 = new EmptyCompletionGuard(upstreamContentType, { retried: true });
+      await pipeResponse(upstream2, response, HOP_BY_HOP_HEADERS, [usage2, guard2], {
+        leaveOpen: true,
+        // The 200 head and headers went out with the first attempt; the
+        // retry's stream continues that same response.
+        omitHead: true,
+      });
+      emptyCompletionRetried = true;
+      if (guard2.isEmpty()) {
+        // The retry was empty too; the guard wrote an explicit error event to
+        // the stream, so the client sees a stated failure instead of a second
+        // silent success.
+        finalStatus = 502;
+      } else {
+        finalStatus = upstream2.status;
+        emptyCompletion = false;
+      }
+      usage = usage2.tokenUsage() ?? usage;
+      estimatedInputTokens = usage2.substitutedInputTokens() ?? estimatedInputTokens;
+    }
+    // The empty-completion retry keeps the response open across both attempts;
+    // end it once, after the retry decision.
+    if (relayOpen) await finishResponse(response);
     // `retries` separates "it never failed" from "it failed and the router
     // absorbed it", both of which otherwise record a plain 200;
     // `estimatedInputTokens` separates a count the provider sent from one the
@@ -1615,19 +1683,23 @@ async function handleResponses(request, response, requestUrl) {
     recordUsageEvent({
       model: route?.slug || requestedModel,
       provider: route ? canonicalProviderId(route.provider) : "openai",
-      status: clientWalkedAway ? 0 : upstream.status,
+      status: finalStatus,
       durationMs: Date.now() - startedAt,
       retries: upstreamRetries,
       ...usage,
       estimatedInputTokens,
+      ...(emptyCompletion ? { emptyCompletion: true } : {}),
+      ...(emptyCompletionRetried ? { emptyCompletionRetried: true } : {}),
     });
     if (!QUIET) {
       // The substitution is named in the log line as well as the usage event:
       // a router that quietly invents token counts is its own trap.
       console.error(
-        `[codex-router] model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${clientWalkedAway ? 0 : upstream.status}${
+        `[codex-router] model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${finalStatus}${
           upstreamRetries ? ` retries=${upstreamRetries}` : ""
-        }${estimatedInputTokens ? ` estimated-input-tokens=${estimatedInputTokens}` : ""}`,
+        }${estimatedInputTokens ? ` estimated-input-tokens=${estimatedInputTokens}` : ""}${
+          emptyCompletionRetried ? " empty-completion-retried=true" : ""
+        }${emptyCompletion ? " empty-completion=true" : ""}`,
       );
     }
   } catch (error) {
