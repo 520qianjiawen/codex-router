@@ -1568,3 +1568,50 @@ test("a cached native transcript is not replayed for a different account", () =>
   assert.match(body, /engine\.native \? nativeAccountKey\(/);
   assert.match(body, /const key = .*\$\{account\}/);
 });
+
+// Goal criterion 3: under the test configuration the vision engine resolves to
+// mimo v2.5 (the operator's pinned engine), and an image part in a routed
+// request is replaced by that engine's caption. Only the engine's outbound
+// HTTP call is stubbed -- the shipped resolver and substitution path are the
+// units under test.
+const MIMO_VISION = {
+  slug: "opencode-go/mimo-v2.5",
+  displayName: "MiMo-V2.5 (opencode Go)",
+  gatewayModel: "opencode-go-mimo-v2-5",
+  inputModalities: ["text", "image"],
+  priority: 38,
+};
+
+test("the pinned vision engine resolves to mimo v2.5 under the test configuration", () => {
+  const settings = { enabled: true, engine: "opencode-go/mimo-v2.5" };
+  const engine = resolveVisionEngine(() => [MIMO_VISION, FLASH_VISION, TEXT_ONLY], settings);
+  assert.equal(engine?.slug, "opencode-go/mimo-v2.5");
+  assert.equal(engine?.gatewayModel, "opencode-go-mimo-v2-5");
+});
+
+test("substituteImages replaces an image part with the engine's caption", async () => {
+  const input = [
+    { type: "message", role: "user", content: [
+      { type: "input_text", text: "what is in this screenshot?" },
+      { type: "input_image", image_url: "data:image/png;base64,QUJD" },
+    ] },
+  ];
+  let described = 0;
+  const describe = async () => {
+    described += 1;
+    return { text: "## Summary\nA terminal window.", engineName: "opencode-go/mimo-v2.5" };
+  };
+  const result = await substituteImages(input, describe);
+  assert.equal(described, 1, "the engine is called for the image");
+  assert.equal(result.images, 1);
+  assert.equal(result.described, 1);
+  const content = result.input[0].content;
+  assert.ok(
+    content.some((part) => part?.type === "input_text" && /A terminal window/.test(part.text || "")),
+    "the caption text lands in the turn",
+  );
+  assert.ok(
+    content.every((part) => part?.type !== "input_image"),
+    "the image part is gone after substitution",
+  );
+});
