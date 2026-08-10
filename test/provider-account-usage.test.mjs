@@ -81,6 +81,12 @@ test("normalizes the Chutes API balance", () => {
   }]);
 });
 
+test("keeps finite zero and negative Chutes balances", () => {
+  assert.equal(chutesBalanceMetrics({ balance: 0 })[0].value, 0);
+  assert.equal(chutesBalanceMetrics({ balance: "-2.75" })[0].value, -2.75);
+  assert.deepEqual(chutesBalanceMetrics({ balance: "not-a-number" }), []);
+});
+
 test("normalizes Chutes subscription windows", () => {
   assert.deepEqual(chutesSubscriptionMetrics({
     subscription: true,
@@ -120,6 +126,22 @@ test("normalizes Chutes subscription windows", () => {
       resetAt: 1788912000,
     },
   ]);
+});
+
+test("normalizes a custom Chutes subscription without inventing a monthly cap", () => {
+  const metrics = chutesSubscriptionMetrics({
+    subscription: true,
+    custom: true,
+    four_hour: { usage: 3, cap: 12, remaining: 9 },
+    monthly: { uncapped: true },
+  });
+  assert.equal(metrics.length, 1);
+  assert.equal(metrics[0].label, "4-hour subscription");
+  assert.equal(metrics[0].remainingPercent, 75);
+});
+
+test("does not invent Chutes subscription quotas for an unsubscribed account", () => {
+  assert.deepEqual(chutesSubscriptionMetrics({ subscription: false }), []);
 });
 
 test("normalizes Kimi weekly and five-hour quota windows", () => {
@@ -252,6 +274,130 @@ test("Chutes usage reads the official account balance with Bearer auth", async (
   } finally {
     if (saved === undefined) delete process.env.CHUTES_API_KEY;
     else process.env.CHUTES_API_KEY = saved;
+  }
+});
+
+test("Chutes usage retains zero and negative balances beside subscription quotas", async () => {
+  const saved = process.env.CHUTES_API_KEY;
+  process.env.CHUTES_API_KEY = "TEST_CHUTES_BALANCE_KEY";
+  try {
+    for (const balance of [0, -4.25]) {
+      const snapshot = await providerAccountUsageSnapshot({
+        providerIds: ["chutes"],
+        fetchImpl: async (url) => new Response(JSON.stringify(
+          String(url).endsWith("/subscription_usage")
+            ? {
+                subscription: true,
+                four_hour: { usage: 1, cap: 10, remaining: 9 },
+                monthly: { usage: 2, cap: 100, remaining: 98 },
+              }
+            : { balance },
+        )),
+      });
+      assert.equal(snapshot.chutes.status, "available");
+      assert.equal(snapshot.chutes.metrics.at(-1).kind, "balance");
+      assert.equal(snapshot.chutes.metrics.at(-1).value, balance);
+    }
+  } finally {
+    if (saved === undefined) delete process.env.CHUTES_API_KEY;
+    else process.env.CHUTES_API_KEY = saved;
+  }
+});
+
+test("Chutes usage keeps whichever official account surface succeeds", async () => {
+  const saved = process.env.CHUTES_API_KEY;
+  process.env.CHUTES_API_KEY = "TEST_CHUTES_PARTIAL_KEY";
+  try {
+    const subscriptionOnly = await providerAccountUsageSnapshot({
+      providerIds: ["chutes"],
+      fetchImpl: async (url) => {
+        if (!String(url).endsWith("/subscription_usage")) {
+          return new Response("account failed", { status: 503 });
+        }
+        return new Response(JSON.stringify({
+          subscription: true,
+          four_hour: { usage: 1, cap: 5, remaining: 4 },
+          monthly: { uncapped: true },
+        }));
+      },
+    });
+    assert.equal(subscriptionOnly.chutes.status, "available");
+    assert.deepEqual(subscriptionOnly.chutes.metrics.map((metric) => metric.kind), ["quota"]);
+
+    const balanceOnly = await providerAccountUsageSnapshot({
+      providerIds: ["chutes"],
+      fetchImpl: async (url) => {
+        if (String(url).endsWith("/subscription_usage")) {
+          return new Response("subscription failed", { status: 503 });
+        }
+        return new Response(JSON.stringify({ balance: 7.5 }));
+      },
+    });
+    assert.equal(balanceOnly.chutes.status, "available");
+    assert.deepEqual(balanceOnly.chutes.metrics.map((metric) => metric.kind), ["balance"]);
+  } finally {
+    if (saved === undefined) delete process.env.CHUTES_API_KEY;
+    else process.env.CHUTES_API_KEY = saved;
+  }
+});
+
+test("Chutes usage reports an unsubscribed account balance", async () => {
+  const saved = process.env.CHUTES_API_KEY;
+  process.env.CHUTES_API_KEY = "TEST_CHUTES_UNSUBSCRIBED_KEY";
+  try {
+    const snapshot = await providerAccountUsageSnapshot({
+      providerIds: ["chutes"],
+      fetchImpl: async (url) => new Response(JSON.stringify(
+        String(url).endsWith("/subscription_usage")
+          ? { subscription: false }
+          : { balance: 0 },
+      )),
+    });
+    assert.equal(snapshot.chutes.status, "available");
+    assert.deepEqual(snapshot.chutes.metrics.map((metric) => metric.kind), ["balance"]);
+    assert.equal(snapshot.chutes.metrics[0].value, 0);
+  } finally {
+    if (saved === undefined) delete process.env.CHUTES_API_KEY;
+    else process.env.CHUTES_API_KEY = saved;
+  }
+});
+
+test("Chutes usage degrades when both official account surfaces fail", async () => {
+  const saved = process.env.CHUTES_API_KEY;
+  process.env.CHUTES_API_KEY = "TEST_CHUTES_FAILURE_KEY";
+  try {
+    const snapshot = await providerAccountUsageSnapshot({
+      providerIds: ["chutes"],
+      fetchImpl: async () => new Response("unavailable", { status: 503 }),
+    });
+    assert.equal(snapshot.chutes.status, "unavailable");
+    assert.deepEqual(snapshot.chutes.metrics, []);
+    assert.match(snapshot.chutes.message, /usable usage or balance data/);
+  } finally {
+    if (saved === undefined) delete process.env.CHUTES_API_KEY;
+    else process.env.CHUTES_API_KEY = saved;
+  }
+});
+
+test("Chutes usage avoids official account APIs for a custom endpoint", async () => {
+  const savedKey = process.env.CHUTES_API_KEY;
+  const savedBase = process.env.CHUTES_API_BASE_URL;
+  process.env.CHUTES_API_KEY = "TEST_CHUTES_CUSTOM_KEY";
+  process.env.CHUTES_API_BASE_URL = "https://example.test/v1";
+  try {
+    const snapshot = await providerAccountUsageSnapshot({
+      providerIds: ["chutes"],
+      fetchImpl: async () => {
+        throw new Error("custom Chutes endpoints must not trigger account API calls");
+      },
+    });
+    assert.equal(snapshot.chutes.status, "local-only");
+    assert.match(snapshot.chutes.message, /custom endpoint/);
+  } finally {
+    if (savedKey === undefined) delete process.env.CHUTES_API_KEY;
+    else process.env.CHUTES_API_KEY = savedKey;
+    if (savedBase === undefined) delete process.env.CHUTES_API_BASE_URL;
+    else process.env.CHUTES_API_BASE_URL = savedBase;
   }
 });
 

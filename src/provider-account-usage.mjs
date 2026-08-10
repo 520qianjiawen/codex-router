@@ -325,10 +325,10 @@ async function chutesAccount(fetchImpl) {
   const balanceMetrics = accountResult.status === "fulfilled"
     ? chutesBalanceMetrics(accountResult.value)
     : [];
-  const metrics = [
-    ...subscriptionMetrics,
-    ...balanceMetrics.filter((metric) => metric.value > 0 || subscriptionMetrics.length === 0),
-  ];
+  // Balance is an account fact, not a subscription fallback. Zero and
+  // negative values are especially important because they explain why a
+  // request may be refused after a subscription window is exhausted.
+  const metrics = [...subscriptionMetrics, ...balanceMetrics];
   if (!metrics.length) throw new Error("Chutes account response did not include usable usage or balance data");
   return {
     status: "available",
