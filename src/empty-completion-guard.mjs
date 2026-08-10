@@ -117,6 +117,7 @@ export class EmptyCompletionGuard extends Transform {
   #released = false;
   #undeclared;
   #maxPreludeBytes;
+  #maxPreludeMs;
   #timer;
 
   constructor(
@@ -131,10 +132,11 @@ export class EmptyCompletionGuard extends Transform {
       Number.isFinite(maxPreludeBytes) && maxPreludeBytes >= 0
         ? Math.floor(maxPreludeBytes)
         : MAX_PRECONTENT_BYTES;
-    if (this.#eventStream && Number.isFinite(maxPreludeMs) && maxPreludeMs >= 0) {
-      this.#timer = setTimeout(() => this.#release(), maxPreludeMs);
-      this.#timer.unref?.();
-    }
+    this.#maxPreludeMs =
+      Number.isFinite(maxPreludeMs) && maxPreludeMs >= 0
+        ? maxPreludeMs
+        : MAX_PRECONTENT_MS;
+    if (this.#eventStream) this.#startTimer();
   }
 
   isEmpty() {
@@ -151,6 +153,7 @@ export class EmptyCompletionGuard extends Transform {
       this.#eventStream = SSE_FIELD_LINE.test(
         chunk.subarray(0, SSE_SNIFF_BYTES).toString("utf8"),
       );
+      if (this.#eventStream) this.#startTimer();
     }
     if (!this.#eventStream) {
       // Non-streaming bodies pass through untouched; only streamed turns
@@ -247,6 +250,12 @@ export class EmptyCompletionGuard extends Transform {
       clearTimeout(this.#timer);
       this.#timer = undefined;
     }
+  }
+
+  #startTimer() {
+    if (this.#timer || this.#released) return;
+    this.#timer = setTimeout(() => this.#release(), this.#maxPreludeMs);
+    this.#timer.unref?.();
   }
 
   #fields(block) {
