@@ -68,6 +68,24 @@ export function normalizeTokenUsage(value) {
   };
 }
 
+// Add up the usage of two attempts at the same turn. A turn the router had to
+// send twice cost twice; the meter has to say so, or the retry marker names a
+// turn whose reported spend still looks like one attempt.
+export function mergeTokenUsage(first, second) {
+  if (!first) return second;
+  if (!second) return first;
+  const cachedInputTokens =
+    first.cachedInputTokens === undefined && second.cachedInputTokens === undefined
+      ? undefined
+      : (first.cachedInputTokens || 0) + (second.cachedInputTokens || 0);
+  return {
+    inputTokens: (first.inputTokens || 0) + (second.inputTokens || 0),
+    outputTokens: (first.outputTokens || 0) + (second.outputTokens || 0),
+    totalTokens: (first.totalTokens || 0) + (second.totalTokens || 0),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+  };
+}
+
 export function tokenUsageFromPayload(payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
   for (const candidate of [payload.usage, payload.response?.usage]) {

@@ -44,9 +44,9 @@ export function recordUsageEvent({
   // completion instead of letting the client record a silent success.
   emptyCompletion,
   // True when the empty completion above was retried once against the same
-  // request body. The retry's own outcome is what `status` and the token
-  // counts describe; this marker is what says the turn needed a second
-  // attempt.
+  // request body. `status` describes the retry's own outcome; the token counts
+  // cover both attempts, because both were sent and both were billed. This
+  // marker is what says the reported spend belongs to two attempts at one turn.
   emptyCompletionRetried,
   // Present only when the router replaced an upstream `input_tokens: 0` with
   // its own estimate on the way to Codex (#95). The reported counts above stay

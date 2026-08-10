@@ -219,6 +219,37 @@ Report zero-token responses to the provider; only they can fix the source. To
 see the provider's own numbers in Codex again, set
 `CODEX_ROUTER_ZERO_INPUT_ESTIMATE=0` in the service environment.
 
+## The agent stops mid-task with no error
+
+A routed turn that answers 200 with no output text and no tool call is invisible
+to Codex: it has no code path for "the model said nothing", so it records the
+empty response as a completed turn and the agent appears to stop for no reason.
+Reasoning-only turns count — a model that thinks and then says nothing produces
+exactly this.
+
+The router holds the terminal events (`response.completed`, `response.done`,
+`[DONE]`) until it knows the turn produced something. When nothing arrives it
+suppresses them and retries the identical request once, so the client never sees
+a completed-but-empty response. A retry that produces content streams normally.
+A retry that is empty again ends the stream with an explicit `empty_completion`
+error event, and one that fails upstream ends it with
+`empty_completion_retry_failed` — a stated failure either way, never a silent
+success.
+
+Retried turns are marked in the state directory's `usage-events.jsonl`:
+`emptyCompletionRetried: true` on every retried turn, plus `emptyCompletion:
+true` when the turn produced nothing in the end. The token counts on those rows
+cover both attempts, because both were sent and both were billed. Count them:
+
+```sh
+grep -c emptyCompletionRetried "$CODEX_HOME/codex-router/usage-events.jsonl"
+```
+
+A steady stream of them means the provider is returning empty completions;
+report it to them. The retry re-sends the whole prompt, so to pay once and see
+the raw upstream behaviour instead, set
+`CODEX_ROUTER_EMPTY_COMPLETION_RETRY=0` in the service environment.
+
 ## Native GPT models stopped working
 
 Temporarily return Codex to its native base URL:

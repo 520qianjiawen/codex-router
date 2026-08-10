@@ -22,6 +22,7 @@ import {
   pipeResponse,
   readRequestBody,
   writeJson,
+  writeStreamErrorEvent,
 } from "./http-utils.mjs";
 import { EmptyCompletionGuard } from "./empty-completion-guard.mjs";
 import {
@@ -41,6 +42,7 @@ import {
 } from "./provider-selection.mjs";
 import {
   estimateInputTokens,
+  mergeTokenUsage,
   ResponseUsageTransform,
   tokenUsageFromPayload,
 } from "./response-usage.mjs";
@@ -107,6 +109,13 @@ const QUIET =
 // operator who would rather see the provider's own numbers can turn it off
 // without downgrading the router.
 const ZERO_INPUT_ESTIMATE = process.env.CODEX_ROUTER_ZERO_INPUT_ESTIMATE !== "0";
+// Kill switch for the empty-completion guard and its single retry. It is on
+// because an empty completion is otherwise invisible -- the client records the
+// turn as a silent success -- but the retry re-sends the whole prompt, so an
+// operator who would rather pay once and see the raw upstream behaviour can
+// turn it off without downgrading the router.
+const EMPTY_COMPLETION_RETRY =
+  process.env.CODEX_ROUTER_EMPTY_COMPLETION_RETRY !== "0";
 const ERROR_STATUS_DURATION_MS = 8_000;
 const configuredDecodedBodyBytes = Number(
   process.env.MODEL_ROUTER_MAX_DECODED_BODY_BYTES ||
@@ -369,6 +378,16 @@ function nativeTarget(pathname, search) {
 // being true.
 function nothingRelayed(response) {
   return !response.headersSent && !response.writableEnded && !response.destroyed;
+}
+
+// The empty-completion retry can produce a substituted prompt count on either
+// attempt, and both prompts were sent. Add them so the substitution total
+// matches the two-attempt turn the rest of the usage event describes; absent
+// on both sides it stays absent, so an ordinary turn keeps its exact shape.
+function sumEstimatedInputTokens(first, second) {
+  if (first === undefined) return second;
+  if (second === undefined) return first;
+  return first + second;
 }
 
 // Never gated on QUIET. A production LaunchAgent hard-sets `CODEX_ROUTER_QUIET=1`,
@@ -1608,9 +1627,10 @@ async function handleResponses(request, response, requestUrl) {
     // until it knows the turn produced something, so an empty one can be
     // retried against the same request body without the client ever seeing a
     // completed-but-empty response.
-    const emptyCompletionGuard = route
-      ? new EmptyCompletionGuard(upstreamContentType, { retried: false })
-      : undefined;
+    const emptyCompletionGuard =
+      route && EMPTY_COMPLETION_RETRY
+        ? new EmptyCompletionGuard(upstreamContentType, { retried: false })
+        : undefined;
     if (emptyCompletionGuard) transforms.push(emptyCompletionGuard);
     const relayOpen = Boolean(emptyCompletionGuard);
     await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, transforms, {
@@ -1648,31 +1668,64 @@ async function handleResponses(request, response, requestUrl) {
         },
       );
       upstreamRetries += retries2;
-      const usage2 = new ResponseUsageTransform(upstreamContentType, {
-        estimatedInputTokens:
-          ZERO_INPUT_ESTIMATE && route
-            ? estimateInputTokens(routedBody, { contextWindow: route.contextWindow })
-            : undefined,
-      });
-      const guard2 = new EmptyCompletionGuard(upstreamContentType, { retried: true });
-      await pipeResponse(upstream2, response, HOP_BY_HOP_HEADERS, [usage2, guard2], {
-        leaveOpen: true,
-        // The 200 head and headers went out with the first attempt; the
-        // retry's stream continues that same response.
-        omitHead: true,
-      });
       emptyCompletionRetried = true;
-      if (guard2.isEmpty()) {
-        // The retry was empty too; the guard wrote an explicit error event to
-        // the stream, so the client sees a stated failure instead of a second
-        // silent success.
-        finalStatus = 502;
-      } else {
+      if (!upstream2.ok) {
+        // The retry failed outright. Its head cannot reach the client -- the
+        // 200 went out with the first attempt -- and relaying the error body
+        // into the SSE stream would just append unparseable bytes, leaving the
+        // same silent stop this guard exists to remove. State the failure in
+        // the stream's own error framing and drain the body so the socket is
+        // not leaked.
+        await upstream2.text().catch(() => {});
+        writeStreamErrorEvent(response, {
+          code: "empty_completion_retry_failed",
+          message:
+            "The model returned an empty completion and the router's retry failed upstream.",
+        });
         finalStatus = upstream2.status;
-        emptyCompletion = false;
+      } else {
+        // The retry's own content type, not the first attempt's: they are
+        // normally identical, and when they are not, the transforms have to
+        // parse what this attempt is actually sending.
+        const retryContentType =
+          upstream2.headers.get("content-type") || upstreamContentType;
+        const usage2 = new ResponseUsageTransform(retryContentType, {
+          estimatedInputTokens:
+            ZERO_INPUT_ESTIMATE && route
+              ? estimateInputTokens(routedBody, { contextWindow: route.contextWindow })
+              : undefined,
+        });
+        const guard2 = new EmptyCompletionGuard(retryContentType, {
+          retried: true,
+          // The first attempt already opened the turn for the client, so the
+          // retry must not send a second `response.created`: one response, one
+          // prologue, whatever happened between the two attempts.
+          suppressPrologue: emptyCompletionGuard.sawPrologue(),
+        });
+        await pipeResponse(upstream2, response, HOP_BY_HOP_HEADERS, [usage2, guard2], {
+          leaveOpen: true,
+          // The 200 head and headers went out with the first attempt; the
+          // retry's stream continues that same response.
+          omitHead: true,
+        });
+        if (guard2.isEmpty()) {
+          // The retry was empty too; the guard wrote an explicit error event to
+          // the stream, so the client sees a stated failure instead of a second
+          // silent success.
+          finalStatus = 502;
+        } else {
+          finalStatus = upstream2.status;
+          emptyCompletion = false;
+        }
+        // Both attempts were billed, so the meter reports both. Reporting only
+        // the retry would understate a retried turn by an entire prompt, which
+        // is the one number an operator watching this marker is looking for.
+        usage = mergeTokenUsage(usage, usage2.tokenUsage());
+        estimatedInputTokens = sumEstimatedInputTokens(
+          estimatedInputTokens,
+          usage2.substitutedInputTokens(),
+        );
       }
-      usage = usage2.tokenUsage() ?? usage;
-      estimatedInputTokens = usage2.substitutedInputTokens() ?? estimatedInputTokens;
     }
     // The empty-completion retry keeps the response open across both attempts;
     // end it once, after the retry decision.

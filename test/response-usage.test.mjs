@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   estimateInputTokens,
+  mergeTokenUsage,
   normalizeTokenUsage,
   ResponseUsageTransform,
   substituteZeroInputUsage,
@@ -57,6 +58,31 @@ test("captures provider-reported prefix-cache hits when they exist", () => {
     normalizeTokenUsage({ input_tokens: 3, output_tokens: 1 }),
     { inputTokens: 3, outputTokens: 1, totalTokens: 4 },
   );
+});
+
+test("adds up the usage of two attempts at one turn", () => {
+  assert.deepEqual(
+    mergeTokenUsage(
+      { inputTokens: 100, outputTokens: 0, totalTokens: 100 },
+      { inputTokens: 100, outputTokens: 5, totalTokens: 105 },
+    ),
+    { inputTokens: 200, outputTokens: 5, totalTokens: 205 },
+  );
+  // A cache count reported by either attempt survives the merge; reported by
+  // neither, the key stays absent rather than becoming a zero.
+  assert.deepEqual(
+    mergeTokenUsage(
+      { inputTokens: 10, outputTokens: 1, totalTokens: 11 },
+      { inputTokens: 10, outputTokens: 1, totalTokens: 11, cachedInputTokens: 8 },
+    ),
+    { inputTokens: 20, outputTokens: 2, totalTokens: 22, cachedInputTokens: 8 },
+  );
+  // One-sided merges are the ordinary case: an attempt whose provider reported
+  // nothing must not erase the one that did.
+  const only = { inputTokens: 3, outputTokens: 1, totalTokens: 4 };
+  assert.deepEqual(mergeTokenUsage(undefined, only), only);
+  assert.deepEqual(mergeTokenUsage(only, undefined), only);
+  assert.equal(mergeTokenUsage(undefined, undefined), undefined);
 });
 
 test("captures final SSE usage without changing streamed bytes", async () => {

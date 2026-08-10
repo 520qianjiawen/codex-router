@@ -53,6 +53,47 @@ const CONTENT_SSE = [
   "",
 ].join("\n");
 
+// The same two turns with the provider's own token counts attached, so a test
+// can check what a retried turn reports as spend.
+const EMPTY_SSE_METERED = [
+  'event: response.created',
+  'data: {"type":"response.created","response":{"id":"r-empty"}}',
+  "",
+  "event: response.completed",
+  `data: ${JSON.stringify({
+    type: "response.completed",
+    response: {
+      id: "r-empty",
+      output: [],
+      usage: { input_tokens: 100, output_tokens: 0, total_tokens: 100 },
+    },
+  })}`,
+  "",
+  "data: [DONE]",
+  "",
+].join("\n");
+
+const CONTENT_SSE_METERED = [
+  'event: response.created',
+  'data: {"type":"response.created","response":{"id":"r-content"}}',
+  "",
+  'event: response.output_text.delta',
+  'data: {"type":"response.output_text.delta","delta":"Recovered"}',
+  "",
+  "event: response.completed",
+  `data: ${JSON.stringify({
+    type: "response.completed",
+    response: {
+      id: "r-content",
+      output: [],
+      usage: { input_tokens: 100, output_tokens: 5, total_tokens: 105 },
+    },
+  })}`,
+  "",
+  "data: [DONE]",
+  "",
+].join("\n");
+
 async function mockServer(handler) {
   const server = http.createServer(handler);
   await new Promise((resolve, reject) => {
@@ -224,6 +265,10 @@ test("an empty completion is retried once and the retry's content reaches the cl
     // events were suppressed.
     assert.equal((result.body.match(/event: response\.completed/g) || []).length, 1);
     assert.equal((result.body.match(/event: response\.done/g) || []).length, 1);
+    // ...and so did exactly one prologue: the retry's duplicate
+    // `response.created`, with its new id and restarted sequence numbers, must
+    // not appear inside the response the client already opened.
+    assert.equal((result.body.match(/event: response\.created/g) || []).length, 1);
     assert.equal(posts, 2, "the empty first attempt must be retried");
 
     const [event] = await waitForUsageEvents(router.stateDir, 1, router);
@@ -265,6 +310,117 @@ test("a double-empty completion surfaces an error and meters 502", async () => {
     assert.equal(event.status, 502);
     assert.equal(event.emptyCompletion, true);
     assert.equal(event.emptyCompletionRetried, true);
+  } finally {
+    await stopChild(router);
+    await closeServer(gw.server);
+  }
+});
+
+// The retry can fail outright. Its status and headers cannot reach the client
+// -- the 200 went out with the first attempt -- so relaying its error body into
+// the SSE stream would append unparseable bytes and end the turn silently,
+// which is the exact failure this guard exists to remove.
+test("a retry that fails upstream states the failure instead of relaying its body", async () => {
+  let posts = 0;
+  const gw = await gateway((_request, response) => {
+    posts += 1;
+    if (posts === 1) {
+      response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8" });
+      response.end(EMPTY_SSE);
+      return;
+    }
+    const body = JSON.stringify({ error: { message: "upstream exploded", type: "server_error" } });
+    response.writeHead(500, { "Content-Type": "application/json" });
+    response.end(body);
+  });
+  const routerPort = await openPort();
+  const router = run(routerEnv(gw.port, routerPort));
+
+  try {
+    await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+
+    const result = await readRouted(routerPort, TURN_BODY);
+
+    assert.equal(result.status, 200);
+    assert.equal(result.complete, true);
+    assert.match(result.body, /event: error/);
+    assert.match(result.body, /empty_completion_retry_failed/);
+    // The upstream's own error body never reaches the stream.
+    assert.doesNotMatch(result.body, /upstream exploded/);
+    assert.doesNotMatch(result.body, /event: response\.completed/);
+    assert.equal(posts, 2);
+
+    const [event] = await waitForUsageEvents(router.stateDir, 1, router);
+    assert.equal(event.status, 500);
+    assert.equal(event.emptyCompletion, true);
+    assert.equal(event.emptyCompletionRetried, true);
+  } finally {
+    await stopChild(router);
+    await closeServer(gw.server);
+  }
+});
+
+// Both attempts were sent and both were billed. A meter that reports only the
+// retry understates a retried turn by an entire prompt.
+test("a retried turn meters the tokens of both attempts", async () => {
+  let posts = 0;
+  const gw = await gateway((_request, response) => {
+    posts += 1;
+    response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8" });
+    response.end(posts === 1 ? EMPTY_SSE_METERED : CONTENT_SSE_METERED);
+  });
+  const routerPort = await openPort();
+  const router = run(routerEnv(gw.port, routerPort));
+
+  try {
+    await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+
+    const result = await readRouted(routerPort, TURN_BODY);
+    assert.equal(result.status, 200);
+    assert.match(result.body, /Recovered/);
+
+    const [event] = await waitForUsageEvents(router.stateDir, 1, router);
+    assert.equal(event.emptyCompletionRetried, true);
+    assert.equal(event.inputTokens, 200, "both prompts were sent, so both are reported");
+    assert.equal(event.outputTokens, 5);
+    assert.equal(event.totalTokens, 205);
+  } finally {
+    await stopChild(router);
+    await closeServer(gw.server);
+  }
+});
+
+// The retry re-sends the whole prompt. An operator who would rather pay once
+// can turn the guard off, and the router must then behave exactly as it did
+// before it existed: one attempt, terminal events relayed, no markers.
+test("the guard can be turned off and the turn relays exactly as before", async () => {
+  let posts = 0;
+  const gw = await gateway((_request, response) => {
+    posts += 1;
+    response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8" });
+    response.end(EMPTY_SSE);
+  });
+  const routerPort = await openPort();
+  const router = run({
+    ...routerEnv(gw.port, routerPort),
+    CODEX_ROUTER_EMPTY_COMPLETION_RETRY: "0",
+  });
+
+  try {
+    await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+
+    const result = await readRouted(routerPort, TURN_BODY);
+
+    assert.equal(result.status, 200);
+    assert.match(result.body, /event: response\.completed/);
+    assert.match(result.body, /event: response\.done/);
+    assert.doesNotMatch(result.body, /event: error/);
+    assert.equal(posts, 1, "the guard is off, so nothing is retried");
+
+    const [event] = await waitForUsageEvents(router.stateDir, 1, router);
+    assert.equal(event.status, 200);
+    assert.equal(event.emptyCompletion, undefined);
+    assert.equal(event.emptyCompletionRetried, undefined);
   } finally {
     await stopChild(router);
     await closeServer(gw.server);

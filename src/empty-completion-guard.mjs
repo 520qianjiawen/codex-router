@@ -17,6 +17,13 @@ function isTerminalEvent(eventType, dataText) {
   );
 }
 
+// The prologue a turn opens with. It carries no content, so a retry that
+// repeats it would put a second `response.created` -- new response id,
+// restarted sequence numbers -- into a stream the client already opened.
+function isPrologueEvent(eventType) {
+  return eventType === "response.created" || eventType === "response.in_progress";
+}
+
 function itemHasText(item) {
   if (!item || typeof item !== "object") return false;
   if (Array.isArray(item.content)) {
@@ -40,6 +47,25 @@ function outputHasContent(output) {
   });
 }
 
+// Chat-completions SSE carries no `event:` line at all: the content lives in
+// `choices[].delta.content` (or `.message.content` on a non-streamed chunk),
+// and tool calls in `choices[].delta.tool_calls`. A gateway that relays that
+// shape through the Responses path would otherwise look contentless to every
+// check above and turn ordinary turns into empty completions.
+function chunkHasChatContent(data) {
+  const choices = data?.choices;
+  if (!Array.isArray(choices)) return false;
+  return choices.some((choice) => {
+    const delta = choice?.delta ?? choice?.message;
+    if (!delta || typeof delta !== "object") return false;
+    if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) return true;
+    if (typeof delta.content === "string") return delta.content.length > 0;
+    // Some gateways send content as an array of parts, same as Responses.
+    if (Array.isArray(delta.content)) return itemHasText(delta);
+    return false;
+  });
+}
+
 // Content means something the client can act on: output text or a tool call.
 // Reasoning deltas are deliberately not content — a turn that streams only
 // reasoning and then completes with nothing is exactly the empty completion
@@ -57,14 +83,18 @@ function isContentEvent(eventType, data) {
       if (item?.type === "function_call") return true;
       return item?.type === "message" && itemHasText(item);
     }
-    // The completed payload carries the full output on some gateways; a
-    // completed event with output is a real turn, one with an empty output
-    // array is the empty completion.
+    // The completed payload carries the full output on some gateways -- the
+    // whole turn arrives in one terminal event with no deltas ahead of it. A
+    // completed event with output is a real turn; one with an empty output
+    // array is the empty completion. This is checked before the terminal
+    // branch holds the event, or a turn whose only content rides on
+    // `response.completed` would be suppressed and retried as if it were
+    // silent.
     if (eventType === "response.completed" || eventType === "message.completed") {
       return outputHasContent(data?.response?.output);
     }
   }
-  return false;
+  return chunkHasChatContent(data);
 }
 
 // The error frame mirrors `endStreamedResponse` in http-utils.mjs so the app
@@ -89,14 +119,17 @@ export class EmptyCompletionGuard extends Transform {
   #decoder = new StringDecoder("utf8");
   #buffer = "";
   #sawContent = false;
+  #sawPrologue = false;
   #held = [];
   #empty = false;
   #retried;
+  #suppressPrologue;
   #undeclared;
 
-  constructor(contentType = "", { retried = false } = {}) {
+  constructor(contentType = "", { retried = false, suppressPrologue = false } = {}) {
     super();
     this.#retried = retried;
+    this.#suppressPrologue = suppressPrologue;
     const declared = String(contentType).toLowerCase();
     this.#eventStream = declared.includes("text/event-stream");
     this.#undeclared = !this.#eventStream && !declared.includes("json");
@@ -104,6 +137,12 @@ export class EmptyCompletionGuard extends Transform {
 
   isEmpty() {
     return this.#empty;
+  }
+
+  // Whether this attempt already opened the turn for the client. The retry
+  // uses it to decide if it must relay its own prologue or drop the duplicate.
+  sawPrologue() {
+    return this.#sawPrologue;
   }
 
   _transform(chunk, _encoding, callback) {
@@ -156,13 +195,10 @@ export class EmptyCompletionGuard extends Transform {
       return;
     }
     const { eventType, dataText } = this.#fields(block);
-    if (isTerminalEvent(eventType, dataText)) {
-      // Terminal events are the last thing the upstream emits, so holding
-      // them changes nothing the client has already seen.
-      this.#held.push(block + separator);
-      return;
-    }
-    if (this.#contentOf(block, dataText)) {
+    // Content is decided before the terminal check: a gateway that puts the
+    // whole turn in `response.completed` emits a terminal event that is also
+    // the only content event in the stream.
+    if (this.#contentOf(eventType, dataText)) {
       this.#sawContent = true;
       // A content event after a held terminal cannot happen in practice
       // (terminal events close the response), but ordering must survive it.
@@ -170,6 +206,19 @@ export class EmptyCompletionGuard extends Transform {
       this.#held = [];
       this.push(Buffer.from(block + separator));
       return;
+    }
+    if (isTerminalEvent(eventType, dataText)) {
+      // Terminal events are the last thing the upstream emits, so holding
+      // them changes nothing the client has already seen.
+      this.#held.push(block + separator);
+      return;
+    }
+    if (isPrologueEvent(eventType)) {
+      this.#sawPrologue = true;
+      // The first attempt already opened this turn for the client. Repeating
+      // the prologue would hand it a second `response.created` with a new id
+      // and restarted sequence numbers inside one response.
+      if (this.#suppressPrologue) return;
     }
     this.push(Buffer.from(block + separator));
   }
@@ -203,11 +252,11 @@ export class EmptyCompletionGuard extends Transform {
     return { eventType, dataText };
   }
 
-  #contentOf(block, dataText) {
+  #contentOf(eventType, dataText) {
     if (!dataText || dataText === "[DONE]") return false;
     try {
       const data = JSON.parse(dataText);
-      return isContentEvent(this.#fields(block).eventType ?? data?.type, data);
+      return isContentEvent(eventType ?? data?.type, data);
     } catch {
       return false;
     }
