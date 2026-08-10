@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   estimateInputTokens,
+  mergeTokenUsage,
   normalizeTokenUsage,
   ResponseUsageTransform,
   substituteZeroInputUsage,
@@ -32,6 +33,56 @@ test("normalizes Responses and Chat Completions token usage", () => {
     tokenUsageFromPayload({ usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 } }),
     { inputTokens: 9, outputTokens: 4, totalTokens: 13 },
   );
+});
+
+test("captures provider-reported prefix-cache hits when they exist", () => {
+  // OpenAI-compatible shape: cached prefix inside input_tokens_details.
+  assert.deepEqual(
+    normalizeTokenUsage({
+      input_tokens: 100,
+      output_tokens: 5,
+      input_tokens_details: { cached_tokens: 90 },
+    }),
+    { inputTokens: 100, outputTokens: 5, totalTokens: 105, cachedInputTokens: 90 },
+  );
+  // Chat-completions shape used by DeepSeek-style APIs.
+  assert.deepEqual(
+    tokenUsageFromPayload({
+      usage: { prompt_tokens: 100, completion_tokens: 5, prompt_cache_hit_tokens: 80 },
+    }),
+    { inputTokens: 100, outputTokens: 5, totalTokens: 105, cachedInputTokens: 80 },
+  );
+  // A provider that reports no cache fields stays unchanged: the key is
+  // absent, not zero, so old rows keep their exact shape.
+  assert.deepEqual(
+    normalizeTokenUsage({ input_tokens: 3, output_tokens: 1 }),
+    { inputTokens: 3, outputTokens: 1, totalTokens: 4 },
+  );
+});
+
+test("adds up the usage of two attempts at one turn", () => {
+  assert.deepEqual(
+    mergeTokenUsage(
+      { inputTokens: 100, outputTokens: 0, totalTokens: 100 },
+      { inputTokens: 100, outputTokens: 5, totalTokens: 105 },
+    ),
+    { inputTokens: 200, outputTokens: 5, totalTokens: 205 },
+  );
+  // A cache count reported by either attempt survives the merge; reported by
+  // neither, the key stays absent rather than becoming a zero.
+  assert.deepEqual(
+    mergeTokenUsage(
+      { inputTokens: 10, outputTokens: 1, totalTokens: 11 },
+      { inputTokens: 10, outputTokens: 1, totalTokens: 11, cachedInputTokens: 8 },
+    ),
+    { inputTokens: 20, outputTokens: 2, totalTokens: 22, cachedInputTokens: 8 },
+  );
+  // One-sided merges are the ordinary case: an attempt whose provider reported
+  // nothing must not erase the one that did.
+  const only = { inputTokens: 3, outputTokens: 1, totalTokens: 4 };
+  assert.deepEqual(mergeTokenUsage(undefined, only), only);
+  assert.deepEqual(mergeTokenUsage(only, undefined), only);
+  assert.equal(mergeTokenUsage(undefined, undefined), undefined);
 });
 
 test("captures final SSE usage without changing streamed bytes", async () => {
@@ -413,6 +464,28 @@ test("meters a headerless stream whose first event spans two chunks", async () =
     inputTokens: 4,
     outputTokens: 2,
     totalTokens: 6,
+  });
+});
+
+test("meters headerless SSE after a split BOM, comments, and blank lines", async () => {
+  const body = Buffer.from(
+    `\uFEFF: keepalive\r\n\r\n\n${completedEvent({
+      input_tokens: 17,
+      output_tokens: 4,
+      total_tokens: 21,
+    })}data: [DONE]\n\n`,
+    "utf8",
+  );
+  const transform = new ResponseUsageTransform("");
+  const output = await passThrough(
+    transform,
+    [...body].map((byte) => Buffer.from([byte])),
+  );
+  assert.equal(output, body.toString("utf8"));
+  assert.deepEqual(transform.tokenUsage(), {
+    inputTokens: 17,
+    outputTokens: 4,
+    totalTokens: 21,
   });
 });
 

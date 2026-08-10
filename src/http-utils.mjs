@@ -70,7 +70,7 @@ function isEventStream(response) {
     .includes("text/event-stream");
 }
 
-function finishResponse(response) {
+export async function finishResponse(response) {
   return new Promise((resolve) => {
     if (response.writableFinished || response.destroyed) {
       resolve();
@@ -112,23 +112,40 @@ function finishResponse(response) {
 // dispatches nothing.
 export function endStreamedResponse(response) {
   if (!response || response.writableEnded || response.destroyed) return;
-  if (isEventStream(response)) {
-    try {
-      const data = {
-        type: "error",
-        code: "local_router_stream_failed",
-        message: "The local router lost the upstream response stream.",
-        param: null,
-      };
-      response.write(`\n\nevent: error\ndata: ${JSON.stringify(data)}\n\n`);
-    } catch {
-      // The socket may already be gone; ending below is still correct.
-    }
-  }
+  writeStreamErrorEvent(response, {
+    code: "local_router_stream_failed",
+    message: "The local router lost the upstream response stream.",
+  });
   response.end();
 }
 
-export async function pipeResponse(upstream, response, denylist, transform) {
+// Emit a terminal `error` event into a response whose head is already sent,
+// without ending it -- the caller decides when the stream is over. Used where
+// the router has committed to a 200 and then hits a failure it must state
+// rather than let pass as a short, successful-looking turn. The framing and
+// the leading blank line are the same as `endStreamedResponse` above, and for
+// the same reasons; the message is always router-side text, never an upstream
+// body.
+export function writeStreamErrorEvent(response, { code, message }) {
+  if (!response || response.writableEnded || response.destroyed) return false;
+  if (!isEventStream(response)) return false;
+  try {
+    const data = { type: "error", code, message, param: null };
+    response.write(`\n\nevent: error\ndata: ${JSON.stringify(data)}\n\n`);
+    return true;
+  } catch {
+    // The socket may already be gone; the caller ends the response anyway.
+    return false;
+  }
+}
+
+export async function pipeResponse(
+  upstream,
+  response,
+  denylist,
+  transform,
+  { leaveOpen = false } = {},
+) {
   const transforms = transform === undefined
     ? []
     : Array.isArray(transform)
@@ -137,7 +154,7 @@ export async function pipeResponse(upstream, response, denylist, transform) {
   response.statusCode = upstream.status;
   copyResponseHeaders(upstream, response, denylist);
   if (!upstream.body) {
-    response.end();
+    if (!leaveOpen) response.end();
     return;
   }
   const source = Readable.fromWeb(upstream.body);
@@ -156,7 +173,10 @@ export async function pipeResponse(upstream, response, denylist, transform) {
     if (response.destroyed && !response.writableFinished) return;
     throw error;
   }
-  await finishResponse(response);
+  // `leaveOpen` lets the caller keep the response writable after the upstream
+  // stream ends so an empty completion can be retried against the same
+  // response; the caller is responsible for ending it (see finishResponse).
+  if (!leaveOpen) await finishResponse(response);
 }
 
 export function requireInternalAuth(request, response, secret) {

@@ -1,12 +1,9 @@
 import { Transform } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 
-const MAX_JSON_CAPTURE_BYTES = 8 * 1024 * 1024;
+import { HeaderlessSseDetector } from "./sse-prefix.mjs";
 
-// An SSE field line, matched against the opening bytes of a body whose
-// content-type header never arrived.
-const SSE_FIELD_LINE = /^(?:event|data):/m;
-const SSE_SNIFF_BYTES = 512;
+const MAX_JSON_CAPTURE_BYTES = 8 * 1024 * 1024;
 
 // Bytes of forwarded request body per prompt token.
 //
@@ -50,10 +47,39 @@ export function normalizeTokenUsage(value) {
       ? (inputTokens || 0) + (outputTokens || 0)
       : undefined);
   if (totalTokens === undefined) return undefined;
+  // Providers that do prefix caching report the shared prefix they did not
+  // have to re-process. DeepSeek-style APIs name it prompt_cache_hit_tokens;
+  // OpenAI-compatible shapes carry it in input_tokens_details /
+  // prompt_tokens_details.cached_tokens. The router forwards it for
+  // diagnostics so the meter can show whether caching is actually happening.
+  const cachedInputTokens = tokenCount(
+    value.input_tokens_details?.cached_tokens ??
+      value.prompt_tokens_details?.cached_tokens ??
+      value.prompt_cache_hit_tokens,
+  );
   return {
     inputTokens: inputTokens || 0,
     outputTokens: outputTokens || 0,
     totalTokens,
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+  };
+}
+
+// Add up the usage of two attempts at the same turn. A turn the router had to
+// send twice cost twice; the meter has to say so, or the retry marker names a
+// turn whose reported spend still looks like one attempt.
+export function mergeTokenUsage(first, second) {
+  if (!first) return second;
+  if (!second) return first;
+  const cachedInputTokens =
+    first.cachedInputTokens === undefined && second.cachedInputTokens === undefined
+      ? undefined
+      : (first.cachedInputTokens || 0) + (second.cachedInputTokens || 0);
+  return {
+    inputTokens: (first.inputTokens || 0) + (second.inputTokens || 0),
+    outputTokens: (first.outputTokens || 0) + (second.outputTokens || 0),
+    totalTokens: (first.totalTokens || 0) + (second.totalTokens || 0),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
   };
 }
 
@@ -145,7 +171,7 @@ export class ResponseUsageTransform extends Transform {
   // a malformed or non-UTF-8 byte can never be replaced on its way through.
   #pending = Buffer.alloc(0);
   #released = false;
-  #undeclared = false;
+  #headerlessDetector;
 
   // `estimatedInputTokens` arrives only on routed requests large enough that a
   // reported zero cannot be true. Without it this transform observes and
@@ -158,7 +184,10 @@ export class ResponseUsageTransform extends Transform {
     // content-type header at all, so deciding on the header alone reads every
     // native turn as a JSON document, fails to parse it, and meters the turn
     // as zero tokens. When the header says nothing, the first bytes decide.
-    this.#undeclared = !this.#eventStream && !declared.includes("json");
+    this.#headerlessDetector =
+      !this.#eventStream && !declared.includes("json")
+        ? new HeaderlessSseDetector()
+        : undefined;
     this.#estimate =
       Number.isInteger(estimatedInputTokens) && estimatedInputTokens > 0
         ? estimatedInputTokens
@@ -166,36 +195,49 @@ export class ResponseUsageTransform extends Transform {
   }
 
   _transform(chunk, _encoding, callback) {
-    if (this.#undeclared && chunk.length) {
-      this.#undeclared = false;
-      this.#eventStream = SSE_FIELD_LINE.test(
-        chunk.subarray(0, SSE_SNIFF_BYTES).toString("utf8"),
-      );
+    if (this.#headerlessDetector) {
+      const detected = this.#headerlessDetector.write(chunk);
+      if (detected.decision === "pending") {
+        callback();
+        return;
+      }
+      this.#headerlessDetector = undefined;
+      this.#eventStream = detected.decision === "event-stream";
+      for (const buffered of detected.chunks) this.#transformChunk(buffered);
+      callback();
+      return;
     }
+    this.#transformChunk(chunk);
+    callback();
+  }
+
+  #transformChunk(chunk) {
     if (this.#estimate === undefined) {
       this.#observeOnly(chunk);
-      callback();
       return;
     }
     if (this.#released) {
       this.push(chunk);
-      callback();
       return;
     }
     this.#pending = this.#pending.length ? Buffer.concat([this.#pending, chunk]) : chunk;
     if (this.#eventStream) {
       this.#consumeRewrittenLines();
-      callback();
       return;
     }
     // A non-streaming body has to be held to be rewritten. Oversized ones are
     // released and forwarded from then on, the way the observer stops
     // capturing past the same limit.
     if (this.#pending.length > MAX_JSON_CAPTURE_BYTES) this.#release();
-    callback();
   }
 
   _flush(callback) {
+    if (this.#headerlessDetector) {
+      const detected = this.#headerlessDetector.end();
+      this.#headerlessDetector = undefined;
+      this.#eventStream = detected.decision === "event-stream";
+      for (const buffered of detected.chunks) this.#transformChunk(buffered);
+    }
     if (this.#estimate === undefined) {
       this.#buffer += this.#decoder.end();
       if (this.#eventStream) {

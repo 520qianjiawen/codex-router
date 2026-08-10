@@ -3704,7 +3704,8 @@ test("router substitutes a prompt-token estimate a provider reported as zero", a
     };
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     response.end(
-      `event: response.completed\ndata: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`,
+      `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok" })}\n\n` +
+        `event: response.completed\ndata: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`,
     );
   });
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-zero-input-"));
@@ -3826,7 +3827,8 @@ test("the prompt-token estimate can be switched off", async () => {
     };
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     response.end(
-      `event: response.completed\ndata: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`,
+      `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "ok" })}\n\n` +
+        `event: response.completed\ndata: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`,
     );
   });
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-zero-input-off-"));

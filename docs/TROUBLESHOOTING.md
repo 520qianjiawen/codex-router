@@ -219,6 +219,41 @@ Report zero-token responses to the provider; only they can fix the source. To
 see the provider's own numbers in Codex again, set
 `CODEX_ROUTER_ZERO_INPUT_ESTIMATE=0` in the service environment.
 
+## The agent stops mid-task with no error
+
+A routed turn that answers 200 with no output text and no tool call is invisible
+to Codex: it has no code path for "the model said nothing", so it records the
+empty response as a completed turn and the agent appears to stop for no reason.
+Reasoning-only turns count — a model that thinks and then says nothing produces
+exactly this.
+
+The router holds the entire response until it knows the turn produced something.
+When nothing arrives it discards that attempt and retries the identical request
+once, so the client sees only one response head, response ID, and sequence space.
+A retry that produces content streams normally. A retry that is empty again
+returns an explicit 502 `empty_completion` error, and one that fails upstream
+returns `empty_completion_retry_failed` — a stated failure either way, never a
+silent success. The hold has byte and time limits; if either is reached, the
+router safely relays the original attempt without retrying rather than buffering
+without bound.
+
+Retried turns are marked in the state directory's `usage-events.jsonl`:
+`emptyCompletionRetried: true` on every retried turn, plus `emptyCompletion:
+true` when the turn produced nothing in the end. The token counts on those rows
+combine provider-reported usage from both complete, bounded attempts, including
+an incompatible retry body the router rejects. A bodyless, oversized, stalled,
+transport-failed, or usage-free attempt stays unknown rather than becoming an
+invented zero. Count retried turns:
+
+```sh
+grep -c emptyCompletionRetried "$CODEX_HOME/codex-router/usage-events.jsonl"
+```
+
+A steady stream of them means the provider is returning empty completions;
+report it to them. The retry re-sends the whole prompt, so to pay once and see
+the raw upstream behaviour instead, set
+`CODEX_ROUTER_EMPTY_COMPLETION_RETRY=0` in the service environment.
+
 ## Native GPT models stopped working
 
 Temporarily return Codex to its native base URL:

@@ -16,12 +16,14 @@ import {
 } from "./caller-auth.mjs";
 import {
   endStreamedResponse,
+  finishResponse,
   HOP_BY_HOP_HEADERS,
   httpErrorStatus,
   pipeResponse,
   readRequestBody,
   writeJson,
 } from "./http-utils.mjs";
+import { EmptyCompletionGuard } from "./empty-completion-guard.mjs";
 import {
   MERGED_CATALOG_PATH,
   NATIVE_CATALOG_PATH,
@@ -39,6 +41,7 @@ import {
 } from "./provider-selection.mjs";
 import {
   estimateInputTokens,
+  mergeTokenUsage,
   ResponseUsageTransform,
   tokenUsageFromPayload,
 } from "./response-usage.mjs";
@@ -52,6 +55,11 @@ import { mergeCodexAppTools } from "./codex-app-tools.mjs";
 import { activityMetadataFromHeaders } from "./codex-session-names.mjs";
 import { translateGatewayError } from "./error-translation.mjs";
 import { recordUsageEvent } from "./usage-events.mjs";
+import {
+  classifySsePrefix,
+  HEADERLESS_SSE_SNIFF_BYTES,
+  HEADERLESS_SSE_SNIFF_MS,
+} from "./sse-prefix.mjs";
 import {
   describeImage,
   evidenceCache,
@@ -105,6 +113,13 @@ const QUIET =
 // operator who would rather see the provider's own numbers can turn it off
 // without downgrading the router.
 const ZERO_INPUT_ESTIMATE = process.env.CODEX_ROUTER_ZERO_INPUT_ESTIMATE !== "0";
+// Kill switch for the empty-completion guard and its single retry. It is on
+// because an empty completion is otherwise invisible -- the client records the
+// turn as a silent success -- but the retry re-sends the whole prompt, so an
+// operator who would rather pay once and see the raw upstream behaviour can
+// turn it off without downgrading the router.
+const EMPTY_COMPLETION_RETRY =
+  process.env.CODEX_ROUTER_EMPTY_COMPLETION_RETRY !== "0";
 const ERROR_STATUS_DURATION_MS = 8_000;
 const configuredDecodedBodyBytes = Number(
   process.env.MODEL_ROUTER_MAX_DECODED_BODY_BYTES ||
@@ -379,6 +394,174 @@ function nativeRequestSearch(requestUrl) {
 // being true.
 function nothingRelayed(response) {
   return !response.headersSent && !response.writableEnded && !response.destroyed;
+}
+
+// The empty-completion retry can produce a substituted prompt count on either
+// attempt, and both prompts were sent. Add them so the substitution total
+// matches the two-attempt turn the rest of the usage event describes; absent
+// on both sides it stays absent, so an ordinary turn keeps its exact shape.
+function sumEstimatedInputTokens(first, second) {
+  if (first === undefined) return second;
+  if (second === undefined) return first;
+  return first + second;
+}
+
+const HEADERLESS_SSE_TIMEOUT = Symbol("headerless-sse-timeout");
+const MAX_REJECTED_RETRY_USAGE_BYTES = 8 * 1024 * 1024;
+
+async function readHeaderlessSseChunk(reader, timeoutMs) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(HEADERLESS_SSE_TIMEOUT), timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([reader.read(), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function responseWithBody(upstream, body) {
+  return new Response(body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: upstream.headers,
+  });
+}
+
+// Rejected retries are still upstream requests and may be billed. Drain only
+// a complete bounded body through the ordinary usage observer; an oversized,
+// stalled, or failed body has unknowable usage and is canceled without
+// inventing token counts.
+async function observeRejectedRetryUsage(upstream, signal) {
+  if (!upstream?.body) return undefined;
+  const reader = upstream.body.getReader();
+  const observer = new ResponseUsageTransform(
+    upstream.headers.get("content-type") || "",
+  );
+  observer.on("data", () => {});
+  const deadline = Date.now() + HEADERLESS_SSE_SNIFF_MS;
+  let total = 0;
+  try {
+    while (true) {
+      const result = await readHeaderlessSseChunk(
+        reader,
+        Math.max(0, deadline - Date.now()),
+      );
+      if (result === HEADERLESS_SSE_TIMEOUT) {
+        void reader.cancel().catch(() => {});
+        observer.destroy();
+        return undefined;
+      }
+      if (result.done) break;
+      total += result.value?.byteLength || 0;
+      if (total > MAX_REJECTED_RETRY_USAGE_BYTES) {
+        void reader.cancel().catch(() => {});
+        observer.destroy();
+        return undefined;
+      }
+      if (result.value?.byteLength) observer.write(Buffer.from(result.value));
+    }
+    await new Promise((resolve, reject) => {
+      observer.once("finish", resolve);
+      observer.once("error", reject);
+      observer.end();
+    });
+    return observer.tokenUsage();
+  } catch {
+    void reader.cancel().catch(() => {});
+    observer.destroy();
+    signal?.throwIfAborted();
+    return undefined;
+  }
+}
+
+// A retry without Content-Type is still compatible when its bytes prove it is
+// SSE. Peek through one tee branch, then relay the untouched branch through
+// the normal transforms. A headerless JSON body is rejected before any of it
+// reaches the client, preserving the deterministic protocol-error contract.
+async function prepareEventStreamRetry(upstream) {
+  const contentType = String(upstream?.headers?.get("content-type") || "").trim();
+  if (contentType.toLowerCase().includes("text/event-stream")) {
+    return { response: upstream, pipelineContentType: contentType };
+  }
+  if (contentType) return { rejectedResponse: upstream };
+  if (!upstream?.body) return undefined;
+
+  const [probe, relay] = upstream.body.tee();
+  const reader = probe.getReader();
+  let prefix = Buffer.alloc(0);
+  let compatible = false;
+  const deadline = Date.now() + HEADERLESS_SSE_SNIFF_MS;
+  try {
+    while (prefix.length < HEADERLESS_SSE_SNIFF_BYTES) {
+      const result = await readHeaderlessSseChunk(
+        reader,
+        Math.max(0, deadline - Date.now()),
+      );
+      if (result === HEADERLESS_SSE_TIMEOUT) break;
+      if (result.done) {
+        compatible = classifySsePrefix(prefix, { end: true }) === "event-stream";
+        break;
+      }
+      if (result.value?.byteLength) {
+        const remaining = HEADERLESS_SSE_SNIFF_BYTES - prefix.length;
+        prefix = Buffer.concat([
+          prefix,
+          Buffer.from(result.value).subarray(0, remaining),
+        ]);
+        const decision = classifySsePrefix(prefix);
+        if (decision === "event-stream") {
+          compatible = true;
+          break;
+        }
+        if (decision === "other") break;
+      }
+    }
+  } catch (error) {
+    void reader.cancel().catch(() => {});
+    void relay.cancel().catch(() => {});
+    throw error;
+  }
+
+  if (!compatible) {
+    void reader.cancel().catch(() => {});
+    return { rejectedResponse: responseWithBody(upstream, relay) };
+  }
+  void reader.cancel().catch(() => {});
+  return {
+    response: responseWithBody(upstream, relay),
+    pipelineContentType: "text/event-stream",
+  };
+}
+
+// `pipeResponse` stages the upstream head before the first body byte. The
+// empty-completion gate can finish without emitting that byte, leaving a head
+// that is still replaceable. Clear it before selecting the retry or a synthetic
+// protocol error so no first-attempt header survives into the one response the
+// client actually receives.
+function clearStagedResponseHead(response) {
+  if (response.headersSent) {
+    throw new Error("Cannot replace a response head after it was sent.");
+  }
+  for (const name of response.getHeaderNames()) response.removeHeader(name);
+  response.statusCode = 200;
+}
+
+function writeEmptyCompletionError(response, code, message) {
+  clearStagedResponseHead(response);
+  writeJson(response, 502, {
+    error: {
+      type: code,
+      code,
+      message,
+    },
+  });
+}
+
+function timingMetric(value) {
+  return Number.isFinite(value) ? String(value) : "unknown";
 }
 
 // Never gated on QUIET. A production LaunchAgent hard-sets `CODEX_ROUTER_QUIET=1`,
@@ -1347,6 +1530,18 @@ async function handleResponses(request, response, requestUrl) {
   let requestedModel = "";
   let route;
   let upstreamRetries;
+  let upstreamLatencyMs;
+  let usageTransform;
+  let retryUsageTransform;
+  let retryEmptyCompletionGuard;
+  let retryUsage;
+  let usage;
+  let estimatedInputTokens;
+  let emptyCompletion = false;
+  let emptyCompletionRetried = false;
+  let finalStatus;
+  let activityStatus;
+  let usageRecorded = false;
   try {
     if (!requireCodexTransport(request, response)) return;
     const encoded = await readRequestBody(request);
@@ -1425,6 +1620,10 @@ async function handleResponses(request, response, requestUrl) {
         durationMs: Date.now() - startedAt,
         ...compaction.usage,
       });
+      usage = compaction.usage;
+      finalStatus = compaction.status;
+      activityStatus = compaction.status;
+      usageRecorded = true;
       if (!QUIET) {
         console.error(
           `[codex-router] model=${requestedModel || "unknown"} provider=${route.provider} status=${compaction.status}`,
@@ -1540,6 +1739,12 @@ async function handleResponses(request, response, requestUrl) {
       },
     );
     upstreamRetries = retries;
+    // Time until the upstream chain answered the request. Everything before
+    // this is router-side work (body read, normalization, flattening, vision
+    // bridge) plus the upstream's own time to produce response headers. For a
+    // routed turn that means the full router -> litellm -> api-forwarder ->
+    // provider path, so a stall here is the provider's, not the router's.
+    upstreamLatencyMs = Date.now() - startedAt;
     // Gateway error bodies leak LiteLLM's internal exception chain, which
     // reads like a router bug. Rewrite them to name the provider that failed.
     // Native traffic passes through untouched: OpenAI errors are already clear.
@@ -1568,6 +1773,9 @@ async function handleResponses(request, response, requestUrl) {
         status: upstream.status,
         durationMs: Date.now() - startedAt,
       });
+      finalStatus = upstream.status;
+      activityStatus = upstream.status;
+      usageRecorded = true;
       if (!QUIET) {
         console.error(
           `[codex-router] model=${requestedModel || "unknown"} provider=${route.provider} status=${upstream.status}`,
@@ -1587,34 +1795,157 @@ async function handleResponses(request, response, requestUrl) {
     // so it cannot fire on a provider that reports correctly and it disables
     // itself the moment the upstream starts reporting again.
     const upstreamContentType = upstream.headers.get("content-type") || "";
-    const usageTransform = new ResponseUsageTransform(
-      upstreamContentType,
-      {
+    const createResponsePipeline = (contentType) => {
+      const usageObserver = new ResponseUsageTransform(contentType, {
         estimatedInputTokens:
           ZERO_INPUT_ESTIMATE && route
             ? estimateInputTokens(routedBody, { contextWindow: route.contextWindow })
             : undefined,
-      },
-    );
-    const transforms = [usageTransform];
-    // Every routed response may contain a fresh app-native create_thread call
-    // that needs parent-model inheritance. Chat-completions routes also need
-    // flattened namespaces restored; Responses-native routes use an empty
-    // lookup and retain their already-namespaced call shape.
-    if (route) {
-      transforms.push(
-        new NamespaceToolCallTransform(flattenedNamespaces, upstreamContentType, route.slug),
-      );
-    }
-    await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, transforms);
-    const usage = usageTransform?.tokenUsage();
-    const estimatedInputTokens = usageTransform?.substitutedInputTokens();
+      });
+      const transforms = [usageObserver];
+      // Every attempt uses the same normal transform pipeline. In particular,
+      // a tool call recovered by the retry must still have its flattened
+      // namespace restored before Codex sees it.
+      if (route) {
+        transforms.push(
+          new NamespaceToolCallTransform(flattenedNamespaces, contentType, route.slug),
+        );
+      }
+      const guard =
+        route && EMPTY_COMPLETION_RETRY
+          ? new EmptyCompletionGuard(contentType)
+          : undefined;
+      if (guard) transforms.push(guard);
+      return { transforms, usageObserver, guard };
+    };
+    const firstPipeline = createResponsePipeline(upstreamContentType);
+    usageTransform = firstPipeline.usageObserver;
+    const emptyCompletionGuard = firstPipeline.guard;
+    const relayOpen = Boolean(emptyCompletionGuard);
+    await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, firstPipeline.transforms, {
+      leaveOpen: relayOpen,
+    });
+    usage = usageTransform?.tokenUsage();
+    estimatedInputTokens = usageTransform?.substitutedInputTokens();
     // The `close` listener above sets `clientGone` when the client's socket
     // goes away, but `pipeResponse` can resolve before that event fires: the
     // response socket is already destroyed at that point. Read the state
     // directly as well so a cancel that races the close event still meters 0.
     const clientWalkedAway =
       clientGone || (response.destroyed && !response.writableFinished);
+    finalStatus = clientWalkedAway ? 0 : upstream.status;
+    emptyCompletion = emptyCompletionGuard?.isEmpty() === true && !clientWalkedAway;
+    if (emptyCompletion) {
+      // The upstream answered 200 with nothing. Retry the identical request
+      // once: same bytes, same headers, same signal. The guard discarded the
+      // whole first stream, so the retry supplies the only head, response id,
+      // sequence space, reasoning, and output the client ever receives.
+      emptyCompletionRetried = true;
+      let upstream2;
+      try {
+        const retried = await fetchWithRetry(
+          target,
+          {
+            method: "POST",
+            headers,
+            body: routedBody,
+            signal: controller.signal,
+          },
+          {
+            retries: 0,
+            canRetry: () => nothingRelayed(response),
+            onRetry: (event) => logUpstreamRetry(event, requestedModel, requestUrl.pathname),
+          },
+        );
+        upstream2 = retried.response;
+        upstreamRetries = (upstreamRetries || 0) + retried.retries;
+      } catch (error) {
+        if (clientGone) throw error;
+        console.error(
+          `[codex-router] empty-completion retry transport failed model=${requestedModel || "unknown"} provider=${route.provider} error=${error?.name || "Error"}${error?.cause?.code ? `/${error.cause.code}` : ""}`,
+        );
+        writeEmptyCompletionError(
+          response,
+          "empty_completion_retry_failed",
+          "The model returned an empty completion and the router's retry failed upstream.",
+        );
+        finalStatus = 502;
+      }
+      if (upstream2) {
+        const preparedRetry = upstream2.body
+          ? await prepareEventStreamRetry(upstream2)
+          : undefined;
+        const compatibleRetry = upstream2.ok && preparedRetry?.response;
+        if (!compatibleRetry) {
+          const rejectedResponse =
+            preparedRetry?.rejectedResponse ?? preparedRetry?.response ?? upstream2;
+          retryUsage = await observeRejectedRetryUsage(
+            rejectedResponse,
+            controller.signal,
+          );
+          const rejectedClientWalkedAway =
+            clientGone || (response.destroyed && !response.writableFinished);
+          if (rejectedClientWalkedAway) {
+            emptyCompletion = false;
+            controller.abort();
+            controller.signal.throwIfAborted();
+          }
+          await rejectedResponse.body?.cancel().catch(() => {});
+          writeEmptyCompletionError(
+            response,
+            upstream2.ok
+              ? "empty_completion_retry_protocol_error"
+              : "empty_completion_retry_failed",
+            upstream2.ok
+              ? "The model returned an empty completion and the router's retry returned an incompatible response."
+              : "The model returned an empty completion and the router's retry failed upstream.",
+          );
+          finalStatus = 502;
+        } else {
+          upstream2 = compatibleRetry;
+          clearStagedResponseHead(response);
+          const retryContentType = preparedRetry.pipelineContentType;
+          const secondPipeline = createResponsePipeline(retryContentType);
+          retryUsageTransform = secondPipeline.usageObserver;
+          retryEmptyCompletionGuard = secondPipeline.guard;
+          await pipeResponse(
+            upstream2,
+            response,
+            HOP_BY_HOP_HEADERS,
+            secondPipeline.transforms,
+            { leaveOpen: true },
+          );
+          const retryClientWalkedAway =
+            clientGone || (response.destroyed && !response.writableFinished);
+          if (retryClientWalkedAway) {
+            finalStatus = 0;
+            if (secondPipeline.guard.hasContent()) emptyCompletion = false;
+          } else if (secondPipeline.guard.isEmpty()) {
+            writeEmptyCompletionError(
+              response,
+              "empty_completion",
+              "The model returned an empty completion. The router retried once and the completion was empty again.",
+            );
+            finalStatus = 502;
+          } else {
+            finalStatus = upstream2.status;
+            emptyCompletion = false;
+          }
+          retryUsage = retryUsageTransform?.tokenUsage();
+        }
+      }
+      // Both attempts were billed, so the meter reports both. A retry that
+      // fails before returning a body still preserves the known first-attempt
+      // usage instead of dropping it with the transport error.
+      usage = mergeTokenUsage(usage, retryUsage ?? retryUsageTransform?.tokenUsage());
+      estimatedInputTokens = sumEstimatedInputTokens(
+        estimatedInputTokens,
+        retryUsageTransform?.substitutedInputTokens(),
+      );
+    }
+    // The classification gate keeps the response open until the selected
+    // attempt is known; end exactly that one response once.
+    if (relayOpen) await finishResponse(response);
     // `retries` separates "it never failed" from "it failed and the router
     // absorbed it", both of which otherwise record a plain 200;
     // `estimatedInputTokens` separates a count the provider sent from one the
@@ -1627,55 +1958,99 @@ async function handleResponses(request, response, requestUrl) {
     recordUsageEvent({
       model: route?.slug || requestedModel,
       provider: route ? canonicalProviderId(route.provider) : "openai",
-      status: clientWalkedAway ? 0 : upstream.status,
+      status: finalStatus,
       durationMs: Date.now() - startedAt,
       retries: upstreamRetries,
       ...usage,
       estimatedInputTokens,
+      ...(emptyCompletion ? { emptyCompletion: true } : {}),
+      ...(emptyCompletionRetried ? { emptyCompletionRetried: true } : {}),
     });
+    usageRecorded = true;
+    activityStatus = finalStatus;
     if (!QUIET) {
       // The substitution is named in the log line as well as the usage event:
       // a router that quietly invents token counts is its own trap.
       console.error(
-        `[codex-router] model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${clientWalkedAway ? 0 : upstream.status}${
+        `[codex-router] model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${finalStatus}${
           upstreamRetries ? ` retries=${upstreamRetries}` : ""
-        }${estimatedInputTokens ? ` estimated-input-tokens=${estimatedInputTokens}` : ""}`,
+        }${estimatedInputTokens ? ` estimated-input-tokens=${estimatedInputTokens}` : ""}${
+          emptyCompletionRetried ? " empty-completion-retried=true" : ""
+        }${emptyCompletion ? " empty-completion=true" : ""}`,
       );
     }
   } catch (error) {
+    upstreamLatencyMs ??= Date.now() - startedAt;
+    if (retryEmptyCompletionGuard?.hasContent()) emptyCompletion = false;
+    if (usageTransform) {
+      usage = mergeTokenUsage(
+        usageTransform.tokenUsage(),
+        retryUsageTransform?.tokenUsage() ?? retryUsage,
+      );
+      estimatedInputTokens = sumEstimatedInputTokens(
+        usageTransform.substitutedInputTokens(),
+        retryUsageTransform?.substitutedInputTokens(),
+      );
+    }
     // A client that walked away (canceled generation, closed stream) is not
     // a router failure; only surface errors the router or upstream produced.
     if (clientGone) {
-      recordUsageEvent({
-        model: route?.slug || requestedModel,
-        provider: route ? canonicalProviderId(route.provider) : "openai",
-        status: 0,
-        durationMs: Date.now() - startedAt,
-        retries: upstreamRetries,
-      });
-      activity.finish(0);
+      // Once the retry has started, a disconnect can make its outcome
+      // unknowable. Do not report the first attempt's empty classification as
+      // the terminal outcome of a turn the client canceled mid-retry.
+      emptyCompletion = false;
+      finalStatus = 0;
+      activityStatus = 0;
+      if (!usageRecorded) {
+        recordUsageEvent({
+          model: route?.slug || requestedModel,
+          provider: route ? canonicalProviderId(route.provider) : "openai",
+          status: 0,
+          durationMs: Date.now() - startedAt,
+          retries: upstreamRetries,
+          ...usage,
+          estimatedInputTokens,
+          ...(emptyCompletion ? { emptyCompletion: true } : {}),
+          ...(emptyCompletionRetried ? { emptyCompletionRetried: true } : {}),
+        });
+        usageRecorded = true;
+      }
       return;
     }
-    // The upstream stream died after its head was already committed: the
-    // client saw a 200 start and a truncated body, so the meter has to say so
-    // instead of a success the client never received. `streamAborted` is the
-    // additive marker; `status` is rewritten to 502 so dashboards that only
-    // read status still count the turn as a failure. Token counts are omitted
-    // because the truncated stream never reported a final usage.
-    if (response.headersSent) {
+    // A stream that died after committing its head is a 502 even though the
+    // HTTP status can no longer change. Preserve whatever usage transforms had
+    // already observed; `streamAborted` distinguishes that partial stream from
+    // an ordinary upstream or router failure before a head existed.
+    finalStatus = response.headersSent ? 502 : httpErrorStatus(error);
+    activityStatus = finalStatus;
+    if (!usageRecorded) {
       recordUsageEvent({
         model: route?.slug || requestedModel,
         provider: route ? canonicalProviderId(route.provider) : "openai",
-        status: 502,
+        status: finalStatus,
         durationMs: Date.now() - startedAt,
         retries: upstreamRetries,
-        streamAborted: true,
+        ...usage,
+        estimatedInputTokens,
+        ...(response.headersSent ? { streamAborted: true } : {}),
+        ...(emptyCompletion ? { emptyCompletion: true } : {}),
+        ...(emptyCompletionRetried ? { emptyCompletionRetried: true } : {}),
       });
+      usageRecorded = true;
     }
-    activity.finish(500);
     throw error;
   } finally {
-    activity.finish(response.statusCode);
+    const status = activityStatus ?? finalStatus ?? response.statusCode;
+    activity.finish(status);
+    // Timestamped per-request timing for latency diagnosis. Never gated on
+    // QUIET: the production LaunchAgent hard-sets CODEX_ROUTER_QUIET=1. A
+    // missing provider count is logged as unknown, not zero; an explicit zero
+    // remains zero so a real cache miss is distinguishable from absent data.
+    console.error(
+      `[codex-router] timing at=${new Date().toISOString()} model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${status} total_ms=${Date.now() - startedAt} upstream_ms=${timingMetric(upstreamLatencyMs)} out_tokens=${timingMetric(usage?.outputTokens)} cached_tokens=${timingMetric(usage?.cachedInputTokens)}${
+        estimatedInputTokens ? ` est_input=${estimatedInputTokens}` : ""
+      }`,
+    );
   }
 }
 
