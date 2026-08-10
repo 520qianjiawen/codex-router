@@ -47,6 +47,21 @@ function writeChutesCredential(testRoot, value = "TEST_CHUTES_PERSISTENT_KEY") {
   writeFileSync(path.join(stateDir, "chutes-api-key.secret"), `${value}\n`, { mode: 0o600 });
 }
 
+test("the macOS tray labels Chutes as a metered API route", () => {
+  const overlay = readFileSync(
+    path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "IslandOverlay.swift"),
+    "utf8",
+  );
+  const sourceLabel = overlay.slice(
+    overlay.indexOf("private var sourceLabel: String"),
+    overlay.indexOf("private var compactUsageSummary: String"),
+  );
+  assert.match(
+    sourceLabel,
+    /\["deepseek", "chutes"\]\.contains\(provider\)[\s\S]*return "METERED API"/,
+  );
+});
+
 test("both installer frontends pass provider selection to setup, which accepts Chutes", () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "chutes-installer-test-"));
   try {

@@ -589,7 +589,9 @@ private struct IslandOverlayView: View {
     if provider == "openai" { return "CHATGPT • NATIVE" }
     if provider == "grok-oauth" { return "XAI • OAUTH SESSION" }
     if provider == "grok-api" { return "XAI • METERED API" }
-    if provider.hasSuffix("-api") || provider == "deepseek" { return "METERED API" }
+    if provider.hasSuffix("-api") || ["deepseek", "chutes"].contains(provider) {
+      return "METERED API"
+    }
     return "OAUTH ROUTE"
   }
 
