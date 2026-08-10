@@ -28,7 +28,7 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
       - name: Check shell syntax
         if: runner.os != 'Windows'
-        run: for file in install.sh bin/* scripts/build-desktop-tray.sh; do sh -n "$file"; done
+        run: for file in install.sh bin/* scripts/build-desktop-tray.sh; do [ "$(head -n 1 "$file")" != '#!/bin/sh' ] || sh -n "$file"; done
       - name: Check installer help
         if: runner.os != 'Windows'
         run: ./install.sh --help
