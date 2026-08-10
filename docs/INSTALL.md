@@ -269,7 +269,7 @@ state can be rebuilt with:
 Live quota-consuming verification is separate:
 
 ```sh
-./bin/smoke-test
+./bin/smoke-test --yes
 ./bin/test-model 'kimi-oauth/k3' --live --yes
 ```
 

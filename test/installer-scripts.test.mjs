@@ -274,6 +274,21 @@ test("rollback --force reaches the updater on Windows", () => {
   assert.match(branches.get("rollback"), /@\("rollback"\)\s*\+\s*\$Arguments/);
 });
 
+test("Windows exposes signed-routing and the shared refresh transaction", () => {
+  const windows = readScript("codex-router.ps1");
+  const branches = windowsSwitchBranches(windows);
+  assert.match(windows, /"signed-routing"/);
+  assert.match(windows, /"refresh-catalog"/);
+  assert.match(
+    branches.get("signed-routing"),
+    /control\.mjs"\s+\(@\("signed-routing"\)\s*\+\s*\$Arguments\)/,
+  );
+  assert.match(branches.get("refresh-catalog"), /refresh-catalog\.mjs"\s+\$Arguments/);
+
+  const posix = readScript("bin", "refresh-catalog");
+  assert.match(posix, /exec node .*src\/refresh-catalog\.mjs" "\$@"/);
+});
+
 test("both bootstrap installers refuse on tracked edits only", () => {
   // Run without -CheckoutInstall / from a pipe, these are the curl|sh and
   // irm|iex self-update paths. They reimplement requireReplaceableCheckout()

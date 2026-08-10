@@ -46,3 +46,8 @@ test("setup forwards its already-confirmed smoke choice as --yes", () => {
   const source = readFileSync(path.join(root, "src", "setup.mjs"), "utf8");
   assert.match(source, /"smoke-test\.mjs"\), "--yes"/);
 });
+
+test("installation documentation includes consent in its direct smoke command", () => {
+  const source = readFileSync(path.join(root, "docs", "INSTALL.md"), "utf8");
+  assert.match(source, /\.\/bin\/smoke-test --yes/);
+});

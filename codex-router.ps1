@@ -9,7 +9,8 @@ $Arguments = if ($args.Count -gt 1) { @($args[1..($args.Count - 1)]) } else { @(
 $Commands = @(
   "setup", "install", "doctor", "status", "providers", "provider-key", "enable",
   "disable", "uninstall", "update", "rollback", "support-bundle",
-  "smoke-test", "start", "test-model", "discover-models"
+  "smoke-test", "start", "test-model", "discover-models", "signed-routing",
+  "refresh-catalog"
 )
 if ($Command -notin $Commands) {
   throw "Unknown command '$Command'. Choose: $($Commands -join ', ')."
@@ -59,6 +60,10 @@ switch ($Command) {
     # Windows, which is the only way past tracked edits that block a rollback.
     Invoke-RouterNode "src\update.mjs" (@("rollback") + $Arguments)
   }
+  "signed-routing" {
+    Invoke-RouterNode "src\control.mjs" (@("signed-routing") + $Arguments)
+  }
+  "refresh-catalog" { Invoke-RouterNode "src\refresh-catalog.mjs" $Arguments }
   "support-bundle" { Invoke-RouterNode "src\support-bundle.mjs" $Arguments }
   "smoke-test" {
     Invoke-RouterNode "src\smoke-test.mjs" $Arguments
