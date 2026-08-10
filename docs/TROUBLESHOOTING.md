@@ -227,14 +227,15 @@ empty response as a completed turn and the agent appears to stop for no reason.
 Reasoning-only turns count — a model that thinks and then says nothing produces
 exactly this.
 
-The router holds the terminal events (`response.completed`, `response.done`,
-`[DONE]`) until it knows the turn produced something. When nothing arrives it
-suppresses them and retries the identical request once, so the client never sees
-a completed-but-empty response. A retry that produces content streams normally.
-A retry that is empty again ends the stream with an explicit `empty_completion`
-error event, and one that fails upstream ends it with
-`empty_completion_retry_failed` — a stated failure either way, never a silent
-success.
+The router holds the entire response until it knows the turn produced something.
+When nothing arrives it discards that attempt and retries the identical request
+once, so the client sees only one response head, response ID, and sequence space.
+A retry that produces content streams normally. A retry that is empty again
+returns an explicit 502 `empty_completion` error, and one that fails upstream
+returns `empty_completion_retry_failed` — a stated failure either way, never a
+silent success. The hold has byte and time limits; if either is reached, the
+router safely relays the original attempt without retrying rather than buffering
+without bound.
 
 Retried turns are marked in the state directory's `usage-events.jsonl`:
 `emptyCompletionRetried: true` on every retried turn, plus `emptyCompletion:

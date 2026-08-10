@@ -141,6 +141,10 @@ export class EmptyCompletionGuard extends Transform {
     return this.#empty;
   }
 
+  hasContent() {
+    return this.#sawContent;
+  }
+
   _transform(chunk, _encoding, callback) {
     if (this.#undeclared && chunk.length) {
       this.#undeclared = false;

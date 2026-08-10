@@ -78,6 +78,55 @@ async function closeServer(server) {
   await new Promise((resolve) => server.close(resolve));
 }
 
+function routerEnv(gatewayPort, routerPort) {
+  return {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gatewayPort}/v1`,
+    CODEX_ROUTER_OAUTH_HEALTH_URL: `http://127.0.0.1:${gatewayPort}/health`,
+    CODEX_ROUTER_API_HEALTH_URL: `http://127.0.0.1:${gatewayPort}/health`,
+    CODEX_ROUTER_GATEWAY_HEALTH_URL: `http://127.0.0.1:${gatewayPort}/health`,
+  };
+}
+
+function routedRequest(port, input) {
+  const base = new URL(`${callerBaseUrl(port, CALLER_KEY)}/responses`);
+  return new Promise((resolve, reject) => {
+    const request = http.request(
+      {
+        host: "127.0.0.1",
+        port,
+        path: base.pathname,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer codex-caller-auth",
+        },
+      },
+      (response) => {
+        response.resume();
+        const done = () => resolve(response.statusCode);
+        response.once("end", done);
+        response.once("close", done);
+        response.once("error", done);
+      },
+    );
+    request.once("error", reject);
+    request.end(
+      JSON.stringify({ model: "deepseek/deepseek-v4-pro", input, stream: true }),
+    );
+  });
+}
+
+async function waitForTimings(child, count) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const lines = child.testErrors().match(/\[codex-router\] timing [^\n]+/g) || [];
+    if (lines.length >= count) return lines;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${count} timing lines: ${child.testErrors()}`);
+}
+
 test("every routed turn writes a timestamped timing line with cache tokens", async () => {
   const gateway = await mockServer((request, response) => {
     if (request.method === "GET" && request.url === "/health") {
@@ -156,6 +205,72 @@ test("every routed turn writes a timestamped timing line with cache tokens", asy
     assert.match(timing, /upstream_ms=\d+/);
     assert.match(timing, /out_tokens=5/);
     assert.match(timing, /cached_tokens=90/);
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+  }
+});
+
+test("timing covers non-2xx, thrown fetch, and mid-stream failures", async () => {
+  const gateway = await mockServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/health") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    const input = JSON.parse(raw).input;
+    if (input === "explicit-zero") {
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.end(
+        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\n' +
+          'event: response.completed\ndata: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":4,"output_tokens":0,"total_tokens":4,"input_tokens_details":{"cached_tokens":0}}}}\n\ndata: [DONE]\n\n',
+      );
+      return;
+    }
+    if (input === "non-2xx") {
+      response.writeHead(429, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "limited" } }));
+      return;
+    }
+    if (input === "thrown") {
+      response.socket.destroy();
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.write(
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"partial"}\n\n',
+    );
+    setTimeout(() => response.destroy(), 20);
+  });
+  const routerPort = await openPort();
+  const router = run(routerEnv(gateway.port, routerPort));
+
+  try {
+    await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+
+    assert.equal(await routedRequest(routerPort, "explicit-zero"), 200);
+    let timings = await waitForTimings(router, 1);
+    assert.match(timings[0], /status=200 .*out_tokens=0 cached_tokens=0/);
+
+    assert.equal(await routedRequest(routerPort, "non-2xx"), 429);
+    timings = await waitForTimings(router, 2);
+    assert.match(timings[1], /status=429 .*upstream_ms=\d+/);
+    assert.match(timings[1], /out_tokens=unknown cached_tokens=unknown/);
+
+    assert.equal(await routedRequest(routerPort, "thrown"), 502);
+    timings = await waitForTimings(router, 3);
+    assert.match(timings[2], /status=502 .*upstream_ms=\d+/);
+    assert.match(timings[2], /out_tokens=unknown cached_tokens=unknown/);
+
+    await routedRequest(routerPort, "stream-fail");
+    timings = await waitForTimings(router, 4);
+    assert.match(timings[3], /status=502 .*upstream_ms=\d+/);
+    assert.match(timings[3], /out_tokens=unknown cached_tokens=unknown/);
+
+    const health = await fetch(`http://127.0.0.1:${routerPort}/health`);
+    assert.equal((await health.json()).activity.state, "error");
   } finally {
     await stopChild(router);
     await closeServer(gateway.server);

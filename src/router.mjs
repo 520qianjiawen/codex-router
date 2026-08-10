@@ -22,7 +22,6 @@ import {
   pipeResponse,
   readRequestBody,
   writeJson,
-  writeStreamErrorEvent,
 } from "./http-utils.mjs";
 import { EmptyCompletionGuard } from "./empty-completion-guard.mjs";
 import {
@@ -388,6 +387,40 @@ function sumEstimatedInputTokens(first, second) {
   if (first === undefined) return second;
   if (second === undefined) return first;
   return first + second;
+}
+
+function isEventStreamResponse(upstream) {
+  return String(upstream?.headers?.get("content-type") || "")
+    .toLowerCase()
+    .includes("text/event-stream");
+}
+
+// `pipeResponse` stages the upstream head before the first body byte. The
+// empty-completion gate can finish without emitting that byte, leaving a head
+// that is still replaceable. Clear it before selecting the retry or a synthetic
+// protocol error so no first-attempt header survives into the one response the
+// client actually receives.
+function clearStagedResponseHead(response) {
+  if (response.headersSent) {
+    throw new Error("Cannot replace a response head after it was sent.");
+  }
+  for (const name of response.getHeaderNames()) response.removeHeader(name);
+  response.statusCode = 200;
+}
+
+function writeEmptyCompletionError(response, code, message) {
+  clearStagedResponseHead(response);
+  writeJson(response, 502, {
+    error: {
+      type: code,
+      code,
+      message,
+    },
+  });
+}
+
+function timingMetric(value) {
+  return Number.isFinite(value) ? String(value) : "unknown";
 }
 
 // Never gated on QUIET. A production LaunchAgent hard-sets `CODEX_ROUTER_QUIET=1`,
@@ -1356,6 +1389,17 @@ async function handleResponses(request, response, requestUrl) {
   let requestedModel = "";
   let route;
   let upstreamRetries;
+  let upstreamLatencyMs;
+  let usageTransform;
+  let retryUsageTransform;
+  let retryEmptyCompletionGuard;
+  let usage;
+  let estimatedInputTokens;
+  let emptyCompletion = false;
+  let emptyCompletionRetried = false;
+  let finalStatus;
+  let activityStatus;
+  let usageRecorded = false;
   try {
     if (!requireCodexTransport(request, response)) return;
     const encoded = await readRequestBody(request);
@@ -1434,6 +1478,10 @@ async function handleResponses(request, response, requestUrl) {
         durationMs: Date.now() - startedAt,
         ...compaction.usage,
       });
+      usage = compaction.usage;
+      finalStatus = compaction.status;
+      activityStatus = compaction.status;
+      usageRecorded = true;
       if (!QUIET) {
         console.error(
           `[codex-router] model=${requestedModel || "unknown"} provider=${route.provider} status=${compaction.status}`,
@@ -1554,7 +1602,7 @@ async function handleResponses(request, response, requestUrl) {
     // bridge) plus the upstream's own time to produce response headers. For a
     // routed turn that means the full router -> litellm -> api-forwarder ->
     // provider path, so a stall here is the provider's, not the router's.
-    const upstreamLatencyMs = Date.now() - startedAt;
+    upstreamLatencyMs = Date.now() - startedAt;
     // Gateway error bodies leak LiteLLM's internal exception chain, which
     // reads like a router bug. Rewrite them to name the provider that failed.
     // Native traffic passes through untouched: OpenAI errors are already clear.
@@ -1583,6 +1631,9 @@ async function handleResponses(request, response, requestUrl) {
         status: upstream.status,
         durationMs: Date.now() - startedAt,
       });
+      finalStatus = upstream.status;
+      activityStatus = upstream.status;
+      usageRecorded = true;
       if (!QUIET) {
         console.error(
           `[codex-router] model=${requestedModel || "unknown"} provider=${route.provider} status=${upstream.status}`,
@@ -1602,133 +1653,134 @@ async function handleResponses(request, response, requestUrl) {
     // so it cannot fire on a provider that reports correctly and it disables
     // itself the moment the upstream starts reporting again.
     const upstreamContentType = upstream.headers.get("content-type") || "";
-    const usageTransform = new ResponseUsageTransform(
-      upstreamContentType,
-      {
+    const createResponsePipeline = (contentType) => {
+      const usageObserver = new ResponseUsageTransform(contentType, {
         estimatedInputTokens:
           ZERO_INPUT_ESTIMATE && route
             ? estimateInputTokens(routedBody, { contextWindow: route.contextWindow })
             : undefined,
-      },
-    );
-    const transforms = [usageTransform];
-    // Every routed response may contain a fresh app-native create_thread call
-    // that needs parent-model inheritance. Chat-completions routes also need
-    // flattened namespaces restored; Responses-native routes use an empty
-    // lookup and retain their already-namespaced call shape.
-    if (route) {
-      transforms.push(
-        new NamespaceToolCallTransform(flattenedNamespaces, upstreamContentType, route.slug),
-      );
-    }
-    // Routed turns get the empty-completion guard: a 200 that completes with
-    // no output text and no tool call is a failure the client cannot see (it
-    // silently records the turn as done). The guard holds the terminal events
-    // until it knows the turn produced something, so an empty one can be
-    // retried against the same request body without the client ever seeing a
-    // completed-but-empty response.
-    const emptyCompletionGuard =
-      route && EMPTY_COMPLETION_RETRY
-        ? new EmptyCompletionGuard(upstreamContentType, { retried: false })
-        : undefined;
-    if (emptyCompletionGuard) transforms.push(emptyCompletionGuard);
+      });
+      const transforms = [usageObserver];
+      // Every attempt uses the same normal transform pipeline. In particular,
+      // a tool call recovered by the retry must still have its flattened
+      // namespace restored before Codex sees it.
+      if (route) {
+        transforms.push(
+          new NamespaceToolCallTransform(flattenedNamespaces, contentType, route.slug),
+        );
+      }
+      const guard =
+        route && EMPTY_COMPLETION_RETRY
+          ? new EmptyCompletionGuard(contentType)
+          : undefined;
+      if (guard) transforms.push(guard);
+      return { transforms, usageObserver, guard };
+    };
+    const firstPipeline = createResponsePipeline(upstreamContentType);
+    usageTransform = firstPipeline.usageObserver;
+    const emptyCompletionGuard = firstPipeline.guard;
     const relayOpen = Boolean(emptyCompletionGuard);
-    await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, transforms, {
+    await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, firstPipeline.transforms, {
       leaveOpen: relayOpen,
     });
-    let usage = usageTransform?.tokenUsage();
-    let estimatedInputTokens = usageTransform?.substitutedInputTokens();
+    usage = usageTransform?.tokenUsage();
+    estimatedInputTokens = usageTransform?.substitutedInputTokens();
     // The `close` listener above sets `clientGone` when the client's socket
     // goes away, but `pipeResponse` can resolve before that event fires: the
     // response socket is already destroyed at that point. Read the state
     // directly as well so a cancel that races the close event still meters 0.
     const clientWalkedAway =
       clientGone || (response.destroyed && !response.writableFinished);
-    let finalStatus = clientWalkedAway ? 0 : upstream.status;
-    let emptyCompletion = emptyCompletionGuard?.isEmpty() === true && !clientWalkedAway;
-    let emptyCompletionRetried = false;
+    finalStatus = clientWalkedAway ? 0 : upstream.status;
+    emptyCompletion = emptyCompletionGuard?.isEmpty() === true && !clientWalkedAway;
     if (emptyCompletion) {
       // The upstream answered 200 with nothing. Retry the identical request
-      // once: same bytes, same headers, same signal. The first attempt's
-      // terminal events were suppressed by the guard, so the client has not
-      // seen a completed turn yet; the retry's stream continues the one
-      // response it is already reading.
-      const { response: upstream2, retries: retries2 } = await fetchWithRetry(
-        target,
-        {
-          method: "POST",
-          headers,
-          body: routedBody,
-          signal: controller.signal,
-        },
-        {
-          retries: 0,
-          canRetry: () => nothingRelayed(response),
-          onRetry: (event) => logUpstreamRetry(event, requestedModel, requestUrl.pathname),
-        },
-      );
-      upstreamRetries += retries2;
+      // once: same bytes, same headers, same signal. The guard discarded the
+      // whole first stream, so the retry supplies the only head, response id,
+      // sequence space, reasoning, and output the client ever receives.
       emptyCompletionRetried = true;
-      if (!upstream2.ok) {
-        // The retry failed outright. Its head cannot reach the client -- the
-        // 200 went out with the first attempt -- and relaying the error body
-        // into the SSE stream would just append unparseable bytes, leaving the
-        // same silent stop this guard exists to remove. State the failure in
-        // the stream's own error framing and drain the body so the socket is
-        // not leaked.
-        await upstream2.text().catch(() => {});
-        writeStreamErrorEvent(response, {
-          code: "empty_completion_retry_failed",
-          message:
-            "The model returned an empty completion and the router's retry failed upstream.",
-        });
-        finalStatus = upstream2.status;
-      } else {
-        // The retry's own content type, not the first attempt's: they are
-        // normally identical, and when they are not, the transforms have to
-        // parse what this attempt is actually sending.
-        const retryContentType =
-          upstream2.headers.get("content-type") || upstreamContentType;
-        const usage2 = new ResponseUsageTransform(retryContentType, {
-          estimatedInputTokens:
-            ZERO_INPUT_ESTIMATE && route
-              ? estimateInputTokens(routedBody, { contextWindow: route.contextWindow })
-              : undefined,
-        });
-        const guard2 = new EmptyCompletionGuard(retryContentType, {
-          retried: true,
-          // The first attempt already opened the turn for the client, so the
-          // retry must not send a second `response.created`: one response, one
-          // prologue, whatever happened between the two attempts.
-          suppressPrologue: emptyCompletionGuard.sawPrologue(),
-        });
-        await pipeResponse(upstream2, response, HOP_BY_HOP_HEADERS, [usage2, guard2], {
-          leaveOpen: true,
-          // The 200 head and headers went out with the first attempt; the
-          // retry's stream continues that same response.
-          omitHead: true,
-        });
-        if (guard2.isEmpty()) {
-          // The retry was empty too; the guard wrote an explicit error event to
-          // the stream, so the client sees a stated failure instead of a second
-          // silent success.
+      let upstream2;
+      try {
+        const retried = await fetchWithRetry(
+          target,
+          {
+            method: "POST",
+            headers,
+            body: routedBody,
+            signal: controller.signal,
+          },
+          {
+            retries: 0,
+            canRetry: () => nothingRelayed(response),
+            onRetry: (event) => logUpstreamRetry(event, requestedModel, requestUrl.pathname),
+          },
+        );
+        upstream2 = retried.response;
+        upstreamRetries = (upstreamRetries || 0) + retried.retries;
+      } catch (error) {
+        if (clientGone) throw error;
+        console.error(
+          `[codex-router] empty-completion retry transport failed model=${requestedModel || "unknown"} provider=${route.provider} error=${error?.name || "Error"}${error?.cause?.code ? `/${error.cause.code}` : ""}`,
+        );
+        writeEmptyCompletionError(
+          response,
+          "empty_completion_retry_failed",
+          "The model returned an empty completion and the router's retry failed upstream.",
+        );
+        finalStatus = 502;
+      }
+      if (upstream2) {
+        const compatibleRetry =
+          upstream2.ok && upstream2.body && isEventStreamResponse(upstream2);
+        if (!compatibleRetry) {
+          await upstream2.body?.cancel().catch(() => {});
+          writeEmptyCompletionError(
+            response,
+            upstream2.ok
+              ? "empty_completion_retry_protocol_error"
+              : "empty_completion_retry_failed",
+            upstream2.ok
+              ? "The model returned an empty completion and the router's retry returned an incompatible response."
+              : "The model returned an empty completion and the router's retry failed upstream.",
+          );
           finalStatus = 502;
         } else {
-          finalStatus = upstream2.status;
-          emptyCompletion = false;
+          clearStagedResponseHead(response);
+          const retryContentType = upstream2.headers.get("content-type") || "";
+          const secondPipeline = createResponsePipeline(retryContentType);
+          retryUsageTransform = secondPipeline.usageObserver;
+          retryEmptyCompletionGuard = secondPipeline.guard;
+          await pipeResponse(
+            upstream2,
+            response,
+            HOP_BY_HOP_HEADERS,
+            secondPipeline.transforms,
+            { leaveOpen: true },
+          );
+          if (secondPipeline.guard.isEmpty()) {
+            writeEmptyCompletionError(
+              response,
+              "empty_completion",
+              "The model returned an empty completion. The router retried once and the completion was empty again.",
+            );
+            finalStatus = 502;
+          } else {
+            finalStatus = upstream2.status;
+            emptyCompletion = false;
+          }
         }
-        // Both attempts were billed, so the meter reports both. Reporting only
-        // the retry would understate a retried turn by an entire prompt, which
-        // is the one number an operator watching this marker is looking for.
-        usage = mergeTokenUsage(usage, usage2.tokenUsage());
-        estimatedInputTokens = sumEstimatedInputTokens(
-          estimatedInputTokens,
-          usage2.substitutedInputTokens(),
-        );
       }
+      // Both attempts were billed, so the meter reports both. A retry that
+      // fails before returning a body still preserves the known first-attempt
+      // usage instead of dropping it with the transport error.
+      usage = mergeTokenUsage(usage, retryUsageTransform?.tokenUsage());
+      estimatedInputTokens = sumEstimatedInputTokens(
+        estimatedInputTokens,
+        retryUsageTransform?.substitutedInputTokens(),
+      );
     }
-    // The empty-completion retry keeps the response open across both attempts;
-    // end it once, after the retry decision.
+    // The classification gate keeps the response open until the selected
+    // attempt is known; end exactly that one response once.
     if (relayOpen) await finishResponse(response);
     // `retries` separates "it never failed" from "it failed and the router
     // absorbed it", both of which otherwise record a plain 200;
@@ -1750,6 +1802,8 @@ async function handleResponses(request, response, requestUrl) {
       ...(emptyCompletion ? { emptyCompletion: true } : {}),
       ...(emptyCompletionRetried ? { emptyCompletionRetried: true } : {}),
     });
+    usageRecorded = true;
+    activityStatus = finalStatus;
     if (!QUIET) {
       // The substitution is named in the log line as well as the usage event:
       // a router that quietly invents token counts is its own trap.
@@ -1761,51 +1815,74 @@ async function handleResponses(request, response, requestUrl) {
         }${emptyCompletion ? " empty-completion=true" : ""}`,
       );
     }
-    // Timestamped per-request timing for latency diagnosis. Never gated on
-    // QUIET: the production LaunchAgent hard-sets CODEX_ROUTER_QUIET=1 and
-    // this line is the one place to see how long a turn took, how long the
-    // upstream took to start answering, and whether the provider reported any
-    // prefix-cache hits. `cached_tokens` is the provider's own number (when
-    // it reports one); a steady zero here means no cache hits are reported.
-    console.error(
-      `[codex-router] timing at=${new Date().toISOString()} model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${finalStatus} total_ms=${Date.now() - startedAt} upstream_ms=${upstreamLatencyMs} out_tokens=${usage?.outputTokens ?? 0} cached_tokens=${usage?.cachedInputTokens ?? 0}${
-        estimatedInputTokens ? ` est_input=${estimatedInputTokens}` : ""
-      }`,
-    );
   } catch (error) {
+    upstreamLatencyMs ??= Date.now() - startedAt;
+    if (retryEmptyCompletionGuard?.hasContent()) emptyCompletion = false;
+    if (usageTransform) {
+      usage = mergeTokenUsage(
+        usageTransform.tokenUsage(),
+        retryUsageTransform?.tokenUsage(),
+      );
+      estimatedInputTokens = sumEstimatedInputTokens(
+        usageTransform.substitutedInputTokens(),
+        retryUsageTransform?.substitutedInputTokens(),
+      );
+    }
     // A client that walked away (canceled generation, closed stream) is not
     // a router failure; only surface errors the router or upstream produced.
     if (clientGone) {
-      recordUsageEvent({
-        model: route?.slug || requestedModel,
-        provider: route ? canonicalProviderId(route.provider) : "openai",
-        status: 0,
-        durationMs: Date.now() - startedAt,
-        retries: upstreamRetries,
-      });
-      activity.finish(0);
+      finalStatus = 0;
+      activityStatus = 0;
+      if (!usageRecorded) {
+        recordUsageEvent({
+          model: route?.slug || requestedModel,
+          provider: route ? canonicalProviderId(route.provider) : "openai",
+          status: 0,
+          durationMs: Date.now() - startedAt,
+          retries: upstreamRetries,
+          ...usage,
+          estimatedInputTokens,
+          ...(emptyCompletion ? { emptyCompletion: true } : {}),
+          ...(emptyCompletionRetried ? { emptyCompletionRetried: true } : {}),
+        });
+        usageRecorded = true;
+      }
       return;
     }
-    // The upstream stream died after its head was already committed: the
-    // client saw a 200 start and a truncated body, so the meter has to say so
-    // instead of a success the client never received. `streamAborted` is the
-    // additive marker; `status` is rewritten to 502 so dashboards that only
-    // read status still count the turn as a failure. Token counts are omitted
-    // because the truncated stream never reported a final usage.
-    if (response.headersSent) {
+    // A stream that died after committing its head is a 502 even though the
+    // HTTP status can no longer change. Preserve whatever usage transforms had
+    // already observed; `streamAborted` distinguishes that partial stream from
+    // an ordinary upstream or router failure before a head existed.
+    finalStatus = response.headersSent ? 502 : httpErrorStatus(error);
+    activityStatus = finalStatus;
+    if (!usageRecorded) {
       recordUsageEvent({
         model: route?.slug || requestedModel,
         provider: route ? canonicalProviderId(route.provider) : "openai",
-        status: 502,
+        status: finalStatus,
         durationMs: Date.now() - startedAt,
         retries: upstreamRetries,
-        streamAborted: true,
+        ...usage,
+        estimatedInputTokens,
+        ...(response.headersSent ? { streamAborted: true } : {}),
+        ...(emptyCompletion ? { emptyCompletion: true } : {}),
+        ...(emptyCompletionRetried ? { emptyCompletionRetried: true } : {}),
       });
+      usageRecorded = true;
     }
-    activity.finish(500);
     throw error;
   } finally {
-    activity.finish(response.statusCode);
+    const status = activityStatus ?? finalStatus ?? response.statusCode;
+    activity.finish(status);
+    // Timestamped per-request timing for latency diagnosis. Never gated on
+    // QUIET: the production LaunchAgent hard-sets CODEX_ROUTER_QUIET=1. A
+    // missing provider count is logged as unknown, not zero; an explicit zero
+    // remains zero so a real cache miss is distinguishable from absent data.
+    console.error(
+      `[codex-router] timing at=${new Date().toISOString()} model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${status} total_ms=${Date.now() - startedAt} upstream_ms=${timingMetric(upstreamLatencyMs)} out_tokens=${timingMetric(usage?.outputTokens)} cached_tokens=${timingMetric(usage?.cachedInputTokens)}${
+        estimatedInputTokens ? ` est_input=${estimatedInputTokens}` : ""
+      }`,
+    );
   }
 }
 

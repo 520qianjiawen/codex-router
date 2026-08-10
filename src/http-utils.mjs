@@ -144,20 +144,15 @@ export async function pipeResponse(
   response,
   denylist,
   transform,
-  { leaveOpen = false, omitHead = false } = {},
+  { leaveOpen = false } = {},
 ) {
   const transforms = transform === undefined
     ? []
     : Array.isArray(transform)
       ? transform
       : [transform];
-  // `omitHead` is for relaying a second upstream into an already-started
-  // response (the empty-completion retry): the status and headers were sent
-  // with the first attempt, and `setHeader` throws once they are flushed.
-  if (!omitHead) {
-    response.statusCode = upstream.status;
-    copyResponseHeaders(upstream, response, denylist);
-  }
+  response.statusCode = upstream.status;
+  copyResponseHeaders(upstream, response, denylist);
   if (!upstream.body) {
     if (!leaveOpen) response.end();
     return;

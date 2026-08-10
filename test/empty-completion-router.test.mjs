@@ -22,34 +22,34 @@ const CALLER_KEY = "test-router-caller-capability-with-sufficient-length";
 
 const EMPTY_SSE = [
   'event: response.created',
-  'data: {"type":"response.created","response":{"id":"r-empty"}}',
+  'data: {"type":"response.created","sequence_number":0,"response":{"id":"r-empty"}}',
   "",
   'event: response.reasoning_text.delta',
-  'data: {"type":"response.reasoning_text.delta","delta":"thinking..."}',
+  'data: {"type":"response.reasoning_text.delta","sequence_number":1,"delta":"thinking..."}',
   "",
   'event: response.completed',
-  'data: {"type":"response.completed","response":{"id":"r-empty","output":[]}}',
+  'data: {"type":"response.completed","sequence_number":2,"response":{"id":"r-empty","output":[]}}',
   "",
   'event: response.done',
-  'data: {"type":"response.done","response":{"id":"r-empty"}}',
+  'data: {"type":"response.done","sequence_number":3,"response":{"id":"r-empty"}}',
   "",
 ].join("\n");
 
 const CONTENT_SSE = [
   'event: response.created',
-  'data: {"type":"response.created","response":{"id":"r-content"}}',
+  'data: {"type":"response.created","sequence_number":0,"response":{"id":"r-content"}}',
   "",
   'event: response.output_text.delta',
-  'data: {"type":"response.output_text.delta","delta":"Recovered"}',
+  'data: {"type":"response.output_text.delta","sequence_number":1,"delta":"Recovered"}',
   "",
   'event: response.output_text.done',
-  'data: {"type":"response.output_text.done","text":"Recovered"}',
+  'data: {"type":"response.output_text.done","sequence_number":2,"text":"Recovered"}',
   "",
   'event: response.completed',
-  'data: {"type":"response.completed","response":{"id":"r-content","output":[]}}',
+  'data: {"type":"response.completed","sequence_number":3,"response":{"id":"r-content","output":[]}}',
   "",
   'event: response.done',
-  'data: {"type":"response.done","response":{"id":"r-content"}}',
+  'data: {"type":"response.done","sequence_number":4,"response":{"id":"r-content"}}',
   "",
 ].join("\n");
 
@@ -65,7 +65,12 @@ const EMPTY_SSE_METERED = [
     response: {
       id: "r-empty",
       output: [],
-      usage: { input_tokens: 100, output_tokens: 0, total_tokens: 100 },
+      usage: {
+        input_tokens: 100,
+        output_tokens: 0,
+        total_tokens: 100,
+        input_tokens_details: { cached_tokens: 60 },
+      },
     },
   })}`,
   "",
@@ -86,7 +91,12 @@ const CONTENT_SSE_METERED = [
     response: {
       id: "r-content",
       output: [],
-      usage: { input_tokens: 100, output_tokens: 5, total_tokens: 105 },
+      usage: {
+        input_tokens: 100,
+        output_tokens: 5,
+        total_tokens: 105,
+        input_tokens_details: { cached_tokens: 80 },
+      },
     },
   })}`,
   "",
@@ -148,6 +158,15 @@ async function waitForUsageEvents(stateDir, count, child) {
   throw new Error(`Timed out waiting for ${count} usage events: ${child.testErrors()}`);
 }
 
+async function waitForLog(child, pattern) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (pattern.test(child.testErrors())) return child.testErrors();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${pattern}: ${child.testErrors()}`);
+}
+
 async function waitFor(url, child) {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
@@ -196,7 +215,12 @@ function readRouted(port, body) {
           text += chunk;
         });
         const done = () =>
-          resolve({ status: response.statusCode, body: text, complete: response.complete });
+          resolve({
+            status: response.statusCode,
+            headers: response.headers,
+            body: text,
+            complete: response.complete,
+          });
         response.once("end", done);
         response.once("close", done);
         response.once("error", done);
@@ -245,7 +269,10 @@ test("an empty completion is retried once and the retry's content reaches the cl
   let posts = 0;
   const gw = await gateway((_request, response) => {
     posts += 1;
-    response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8" });
+    response.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "X-Upstream-Attempt": posts === 1 ? "first" : "retry",
+    });
     response.write(posts === 1 ? EMPTY_SSE : CONTENT_SSE);
     response.end();
   });
@@ -261,6 +288,9 @@ test("an empty completion is retried once and the retry's content reaches the cl
     assert.equal(result.complete, true);
     // The retry's content reached the client...
     assert.match(result.body, /Recovered/);
+    assert.doesNotMatch(result.body, /r-empty|thinking/);
+    assert.match(result.body, /r-content/);
+    assert.equal(result.headers["x-upstream-attempt"], "retry");
     // ...and exactly one completed event did: the first attempt's terminal
     // events were suppressed.
     assert.equal((result.body.match(/event: response\.completed/g) || []).length, 1);
@@ -269,6 +299,10 @@ test("an empty completion is retried once and the retry's content reaches the cl
     // `response.created`, with its new id and restarted sequence numbers, must
     // not appear inside the response the client already opened.
     assert.equal((result.body.match(/event: response\.created/g) || []).length, 1);
+    assert.deepEqual(
+      [...result.body.matchAll(/"sequence_number":(\d+)/g)].map((match) => Number(match[1])),
+      [0, 1, 2, 3, 4],
+    );
     assert.equal(posts, 2, "the empty first attempt must be retried");
 
     const [event] = await waitForUsageEvents(router.stateDir, 1, router);
@@ -299,9 +333,8 @@ test("a double-empty completion surfaces an error and meters 502", async () => {
 
     const result = await readRouted(routerPort, TURN_BODY);
 
-    assert.equal(result.status, 200);
+    assert.equal(result.status, 502);
     assert.equal(result.complete, true);
-    assert.match(result.body, /event: error/);
     assert.match(result.body, /empty_completion/);
     assert.doesNotMatch(result.body, /event: response\.completed/);
     assert.equal(posts, 2, "the empty first attempt must be retried exactly once");
@@ -310,16 +343,17 @@ test("a double-empty completion surfaces an error and meters 502", async () => {
     assert.equal(event.status, 502);
     assert.equal(event.emptyCompletion, true);
     assert.equal(event.emptyCompletionRetried, true);
+    const health = await fetch(`http://127.0.0.1:${routerPort}/health`);
+    assert.equal((await health.json()).activity.state, "error");
   } finally {
     await stopChild(router);
     await closeServer(gw.server);
   }
 });
 
-// The retry can fail outright. Its status and headers cannot reach the client
-// -- the 200 went out with the first attempt -- so relaying its error body into
-// the SSE stream would append unparseable bytes and end the turn silently,
-// which is the exact failure this guard exists to remove.
+// The retry can fail outright. The first attempt is still fully buffered, so
+// replace its staged head with one deterministic router error and never relay
+// the upstream's internal body.
 test("a retry that fails upstream states the failure instead of relaying its body", async () => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
@@ -341,9 +375,8 @@ test("a retry that fails upstream states the failure instead of relaying its bod
 
     const result = await readRouted(routerPort, TURN_BODY);
 
-    assert.equal(result.status, 200);
+    assert.equal(result.status, 502);
     assert.equal(result.complete, true);
-    assert.match(result.body, /event: error/);
     assert.match(result.body, /empty_completion_retry_failed/);
     // The upstream's own error body never reaches the stream.
     assert.doesNotMatch(result.body, /upstream exploded/);
@@ -351,7 +384,7 @@ test("a retry that fails upstream states the failure instead of relaying its bod
     assert.equal(posts, 2);
 
     const [event] = await waitForUsageEvents(router.stateDir, 1, router);
-    assert.equal(event.status, 500);
+    assert.equal(event.status, 502);
     assert.equal(event.emptyCompletion, true);
     assert.equal(event.emptyCompletionRetried, true);
   } finally {
@@ -382,8 +415,179 @@ test("a retried turn meters the tokens of both attempts", async () => {
     const [event] = await waitForUsageEvents(router.stateDir, 1, router);
     assert.equal(event.emptyCompletionRetried, true);
     assert.equal(event.inputTokens, 200, "both prompts were sent, so both are reported");
+    assert.equal(event.cachedInputTokens, 140);
     assert.equal(event.outputTokens, 5);
     assert.equal(event.totalTokens, 205);
+  } finally {
+    await stopChild(router);
+    await closeServer(gw.server);
+  }
+});
+
+test("a retry tool call uses the normal namespace response transform", async () => {
+  let posts = 0;
+  const toolCall = [
+    "event: response.created",
+    'data: {"type":"response.created","sequence_number":0,"response":{"id":"r-tool"}}',
+    "",
+    "event: response.output_item.added",
+    'data: {"type":"response.output_item.added","sequence_number":1,"item":{"type":"function_call","name":"collaboration__spawn_agent","call_id":"call_1"}}',
+    "",
+    "event: response.output_item.done",
+    'data: {"type":"response.output_item.done","sequence_number":2,"item":{"type":"function_call","name":"collaboration__spawn_agent","call_id":"call_1","arguments":"{}"}}',
+    "",
+    "event: response.completed",
+    'data: {"type":"response.completed","sequence_number":3,"response":{"id":"r-tool","output":[]}}',
+    "",
+    "event: response.done",
+    'data: {"type":"response.done","sequence_number":4,"response":{"id":"r-tool"}}',
+    "",
+  ].join("\n");
+  const gw = await gateway((_request, response) => {
+    posts += 1;
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(posts === 1 ? EMPTY_SSE : toolCall);
+  });
+  const routerPort = await openPort();
+  const router = run(routerEnv(gw.port, routerPort));
+
+  try {
+    await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+    const result = await readRouted(routerPort, {
+      ...TURN_BODY,
+      tools: [
+        {
+          type: "namespace",
+          name: "collaboration",
+          tools: [{ type: "function", name: "spawn_agent" }],
+        },
+      ],
+    });
+
+    assert.equal(result.status, 200);
+    assert.match(result.body, /"name":"spawn_agent"/);
+    assert.match(result.body, /"namespace":"collaboration"/);
+    assert.doesNotMatch(result.body, /collaboration__spawn_agent|r-empty|thinking/);
+    assert.equal(posts, 2);
+  } finally {
+    await stopChild(router);
+    await closeServer(gw.server);
+  }
+});
+
+test("multiline SSE content on the retry is not misclassified as empty", async () => {
+  let posts = 0;
+  const multiline = [
+    "event: response.created",
+    'data: {"type":"response.created","sequence_number":0,"response":{"id":"r-multiline"}}',
+    "",
+    "event: response.output_text.delta",
+    'data: {"type":"response.output_text.delta","sequence_number":1,',
+    'data: "delta":"Multiline recovered"}',
+    "",
+    "event: response.completed",
+    'data: {"type":"response.completed","sequence_number":2,"response":{"id":"r-multiline","output":[]}}',
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const gw = await gateway((_request, response) => {
+    posts += 1;
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(posts === 1 ? EMPTY_SSE : multiline);
+  });
+  const routerPort = await openPort();
+  const router = run(routerEnv(gw.port, routerPort));
+
+  try {
+    await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+    const result = await readRouted(routerPort, TURN_BODY);
+    assert.equal(result.status, 200);
+    assert.match(result.body, /Multiline recovered/);
+    assert.doesNotMatch(result.body, /r-empty|thinking/);
+    assert.equal(posts, 2);
+  } finally {
+    await stopChild(router);
+    await closeServer(gw.server);
+  }
+});
+
+for (const retryKind of ["json", "bodyless"]) {
+  test(`a successful ${retryKind} retry becomes a deterministic protocol error`, async () => {
+    let posts = 0;
+    const gw = await gateway((_request, response) => {
+      posts += 1;
+      if (posts === 1) {
+        response.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "X-Upstream-Attempt": "first",
+        });
+        response.end(EMPTY_SSE);
+        return;
+      }
+      if (retryKind === "bodyless") {
+        response.writeHead(204, { "X-Upstream-Attempt": "retry" });
+        response.end();
+        return;
+      }
+      response.writeHead(200, {
+        "Content-Type": "application/json",
+        "X-Upstream-Attempt": "retry",
+      });
+      response.end(JSON.stringify({ secret: "must not enter the client response" }));
+    });
+    const routerPort = await openPort();
+    const router = run(routerEnv(gw.port, routerPort));
+
+    try {
+      await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+      const result = await readRouted(routerPort, TURN_BODY);
+      assert.equal(result.status, 502);
+      assert.match(result.body, /empty_completion_retry_protocol_error/);
+      assert.doesNotMatch(result.body, /must not enter|r-empty|thinking/);
+      assert.equal(result.headers["content-type"], "application/json");
+      assert.equal(result.headers["x-upstream-attempt"], undefined);
+      assert.equal(posts, 2);
+    } finally {
+      await stopChild(router);
+      await closeServer(gw.server);
+    }
+  });
+}
+
+test("a transport-failed retry keeps first-attempt usage, cache, and markers", async () => {
+  let posts = 0;
+  const gw = await gateway((_request, response) => {
+    posts += 1;
+    if (posts === 1) {
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.end(EMPTY_SSE_METERED);
+      return;
+    }
+    response.socket.destroy();
+  });
+  const routerPort = await openPort();
+  const router = run(routerEnv(gw.port, routerPort));
+
+  try {
+    await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+    const result = await readRouted(routerPort, TURN_BODY);
+    assert.equal(result.status, 502);
+    assert.match(result.body, /empty_completion_retry_failed/);
+    assert.doesNotMatch(result.body, /r-empty|thinking/);
+
+    const [event] = await waitForUsageEvents(router.stateDir, 1, router);
+    assert.equal(event.status, 502);
+    assert.equal(event.inputTokens, 100);
+    assert.equal(event.outputTokens, 0);
+    assert.equal(event.totalTokens, 100);
+    assert.equal(event.cachedInputTokens, 60);
+    assert.equal(event.emptyCompletion, true);
+    assert.equal(event.emptyCompletionRetried, true);
+    assert.match(
+      await waitForLog(router, /timing .*status=502 .*cached_tokens=60/),
+      /timing .*status=502 .*cached_tokens=60/,
+    );
   } finally {
     await stopChild(router);
     await closeServer(gw.server);

@@ -31,6 +31,7 @@ export function recordUsageEvent({
   status,
   durationMs,
   inputTokens,
+  cachedInputTokens,
   outputTokens,
   totalTokens,
   retries,
@@ -69,6 +70,9 @@ export function recordUsageEvent({
     ...(safeRetryCount(retries) !== undefined ? { retries: safeRetryCount(retries) } : {}),
     ...(safeTokenCount(inputTokens) !== undefined
       ? { inputTokens: safeTokenCount(inputTokens) }
+      : {}),
+    ...(safeTokenCount(cachedInputTokens) !== undefined
+      ? { cachedInputTokens: safeTokenCount(cachedInputTokens) }
       : {}),
     ...(safeTokenCount(outputTokens) !== undefined
       ? { outputTokens: safeTokenCount(outputTokens) }
@@ -117,6 +121,7 @@ export function recentUsageEvents({ sinceMs = 24 * 60 * 60 * 1000, limit = 1_000
       )
       .map((event) => {
         const inputTokens = safeTokenCount(event.inputTokens);
+        const cachedInputTokens = safeTokenCount(event.cachedInputTokens);
         const outputTokens = safeTokenCount(event.outputTokens);
         const totalTokens = safeTokenCount(event.totalTokens);
         const retries = safeRetryCount(event.retries);
@@ -140,6 +145,7 @@ export function recentUsageEvents({ sinceMs = 24 * 60 * 60 * 1000, limit = 1_000
             : {}),
           ...(retries !== undefined ? { retries } : {}),
           ...(inputTokens !== undefined ? { inputTokens } : {}),
+          ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
           ...(outputTokens !== undefined ? { outputTokens } : {}),
           ...(totalTokens !== undefined ? { totalTokens } : {}),
           ...(estimatedInputTokens !== undefined ? { estimatedInputTokens } : {}),
