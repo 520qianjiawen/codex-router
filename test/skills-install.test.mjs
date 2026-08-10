@@ -35,6 +35,7 @@ const PACK = [
   "codex-in-app-browser",
   "codex-computer-use",
 ];
+const SKILL_FRONTMATTER = /^---\r?\nname: (.+)\r?\ndescription: (.+)\r?\n---\r?\n/;
 
 function tempCodexHome() {
   return mkdtempSync(path.join(os.tmpdir(), "codex-skills-"));
@@ -462,6 +463,12 @@ function skillsRoot() {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "skills");
 }
 
+test("skill frontmatter accepts LF and CRLF checkouts", () => {
+  const lf = "---\nname: example\ndescription: Use when testing.\n---\n";
+  assert.ok(SKILL_FRONTMATTER.exec(lf));
+  assert.ok(SKILL_FRONTMATTER.exec(lf.replaceAll("\n", "\r\n")));
+});
+
 test("every pack skill has valid frontmatter, a trigger description, and stays short", () => {
   const skillsRoot = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
@@ -475,7 +482,7 @@ test("every pack skill has valid frontmatter, a trigger description, and stays s
   for (const name of names) {
     const text = readFileSync(path.join(skillsRoot, name, "SKILL.md"), "utf8");
     // Frontmatter parses: name matches the directory, description present.
-    const match = /^---\nname: (.+)\ndescription: (.+)\n---\n/.exec(text);
+    const match = SKILL_FRONTMATTER.exec(text);
     assert.ok(match, `${name}: valid frontmatter`);
     assert.equal(match[1], name, `${name}: frontmatter name matches directory`);
     // The description is what the model matches on; it must carry triggers.
