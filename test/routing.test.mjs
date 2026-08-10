@@ -2491,11 +2491,11 @@ test("API forwarder routes Qwen plan models without unsupported parameters", asy
 function curatedOpenRouterModels() {
   const dir = mkdtempSync(path.join(os.tmpdir(), "routing-openrouter-models-"));
   const file = path.join(dir, "user-models.json");
-  const entry = (upstreamModel, gatewayModel, requestProfile) => ({
-    slug: `openrouter/${upstreamModel}`,
+  const entry = (provider, upstreamModel, gatewayModel, requestProfile) => ({
+    slug: `${provider}/${upstreamModel}`,
     gatewayModel,
     upstreamModel,
-    provider: "openrouter",
+    provider,
     listed: true,
     displayName: `${upstreamModel} (curated)`,
     description: "Test fixture.",
@@ -2513,8 +2513,9 @@ function curatedOpenRouterModels() {
     JSON.stringify({
       version: 1,
       models: [
-        entry("qwen/qwen3.8-max", "openrouter-qwen-qwen3-8-max", "auto-tool-choice"),
-        entry("openai/gpt-5.3", "openrouter-openai-gpt-5-3"),
+        entry("openrouter", "qwen/qwen3.8-max", "openrouter-qwen-qwen3-8-max", "auto-tool-choice"),
+        entry("openrouter", "openai/gpt-5.3", "openrouter-openai-gpt-5-3"),
+        entry("chutes", "moonshotai/Kimi-K3-TEE", "chutes-moonshotai-kimi-k3-tee", "auto-tool-choice"),
       ],
     }),
     "utf8",
@@ -2524,6 +2525,7 @@ function curatedOpenRouterModels() {
     file,
     restricted: "openrouter-qwen-qwen3-8-max",
     unrestricted: "openrouter-openai-gpt-5-3",
+    chutes: "chutes-moonshotai-kimi-k3-tee",
   };
 }
 
@@ -2540,6 +2542,8 @@ test("API forwarder downgrades forced tool choices only for models that declare 
     MODEL_ROUTER_USER_MODELS: curated.file,
     OPENROUTER_API_BASE_URL: `http://127.0.0.1:${upstream.port}`,
     OPENROUTER_API_KEY: "TEST_OPENROUTER_API_KEY",
+    CHUTES_API_BASE_URL: `http://127.0.0.1:${upstream.port}`,
+    CHUTES_API_KEY: "TEST_CHUTES_API_KEY",
     CODEX_ROUTER_QUIET: "1",
   });
 
@@ -2613,6 +2617,18 @@ test("API forwarder downgrades forced tool choices only for models that declare 
       type: "function",
       function: { name: "relay_external_agent_payload" },
     });
+
+    // Chutes is catalog-only too, so its locally curated model must carry the
+    // same per-model restriction through the real credential/base-URL route.
+    // This local mock proves translation without spending Chutes quota.
+    const chutes = await forward(curated.chutes, {
+      reasoning_effort: "high",
+      tool_choice: "required",
+    });
+    assert.equal(chutes.headers.authorization, "Bearer TEST_CHUTES_API_KEY");
+    assert.equal(chutes.body.model, "moonshotai/Kimi-K3-TEE");
+    assert.equal(chutes.body.tool_choice, "auto");
+    assert.equal(chutes.body.reasoning_effort, "high");
   } finally {
     await stopChild(forwarder);
     await closeServer(upstream.server);
