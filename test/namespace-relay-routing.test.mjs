@@ -214,6 +214,15 @@ function gatewaySseBody() {
       type: "response.output_item.done",
       item: {
         type: "function_call",
+        name: "codex_app__create_thread",
+        call_id: "call_explicit_thread",
+        arguments: JSON.stringify({ model: "gpt-5.6-terra" }),
+      },
+    }),
+    sseEvent({
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
         name: "collaboration__spawn_agent",
         call_id: "call_agent",
         arguments: "{}",
@@ -248,6 +257,12 @@ function gatewayJsonBody() {
         name: "codex_app__create_thread",
         call_id: "call_thread",
         arguments: "{}",
+      },
+      {
+        type: "function_call",
+        name: "codex_app__create_thread",
+        call_id: "call_explicit_thread",
+        arguments: JSON.stringify({ model: "gpt-5.6-terra" }),
       },
       {
         type: "function_call",
@@ -379,6 +394,12 @@ test("routed request flattens every namespace to the gateway and restores calls 
     { name: calls.get("call_thread").name, namespace: calls.get("call_thread").namespace },
     { name: "create_thread", namespace: "codex_app" },
   );
+  assert.deepEqual(JSON.parse(calls.get("call_thread").arguments), {
+    model: "opencode-go/deepseek-v4-flash",
+  });
+  assert.deepEqual(JSON.parse(calls.get("call_explicit_thread").arguments), {
+    model: "gpt-5.6-terra",
+  });
   assert.deepEqual(
     { name: calls.get("call_agent").name, namespace: calls.get("call_agent").namespace },
     { name: "spawn_agent", namespace: "collaboration" },
@@ -405,6 +426,16 @@ test("non-streaming routed responses restore namespace calls before client dispa
     { name: client.output[1].name, namespace: client.output[1].namespace },
     { name: "create_thread", namespace: "codex_app" },
   );
-  assert.equal(client.output[2].name, "exec_command");
-  assert.equal(client.output[2].namespace, undefined);
+  assert.deepEqual(JSON.parse(client.output[1].arguments), {
+    model: "opencode-go/deepseek-v4-flash",
+  });
+  assert.deepEqual(JSON.parse(client.output[2].arguments), {
+    model: "gpt-5.6-terra",
+  });
+  assert.deepEqual(
+    { name: client.output[2].name, namespace: client.output[2].namespace },
+    { name: "create_thread", namespace: "codex_app" },
+  );
+  assert.equal(client.output[3].name, "exec_command");
+  assert.equal(client.output[3].namespace, undefined);
 });

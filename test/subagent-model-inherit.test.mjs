@@ -95,6 +95,8 @@ test("non-spawn tools are never touched", () => {
 test("malformed and non-call items are left alone", () => {
   const malformed = spawnCall("codex_app__create_thread", undefined, "{not json");
   assert.equal(injectSessionModelForSpawnCalls(malformed, SESSION_MODEL), malformed);
+  const incomplete = spawnCall("codex_app__create_thread", undefined, undefined);
+  assert.equal(injectSessionModelForSpawnCalls(incomplete, SESSION_MODEL), incomplete);
   assert.equal(injectSessionModelForSpawnCalls(undefined, SESSION_MODEL), undefined);
   const message = { type: "message", role: "user", content: [] };
   assert.equal(injectSessionModelForSpawnCalls(message, SESSION_MODEL), message);

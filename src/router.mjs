@@ -1594,7 +1594,9 @@ async function handleResponses(request, response, requestUrl) {
     );
     const transforms = [usageTransform];
     if (namespacesFlattened) {
-      transforms.push(new NamespaceToolCallTransform(flattenedNamespaces, upstreamContentType));
+      transforms.push(
+        new NamespaceToolCallTransform(flattenedNamespaces, upstreamContentType, route.slug),
+      );
     }
     await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, transforms);
     const usage = usageTransform?.tokenUsage();

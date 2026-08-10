@@ -31,14 +31,9 @@ export const NAMESPACE_DELIMITER = "__";
 // The tools that create or continue a thread with a model: `create_thread`
 // takes the model only when the user explicitly asked for one, and
 // `send_message_to_thread` describes its model field the same way. A routed
-// session that omits the field leaves the new thread on the app's default
-// (native gpt-5.6-luna), which is quota-blocked until Sep 8, 2026, so the
-// spawn dies instantly with usage_limit_exceeded while the parent waits. The
-// relay answers for the model instead: an omitted model on a routed session
-// becomes the session's own model (route.slug), so children inherit the
-// parent's custom provider. An explicit user-specified model always wins and
-// stays untouched. The injected children bill the custom provider -- the same
-// account the parent already bills -- never native quota.
+// session that omits the field would otherwise leave the child on the app's
+// default model. The relay instead injects the current route slug so children
+// stay on the parent's selected provider. An explicit model always wins.
 export const SPAWN_MODEL_TOOLS = new Set(["create_thread", "send_message_to_thread"]);
 const SPAWN_TOOL_PREFIX = `codex_app${NAMESPACE_DELIMITER}`;
 
@@ -62,9 +57,10 @@ function isSpawnModelCall(item) {
 export function injectSessionModelForSpawnCalls(item, model) {
   if (!isSpawnModelCall(item)) return item;
   if (typeof model !== "string" || !model) return item;
+  if (typeof item.arguments !== "string") return item;
   let args;
   try {
-    args = JSON.parse(item.arguments ?? "{}");
+    args = JSON.parse(item.arguments);
   } catch {
     return item;
   }
@@ -174,37 +170,40 @@ export function buildNamespaceLookups(namespaces) {
 // name (some models emit the unqualified form) is restored only when it is
 // unambiguous across every flattened namespace; a collision stays untouched
 // rather than guessing which runtime owns it.
-function rewriteNamespaceFunctionCallItem(item, lookups) {
+function rewriteNamespaceFunctionCallItem(item, lookups, sessionModel) {
   if (!item || item.type !== "function_call") return undefined;
+  let rewritten = item;
   const resolved = lookups.flatToNative.get(item.name);
   if (resolved) {
-    return {
+    rewritten = {
       ...item,
       name: resolved.name,
       namespace: resolved.namespace,
     };
+  } else {
+    const owners = lookups.bareToNamespaces.get(item.name);
+    if (item.namespace === undefined && owners && owners.size === 1) {
+      const [namespace] = [...owners];
+      rewritten = {
+        ...item,
+        namespace,
+      };
+    }
   }
-  const owners = lookups.bareToNamespaces.get(item.name);
-  if (item.namespace === undefined && owners && owners.size === 1) {
-    const [namespace] = [...owners];
-    return {
-      ...item,
-      namespace,
-    };
-  }
-  return undefined;
+  rewritten = injectSessionModelForSpawnCalls(rewritten, sessionModel);
+  return rewritten === item ? undefined : rewritten;
 }
 
-export function rewriteNamespaceFunctionCall(event, lookups) {
-  const item = rewriteNamespaceFunctionCallItem(event?.item, lookups);
+export function rewriteNamespaceFunctionCall(event, lookups, sessionModel) {
+  const item = rewriteNamespaceFunctionCallItem(event?.item, lookups, sessionModel);
   return item ? { ...event, item } : undefined;
 }
 
-function rewriteOutputItems(output, lookups) {
+function rewriteOutputItems(output, lookups, sessionModel) {
   if (!Array.isArray(output)) return undefined;
   let changed = false;
   const rewritten = output.map((item) => {
-    const next = rewriteNamespaceFunctionCallItem(item, lookups);
+    const next = rewriteNamespaceFunctionCallItem(item, lookups, sessionModel);
     if (!next) return item;
     changed = true;
     return next;
@@ -216,18 +215,18 @@ function rewriteOutputItems(output, lookups) {
 // array instead of SSE `item` events. Restore both shapes through the same
 // exact request-local lookup so stream mode cannot change dispatch semantics.
 // Returns a copy only when at least one call was restored.
-export function rewriteNamespaceResponsePayload(payload, lookups) {
+export function rewriteNamespaceResponsePayload(payload, lookups, sessionModel) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
-  let rewritten = rewriteNamespaceFunctionCall(payload, lookups) || payload;
+  let rewritten = rewriteNamespaceFunctionCall(payload, lookups, sessionModel) || payload;
   let changed = rewritten !== payload;
 
-  const output = rewriteOutputItems(rewritten.output, lookups);
+  const output = rewriteOutputItems(rewritten.output, lookups, sessionModel);
   if (output) {
     rewritten = { ...rewritten, output };
     changed = true;
   }
 
-  const responseOutput = rewriteOutputItems(rewritten.response?.output, lookups);
+  const responseOutput = rewriteOutputItems(rewritten.response?.output, lookups, sessionModel);
   if (responseOutput) {
     rewritten = {
       ...rewritten,
@@ -248,10 +247,12 @@ export class NamespaceToolCallTransform extends Transform {
   #released = false;
   #undeclared;
   #lookups;
+  #sessionModel;
 
-  constructor(namespaces, contentType = "") {
+  constructor(namespaces, contentType = "", sessionModel) {
     super();
     this.#lookups = buildNamespaceLookups(namespaces);
+    this.#sessionModel = sessionModel;
     const declared = String(contentType).toLowerCase();
     this.#eventStream = declared.includes("text/event-stream");
     this.#undeclared = !this.#eventStream && !declared.includes("json");
@@ -295,7 +296,11 @@ export class NamespaceToolCallTransform extends Transform {
       }
       try {
         const payload = JSON.parse(body.toString("utf8"));
-        const rewritten = rewriteNamespaceResponsePayload(payload, this.#lookups);
+        const rewritten = rewriteNamespaceResponsePayload(
+          payload,
+          this.#lookups,
+          this.#sessionModel,
+        );
         this.push(rewritten ? Buffer.from(JSON.stringify(rewritten), "utf8") : body);
       } catch {
         this.push(body);
@@ -333,7 +338,7 @@ export class NamespaceToolCallTransform extends Transform {
       }
       try {
         const event = JSON.parse(data);
-        const next = rewriteNamespaceResponsePayload(event, this.#lookups);
+        const next = rewriteNamespaceResponsePayload(event, this.#lookups, this.#sessionModel);
         if (!next) {
           rewritten.push(line);
           continue;
