@@ -329,6 +329,33 @@ test("response transform restores namespace on unambiguous unprefixed calls", as
   assert.match(output, /"namespace":"codex_app"/);
 });
 
+test("response transform detects headerless SSE after split framing prelude", async () => {
+  const { namespaces } = flattenNamespaceTools(clientRoutedTools());
+  const body = Buffer.from(
+    [
+      "\uFEFF: keepalive\r\n\r\n",
+      "\n",
+      `data: ${JSON.stringify({
+        type: "response.output_item.done",
+        item: {
+          type: "function_call",
+          name: "collaboration__spawn_agent",
+          call_id: "call_split_prefix",
+          arguments: "{}",
+        },
+      })}\n\n`,
+    ].join(""),
+    "utf8",
+  );
+  const transform = new NamespaceToolCallTransform(namespaces, "");
+  const output = await collect(
+    Readable.from([...body].map((byte) => Buffer.from([byte]))).pipe(transform),
+  );
+  assert.match(output, /"name":"spawn_agent"/);
+  assert.match(output, /"namespace":"collaboration"/);
+  assert.doesNotMatch(output, /collaboration__spawn_agent/);
+});
+
 test("response transform restores declared and headerless non-streaming JSON output", async () => {
   const merged = mergeCodexAppTools(clientRoutedTools());
   const { namespaces } = flattenNamespaceTools(merged.tools);

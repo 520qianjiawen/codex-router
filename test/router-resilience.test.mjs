@@ -161,6 +161,9 @@ test("a gateway that dies mid-stream ends the routed body and logs the cause", a
       "Cache-Control": "no-cache",
     });
     response.write('event: response.created\ndata: {"type":"response.created"}\n\n');
+    response.write(
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"partial"}\n\n',
+    );
     // Reset the upstream socket without the terminating chunk, exactly as an
     // edge that drops a live stream does.
     setTimeout(() => response.destroy(), 60);

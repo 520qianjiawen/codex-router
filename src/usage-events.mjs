@@ -31,6 +31,7 @@ export function recordUsageEvent({
   status,
   durationMs,
   inputTokens,
+  cachedInputTokens,
   outputTokens,
   totalTokens,
   retries,
@@ -39,6 +40,15 @@ export function recordUsageEvent({
   // the only thing that says the turn was truncated rather than successful.
   // Absent on ordinary events so old rows keep their exact shape.
   streamAborted,
+  // True when the upstream answered 200 with `response.completed` but never
+  // produced output text or a tool call, and the router suppressed the empty
+  // completion instead of letting the client record a silent success.
+  emptyCompletion,
+  // True when the empty completion above was retried once against the same
+  // request body. `status` describes the retry's own outcome; the token counts
+  // cover both attempts, because both were sent and both were billed. This
+  // marker is what says the reported spend belongs to two attempts at one turn.
+  emptyCompletionRetried,
   // Present only when the router replaced an upstream `input_tokens: 0` with
   // its own estimate on the way to Codex (#95). The reported counts above stay
   // exactly as the provider sent them, so an estimated turn is never mistaken
@@ -55,9 +65,14 @@ export function recordUsageEvent({
     status: Number.isInteger(status) ? status : 0,
     durationMs: Number.isFinite(durationMs) ? Math.max(0, Math.round(durationMs)) : 0,
     ...(streamAborted === true ? { streamAborted: true } : {}),
+    ...(emptyCompletion === true ? { emptyCompletion: true } : {}),
+    ...(emptyCompletionRetried === true ? { emptyCompletionRetried: true } : {}),
     ...(safeRetryCount(retries) !== undefined ? { retries: safeRetryCount(retries) } : {}),
     ...(safeTokenCount(inputTokens) !== undefined
       ? { inputTokens: safeTokenCount(inputTokens) }
+      : {}),
+    ...(safeTokenCount(cachedInputTokens) !== undefined
+      ? { cachedInputTokens: safeTokenCount(cachedInputTokens) }
       : {}),
     ...(safeTokenCount(outputTokens) !== undefined
       ? { outputTokens: safeTokenCount(outputTokens) }
@@ -106,6 +121,7 @@ export function recentUsageEvents({ sinceMs = 24 * 60 * 60 * 1000, limit = 1_000
       )
       .map((event) => {
         const inputTokens = safeTokenCount(event.inputTokens);
+        const cachedInputTokens = safeTokenCount(event.cachedInputTokens);
         const outputTokens = safeTokenCount(event.outputTokens);
         const totalTokens = safeTokenCount(event.totalTokens);
         const retries = safeRetryCount(event.retries);
@@ -123,8 +139,13 @@ export function recentUsageEvents({ sinceMs = 24 * 60 * 60 * 1000, limit = 1_000
             ? Math.max(0, Math.round(event.durationMs))
             : 0,
           ...(event.streamAborted === true ? { streamAborted: true } : {}),
+          ...(event.emptyCompletion === true ? { emptyCompletion: true } : {}),
+          ...(event.emptyCompletionRetried === true
+            ? { emptyCompletionRetried: true }
+            : {}),
           ...(retries !== undefined ? { retries } : {}),
           ...(inputTokens !== undefined ? { inputTokens } : {}),
+          ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
           ...(outputTokens !== undefined ? { outputTokens } : {}),
           ...(totalTokens !== undefined ? { totalTokens } : {}),
           ...(estimatedInputTokens !== undefined ? { estimatedInputTokens } : {}),
