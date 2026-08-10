@@ -47,6 +47,7 @@ import {
   NamespaceToolCallTransform,
   flattenNamespacedHistory,
   flattenNamespaceTools,
+  injectSessionModelForSpawnCalls,
 } from "./namespace-relay.mjs";
 import { mergeCodexAppTools } from "./codex-app-tools.mjs";
 import { activityMetadataFromHeaders } from "./codex-session-names.mjs";
@@ -1469,6 +1470,17 @@ async function handleResponses(request, response, requestUrl) {
       if (namespacesFlattened) {
         routedInput = flattenNamespacedHistory(routedInput, flattenedNamespaces);
       }
+      // A routed session that spawns a thread without an explicit model would
+      // leave the child on the app's native default (gpt-5.6-luna, quota
+      // blocked until Sep 8), killing the child and stalling the parent. Answer
+      // for the model instead: inherit the session's routed model so the child
+      // bills the same custom provider as the parent. Explicit models pass
+      // through untouched -- the model always wins.
+      if (Array.isArray(routedInput)) {
+        routedInput = routedInput.map((item) =>
+          injectSessionModelForSpawnCalls(item, route.slug),
+        );
+      }
       const routed = {
         ...payload,
         model: route.gatewayModel,
@@ -1586,7 +1598,9 @@ async function handleResponses(request, response, requestUrl) {
     );
     const transforms = [usageTransform];
     if (namespacesFlattened) {
-      transforms.push(new NamespaceToolCallTransform(flattenedNamespaces, upstreamContentType));
+      transforms.push(
+        new NamespaceToolCallTransform(flattenedNamespaces, upstreamContentType, route.slug),
+      );
     }
     await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, transforms);
     const usage = usageTransform?.tokenUsage();
