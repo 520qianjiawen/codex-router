@@ -34,6 +34,11 @@ export function recordUsageEvent({
   outputTokens,
   totalTokens,
   retries,
+  // True when the upstream stream died after its 200 head was already
+  // committed, so `status` had to be rewritten (e.g. 502) and this marker is
+  // the only thing that says the turn was truncated rather than successful.
+  // Absent on ordinary events so old rows keep their exact shape.
+  streamAborted,
   // Present only when the router replaced an upstream `input_tokens: 0` with
   // its own estimate on the way to Codex (#95). The reported counts above stay
   // exactly as the provider sent them, so an estimated turn is never mistaken
@@ -49,6 +54,7 @@ export function recordUsageEvent({
     provider: safeText(provider, "unknown"),
     status: Number.isInteger(status) ? status : 0,
     durationMs: Number.isFinite(durationMs) ? Math.max(0, Math.round(durationMs)) : 0,
+    ...(streamAborted === true ? { streamAborted: true } : {}),
     ...(safeRetryCount(retries) !== undefined ? { retries: safeRetryCount(retries) } : {}),
     ...(safeTokenCount(inputTokens) !== undefined
       ? { inputTokens: safeTokenCount(inputTokens) }
@@ -116,6 +122,7 @@ export function recentUsageEvents({ sinceMs = 24 * 60 * 60 * 1000, limit = 1_000
           durationMs: Number.isFinite(event.durationMs)
             ? Math.max(0, Math.round(event.durationMs))
             : 0,
+          ...(event.streamAborted === true ? { streamAborted: true } : {}),
           ...(retries !== undefined ? { retries } : {}),
           ...(inputTokens !== undefined ? { inputTokens } : {}),
           ...(outputTokens !== undefined ? { outputTokens } : {}),

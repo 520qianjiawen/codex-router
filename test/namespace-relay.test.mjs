@@ -8,6 +8,7 @@ import {
   flattenNamespacedHistory,
   flattenNamespaceTools,
   rewriteNamespaceFunctionCall,
+  rewriteNamespaceResponsePayload,
 } from "../src/namespace-relay.mjs";
 import { mergeCodexAppTools } from "../src/codex-app-tools.mjs";
 
@@ -326,6 +327,79 @@ test("response transform restores namespace on unambiguous unprefixed calls", as
   assert.match(output, /"namespace":"collaboration"/);
   assert.match(output, /"name":"create_thread"/);
   assert.match(output, /"namespace":"codex_app"/);
+});
+
+test("response transform restores declared and headerless non-streaming JSON output", async () => {
+  const merged = mergeCodexAppTools(clientRoutedTools());
+  const { namespaces } = flattenNamespaceTools(merged.tools);
+  const payload = {
+    id: "resp_json",
+    output: [
+      {
+        type: "function_call",
+        name: "codex_app__create_thread",
+        call_id: "call_thread",
+        arguments: "{}",
+      },
+      {
+        type: "function_call",
+        name: "mcp__node_repl__js",
+        call_id: "call_browser",
+        arguments: "{}",
+      },
+      {
+        type: "function_call",
+        name: "exec_command",
+        call_id: "call_plain",
+        arguments: "{}",
+      },
+    ],
+  };
+  const body = JSON.stringify(payload);
+  for (const contentType of ["application/json", ""]) {
+    const transform = new NamespaceToolCallTransform(namespaces, contentType);
+    const output = JSON.parse(
+      await collect(Readable.from([body.slice(0, 1), body.slice(1)]).pipe(transform)),
+    );
+    assert.deepEqual(
+      { name: output.output[0].name, namespace: output.output[0].namespace },
+      { name: "create_thread", namespace: "codex_app" },
+    );
+    assert.deepEqual(
+      { name: output.output[1].name, namespace: output.output[1].namespace },
+      { name: "js", namespace: "mcp__node_repl" },
+    );
+    assert.equal(output.output[2].name, "exec_command");
+    assert.equal(output.output[2].namespace, undefined);
+  }
+});
+
+test("non-streaming rewrite covers nested output and leaves malformed JSON untouched", async () => {
+  const { namespaces } = flattenNamespaceTools([
+    {
+      type: "namespace",
+      name: "collaboration",
+      tools: [{ type: "function", name: "spawn_agent" }],
+    },
+  ]);
+  const lookups = buildNamespaceLookups(namespaces);
+  const rewritten = rewriteNamespaceResponsePayload(
+    {
+      response: {
+        output: [{ type: "function_call", name: "collaboration__spawn_agent" }],
+      },
+    },
+    lookups,
+  );
+  assert.deepEqual(rewritten.response.output[0], {
+    type: "function_call",
+    name: "spawn_agent",
+    namespace: "collaboration",
+  });
+
+  const malformed = "{not valid json\n";
+  const transform = new NamespaceToolCallTransform(namespaces, "application/json");
+  assert.equal(await collect(Readable.from([malformed]).pipe(transform)), malformed);
 });
 
 test("response transform leaves ambiguous and ordinary calls alone", async () => {

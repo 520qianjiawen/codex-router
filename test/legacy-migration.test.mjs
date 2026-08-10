@@ -98,6 +98,31 @@ test("a foreign catalog is an unknown conflict at any TOML spacing", () => {
   }
 });
 
+test("a Windows-shaped catalog path is an unknown conflict, escaped or not", () => {
+  mkdirSync(codexHome, { recursive: true });
+  const configPath = path.join(codexHome, "config.toml");
+  // Windows users write native paths straight into a basic string, and
+  // `\U`/`\A` are not TOML escapes. Reading those lines as unparseable reported
+  // no conflict at all, which is what clears migration over a foreign install.
+  const cases = [
+    [String.raw`"C:\Users\me\AppData\Local\other-router\models.json"`, String.raw`C:\Users\me\AppData\Local\other-router\models.json`],
+    [String.raw`"C:\\Users\\me\\other-router\\models.json"`, String.raw`C:\Users\me\other-router\models.json`],
+    [String.raw`'C:\Users\me\literal\models.json'`, String.raw`C:\Users\me\literal\models.json`],
+    [String.raw`"\\\\server\\share\\models.json"`, String.raw`\\server\share\models.json`],
+    [String.raw`"C:\\tools\u002Drouter\\models.json"`, String.raw`C:\tools-router\models.json`],
+  ];
+  try {
+    for (const [line, expected] of cases) {
+      writeFileSync(configPath, `model_catalog_json = ${line}\n`, { mode: 0o644 });
+      const detected = detectLegacyInstallations();
+      assert.equal(detected.unknownConflict, true, `line: ${line}`);
+      assert.equal(detected.config.modelCatalogJson, expected, `line: ${line}`);
+    }
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
 test("a valid user-owned native catalog is explicitly adoptable", () => {
   mkdirSync(codexHome, { recursive: true });
   const configPath = path.join(codexHome, "config.toml");

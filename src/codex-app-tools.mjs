@@ -9,7 +9,7 @@ export const CODEX_APP_NAMESPACE = "codex_app";
 export const CODEX_APP_TOOL_DELIMITER = "__";
 
 // The full app toolset as the client offers it to native models.
-export const CODEX_APP_TOOLS = 
+export const CODEX_APP_TOOLS =
 [
   {
     "type": "namespace",

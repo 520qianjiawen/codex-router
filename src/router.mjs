@@ -47,6 +47,7 @@ import {
   NamespaceToolCallTransform,
   flattenNamespacedHistory,
   flattenNamespaceTools,
+  injectSessionModelForSpawnCalls,
 } from "./namespace-relay.mjs";
 import { mergeCodexAppTools } from "./codex-app-tools.mjs";
 import { activityMetadataFromHeaders } from "./codex-session-names.mjs";
@@ -1332,12 +1333,15 @@ async function handleResponses(request, response, requestUrl) {
   const startedAt = Date.now();
   const activity = beginRequestActivity();
   let clientGone = false;
+  let requestedModel = "";
+  let route;
+  let upstreamRetries;
   try {
     if (!requireCodexTransport(request, response)) return;
     const encoded = await readRequestBody(request);
     const body = decodeBody(encoded, request.headers["content-encoding"]);
     const payload = parseBody(body);
-    const requestedModel = typeof payload.model === "string" ? payload.model : "";
+    requestedModel = typeof payload.model === "string" ? payload.model : "";
     let registeredRoute =
       MODEL_BY_SLUG.get(requestedModel) ??
       MODEL_BY_SLUG.get(readNativeAliases()[requestedModel]);
@@ -1353,7 +1357,7 @@ async function handleResponses(request, response, requestUrl) {
         registeredRoute = redirect;
       }
     }
-    const route = registeredRoute && readProviderSelection().includes(registeredRoute.provider)
+    route = registeredRoute && readProviderSelection().includes(registeredRoute.provider)
       ? registeredRoute
       : undefined;
     if (registeredRoute && !route) {
@@ -1466,6 +1470,17 @@ async function handleResponses(request, response, requestUrl) {
       if (namespacesFlattened) {
         routedInput = flattenNamespacedHistory(routedInput, flattenedNamespaces);
       }
+      // A routed session that spawns a thread without an explicit model would
+      // leave the child on the app's native default (gpt-5.6-luna, quota
+      // blocked until Sep 8), killing the child and stalling the parent. Answer
+      // for the model instead: inherit the session's routed model so the child
+      // bills the same custom provider as the parent. Explicit models pass
+      // through untouched -- the model always wins.
+      if (Array.isArray(routedInput)) {
+        routedInput = routedInput.map((item) =>
+          injectSessionModelForSpawnCalls(item, route.slug),
+        );
+      }
       const routed = {
         ...payload,
         model: route.gatewayModel,
@@ -1507,7 +1522,7 @@ async function handleResponses(request, response, requestUrl) {
     // attempt replays the identical bytes under the identical encoding. Nothing
     // here consumes a stream, which is what makes the request replayable at
     // all.
-    const { response: upstream, retries: upstreamRetries } = await fetchWithRetry(
+    const { response: upstream, retries } = await fetchWithRetry(
       target,
       {
         method: "POST",
@@ -1524,6 +1539,7 @@ async function handleResponses(request, response, requestUrl) {
         onRetry: (event) => logUpstreamRetry(event, requestedModel, requestUrl.pathname),
       },
     );
+    upstreamRetries = retries;
     // Gateway error bodies leak LiteLLM's internal exception chain, which
     // reads like a router bug. Rewrite them to name the provider that failed.
     // Native traffic passes through untouched: OpenAI errors are already clear.
@@ -1570,8 +1586,9 @@ async function handleResponses(request, response, requestUrl) {
     // predicate is structural (this request, these bytes, an explicit zero),
     // so it cannot fire on a provider that reports correctly and it disables
     // itself the moment the upstream starts reporting again.
+    const upstreamContentType = upstream.headers.get("content-type") || "";
     const usageTransform = new ResponseUsageTransform(
-      upstream.headers.get("content-type") || "",
+      upstreamContentType,
       {
         estimatedInputTokens:
           ZERO_INPUT_ESTIMATE && route
@@ -1581,19 +1598,32 @@ async function handleResponses(request, response, requestUrl) {
     );
     const transforms = [usageTransform];
     if (namespacesFlattened) {
-      transforms.push(new NamespaceToolCallTransform(flattenedNamespaces));
+      transforms.push(
+        new NamespaceToolCallTransform(flattenedNamespaces, upstreamContentType, route.slug),
+      );
     }
     await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, transforms);
     const usage = usageTransform?.tokenUsage();
     const estimatedInputTokens = usageTransform?.substitutedInputTokens();
+    // The `close` listener above sets `clientGone` when the client's socket
+    // goes away, but `pipeResponse` can resolve before that event fires: the
+    // response socket is already destroyed at that point. Read the state
+    // directly as well so a cancel that races the close event still meters 0.
+    const clientWalkedAway =
+      clientGone || (response.destroyed && !response.writableFinished);
     // `retries` separates "it never failed" from "it failed and the router
     // absorbed it", both of which otherwise record a plain 200;
     // `estimatedInputTokens` separates a count the provider sent from one the
     // router had to invent. Neither is inferable from the rest of the event.
+    // A stream that completed, or a client that walked away, both land here:
+    // `pipeResponse` resolves for a canceled generation (the response socket
+    // is already gone) and only rejects for an upstream that actually failed.
+    // A cancel is not a router failure, so it meters as 0 rather than the
+    // committed 200 that the client never finished reading.
     recordUsageEvent({
       model: route?.slug || requestedModel,
       provider: route ? canonicalProviderId(route.provider) : "openai",
-      status: upstream.status,
+      status: clientWalkedAway ? 0 : upstream.status,
       durationMs: Date.now() - startedAt,
       retries: upstreamRetries,
       ...usage,
@@ -1603,7 +1633,7 @@ async function handleResponses(request, response, requestUrl) {
       // The substitution is named in the log line as well as the usage event:
       // a router that quietly invents token counts is its own trap.
       console.error(
-        `[codex-router] model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${upstream.status}${
+        `[codex-router] model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${clientWalkedAway ? 0 : upstream.status}${
           upstreamRetries ? ` retries=${upstreamRetries}` : ""
         }${estimatedInputTokens ? ` estimated-input-tokens=${estimatedInputTokens}` : ""}`,
       );
@@ -1612,8 +1642,31 @@ async function handleResponses(request, response, requestUrl) {
     // A client that walked away (canceled generation, closed stream) is not
     // a router failure; only surface errors the router or upstream produced.
     if (clientGone) {
+      recordUsageEvent({
+        model: route?.slug || requestedModel,
+        provider: route ? canonicalProviderId(route.provider) : "openai",
+        status: 0,
+        durationMs: Date.now() - startedAt,
+        retries: upstreamRetries,
+      });
       activity.finish(0);
       return;
+    }
+    // The upstream stream died after its head was already committed: the
+    // client saw a 200 start and a truncated body, so the meter has to say so
+    // instead of a success the client never received. `streamAborted` is the
+    // additive marker; `status` is rewritten to 502 so dashboards that only
+    // read status still count the turn as a failure. Token counts are omitted
+    // because the truncated stream never reported a final usage.
+    if (response.headersSent) {
+      recordUsageEvent({
+        model: route?.slug || requestedModel,
+        provider: route ? canonicalProviderId(route.provider) : "openai",
+        status: 502,
+        durationMs: Date.now() - startedAt,
+        retries: upstreamRetries,
+        streamAborted: true,
+      });
     }
     activity.finish(500);
     throw error;

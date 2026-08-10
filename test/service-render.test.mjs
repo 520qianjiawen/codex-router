@@ -60,6 +60,16 @@ function windowsStateDir(testRoot) {
   return path.join(testRoot, "codex router state");
 }
 
+// Mirrors the quoting in src/service-linux.mjs. Fixture paths are host-shaped,
+// so on Windows they carry backslashes that the unit file has to escape; the
+// expectation has to escape them too or the test only passes on POSIX hosts.
+function systemdQuoted(value) {
+  return `"${value
+    .replaceAll("%", "%%")
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')}"`;
+}
+
 test("background service definitions render for macOS, Linux, and Windows", () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-services-"));
   try {
@@ -118,8 +128,8 @@ test("packaged services persist stable source and Node paths", () => {
       root,
       env,
     );
-    assert.ok(systemd.includes(`WorkingDirectory=${stableRoot}`));
-    assert.ok(systemd.includes(`ExecStart="${stableNode}"`));
+    assert.ok(systemd.includes(`WorkingDirectory=${stableRoot.replaceAll("%", "%%")}`));
+    assert.ok(systemd.includes(`ExecStart=${systemdQuoted(stableNode)}`));
     assert.ok(systemd.includes(`Environment="CODEX_ROUTER_PACKAGE_MANAGER=homebrew"`));
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
