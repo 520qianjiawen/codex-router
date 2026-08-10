@@ -29,7 +29,9 @@ have generic `X-Enable-Thinking: true`, `:THINKING`, and
 source does not identify any of those as required for K3 or as a control over
 whether reasoning deltas are exposed. Chutes also does not document the native
 Moonshot top-level `reasoning_effort` field for this chute, so low/high/max
-effort selection still needs a Chutes-specific live acceptance test.
+must not be advertised as a distinct Chutes effort ladder. An authorized live
+probe accepted `low`, but the local picker conservatively retains one adaptive
+`high` tier because a single response cannot prove materially different budgets.
 
 Prompt/KV caching is automatic and best-effort on Chutes. The current K3 price
 is $3.00/M uncached input tokens, $0.30/M cached input tokens, and $15.00/M

@@ -166,9 +166,7 @@ test("Chutes public-catalog fixtures drive discovery, deterministic curation, an
       "--models",
       "moonshotai/Kimi-K3-TEE",
       "--efforts",
-      "low,high",
-      "--request-profile",
-      "auto-tool-choice",
+      "high",
       "--no-apply",
     ], env);
     assert.equal(curation.status, 0, curation.stderr);
@@ -176,10 +174,10 @@ test("Chutes public-catalog fixtures drive discovery, deterministic curation, an
     assert.equal(stored.models.length, 1);
     assert.equal(stored.models[0].provider, "chutes");
     assert.equal(stored.models[0].upstreamModel, "moonshotai/Kimi-K3-TEE");
-    assert.equal(stored.models[0].requestProfile, "auto-tool-choice");
+    assert.equal(stored.models[0].requestProfile, undefined);
     assert.deepEqual(
       stored.models[0].reasoningLevels.map((level) => level.effort),
-      ["low", "high"],
+      ["high"],
     );
 
     const route = runNode([
@@ -192,7 +190,7 @@ test("Chutes public-catalog fixtures drive discovery, deterministic curation, an
     assert.equal(route.status, 0, route.stderr);
     const rendered = JSON.parse(route.stdout);
     assert.equal(rendered.model.gatewayModel, "chutes-moonshotai-kimi-k3-tee");
-    assert.equal(rendered.model.requestProfile, "auto-tool-choice");
+    assert.equal(rendered.model.requestProfile, undefined);
     const blockStart = rendered.config.indexOf(
       'model_name: "chutes-moonshotai-kimi-k3-tee"',
     );

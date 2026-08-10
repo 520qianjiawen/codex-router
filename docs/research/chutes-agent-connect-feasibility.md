@@ -44,9 +44,9 @@ repeated for this update.
   [Live model catalog](https://llm.chutes.ai/v1/models),
   [Kimi K3 model page](https://chutes.ai/app/chute/chutes-moonshotai-kimi-k3-tee)
 - Chutes separately documents function calling on its optimized vLLM/SGLang
-  serving templates. That proves a supported tool-call surface, but not that
-  every hosted model accepts Codex Router's forced `tool_choice: "required"`
-  compatibility probe.
+  serving templates. For Kimi K3 specifically, an earlier authorized live
+  Router probe also completed a forced `tool_choice: "required"` function call.
+  That evidence remains model-specific rather than a provider-wide claim.
   [Chutes function-calling guide](https://chutes.ai/docs/guides/agents-and-tools)
 - The management API exposes authenticated usage/quota surfaces including
   `GET /invocations/usage`, `GET /invocations/stats/llm`,
@@ -94,11 +94,11 @@ The local router already has the needed seams:
 | Chat Completions | Ready | Official endpoint and OpenAPI path. |
 | Responses API | Bridge required | Not advertised by Chutes; the router's existing LiteLLM bridge supplies it. |
 | SSE streaming | Advertised | Explicitly `Streaming: yes` in the Kimi K3 agent guide. |
-| Tool calling | Advertised, probe required | Live catalog says `tools`; forced tool choice and multi-turn tool history still need a live router probe. |
+| Tool calling | Verified for Kimi K3 | Live catalog and chute source advertise tools; an authorized live Router probe completed a forced function call, and routed subagent probes exercised follow-up tool history. |
 | Image input | Advertised, probe required | Live Kimi K3 metadata says `text`, `image`, `video`; the router should expose only `text` and `image`, because its picker schema does not support video. |
 | 1M context | Ready as metadata | Current Kimi K3 catalog value is 1,048,576; a conservative auto-compaction threshold around 900,000 matches the router's existing long-context safety margin. |
 | Max output | Ready as metadata | Current catalog reports 65,535. |
-| Reasoning effort picker | Conservative initially | `reasoning` is advertised, but Chutes does not document Kimi K3's accepted effort ladder in the model OpenAPI. Ship one conservative level or omit effort translation until a probe confirms the exact parameter/values. |
+| Reasoning effort picker | Conservative | A live request accepted `low`, but Chutes does not document Kimi K3's effort ladder and one response does not prove distinct budgets. Curate the single adaptive `high` tier rather than an unverified ladder. |
 | Native v2 subagents | Disabled initially | Must remain unset until marker-return spawn, encrypted payload relay, and same-thread follow-up pass through signed coexistence. |
 | Usage in tray | Ready | The official account and subscription handlers define effective balance, ordinary monthly/four-hour caps, custom uncapped monthly plans, and unsubscribed responses. The adapter queries both independently and retains whichever usable metrics succeed. |
 
