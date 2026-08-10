@@ -147,6 +147,18 @@ test("registry merges valid user models and skips collisions", async () => {
       ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-bad-detail", priority: 107 }),
       supportsImageDetailOriginal: "yes",
     },
+    // Reasoning-summary capability fields must agree. A valid enum on its own
+    // must not make the catalog claim summaries for a model that does not
+    // explicitly support them.
+    {
+      ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-summary-without-support", priority: 108 }),
+      defaultReasoningSummary: "auto",
+    },
+    {
+      ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-invalid-summary-support", priority: 109 }),
+      supportsReasoningSummaries: "yes",
+      defaultReasoningSummary: "auto",
+    },
     // An upgrade prompt pointing at a slug the merged registry does not carry
     // can never render, so the entry is skipped.
     {
@@ -168,6 +180,8 @@ test("registry merges valid user models and skips collisions", async () => {
   assert.ok(!slugs.includes("deepseek/deepseek-blank-nux"));
   assert.ok(!slugs.includes("deepseek/deepseek-bad-search"));
   assert.ok(!slugs.includes("deepseek/deepseek-bad-detail"));
+  assert.ok(!slugs.includes("deepseek/deepseek-summary-without-support"));
+  assert.ok(!slugs.includes("deepseek/deepseek-invalid-summary-support"));
   assert.ok(!slugs.includes("deepseek/deepseek-bad-upgrade"));
   assert.deepEqual(
     registry.MODEL_BY_SLUG.get("deepseek/deepseek-good-upgrade").upgradeTo,
