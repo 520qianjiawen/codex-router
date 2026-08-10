@@ -146,6 +146,23 @@ test("legacy exec_command read remains compatible when its output is observed", 
   assert.equal(result.ok, true, JSON.stringify(result.assertions));
 });
 
+test("skill-path evidence accepts Windows roots without depending on the verifier host", () => {
+  const windowsRoot = "C:\\Users\\user\\.codex\\skills";
+  const injection = developerBlock(skillsBlock().replace(SKILLS_ROOT, windowsRoot));
+  const call = customExecRead();
+  call.payload.input = `Get-Content ${windowsRoot}\\codex-app-threads\\SKILL.md`;
+  const result = analyzeRollout(
+    lines(
+      meta("routed"),
+      injection,
+      call,
+      toolOutput(),
+      createThread({ prompt: "x", target: {} }),
+    ),
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.assertions));
+});
+
 test("user-pasted and embedded developer blocks cannot become trusted injection", () => {
   for (const event of [
     userBlock(),

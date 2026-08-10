@@ -131,7 +131,10 @@ function exactSkillForSource(source, block) {
   const root = r0Root(block);
   return PACK_SKILLS.find((skill) => {
     const aliases = [`r0/${skill}/SKILL.md`];
-    if (root) aliases.push(path.join(root, skill, "SKILL.md"));
+    if (root) {
+      const base = root.replace(/[\\/]+$/, "");
+      aliases.push(`${base}/${skill}/SKILL.md`, `${base}\\${skill}\\SKILL.md`);
+    }
     return aliases.some((candidate) => source.includes(candidate));
   });
 }
