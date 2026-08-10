@@ -25,6 +25,54 @@ export function catalogPathsEqual(left, right) {
     : normalizedLeft === normalizedRight;
 }
 
+const BASIC_STRING_ESCAPES = new Map([
+  ["b", "\b"],
+  ["t", "\t"],
+  ["n", "\n"],
+  ["f", "\f"],
+  ["r", "\r"],
+  ['"', '"'],
+  ["\\", "\\"],
+]);
+
+// TOML basic strings are not JSON strings: TOML adds `\UXXXXXXXX`, and Windows
+// users routinely write an unescaped native path (`"C:\Users\me\models.json"`).
+// JSON.parse rejects both and the caller reads a rejected value as "no catalog
+// configured" — the one answer that clears migration to run over an
+// installation the router does not own. So decode the escapes TOML defines and
+// leave any other backslash standing as itself.
+function decodeBasicString(body) {
+  let decoded = "";
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index];
+    if (char !== "\\") {
+      decoded += char;
+      continue;
+    }
+    const escape = body[index + 1];
+    const simple = escape === undefined ? undefined : BASIC_STRING_ESCAPES.get(escape);
+    if (simple !== undefined) {
+      decoded += simple;
+      index += 1;
+      continue;
+    }
+    if (escape === "u" || escape === "U") {
+      const width = escape === "u" ? 4 : 8;
+      const digits = body.slice(index + 2, index + 2 + width);
+      const code = /^[0-9a-fA-F]+$/.test(digits) && digits.length === width
+        ? Number.parseInt(digits, 16)
+        : Number.NaN;
+      if (code <= 0x10ffff) {
+        decoded += String.fromCodePoint(code);
+        index += 1 + width;
+        continue;
+      }
+    }
+    decoded += char;
+  }
+  return decoded;
+}
+
 export function readRootStringValues(contents, key) {
   const firstTable = contents.search(/^\s*\[/m);
   const root = firstTable === -1 ? contents : contents.slice(0, firstTable);
@@ -45,12 +93,7 @@ export function readRootStringValues(contents, key) {
         if (closing === -1 || !/^(?:\s*#.*)?$/.test(raw.slice(closing + 1))) {
           return undefined;
         }
-        try {
-          const parsed = JSON.parse(raw.slice(0, closing + 1));
-          return typeof parsed === "string" ? parsed : undefined;
-        } catch {
-          return undefined;
-        }
+        return decodeBasicString(raw.slice(1, closing));
       }
       if (!raw.startsWith("'")) return undefined;
       const closing = raw.indexOf("'", 1);
