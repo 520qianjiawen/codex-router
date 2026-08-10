@@ -1,8 +1,10 @@
 # Chutes-hosted Kimi K3: reasoning, caching, and tools
 
-Checked: 2026-08-09. The primary-source investigation was read-only. Small
-quota-bearing probes were subsequently authorized and run through the installed
-Router; they did not restart Codex, Router, LiteLLM, or the tray.
+Checked: 2026-08-10. The current public-catalog, chute-record, and source-revision
+recheck was read-only and unauthenticated. Small quota-bearing probes were
+previously authorized and run through the installed Router on 2026-08-09; they
+were not repeated for this update and did not restart Codex, Router, LiteLLM, or
+the tray.
 
 ## Practical conclusion
 
@@ -89,7 +91,7 @@ and the official [Kimi K3 model card](https://huggingface.co/moonshotai/Kimi-K3/
 Chutes' current live model record for `moonshotai/Kimi-K3-TEE` advertises
 `reasoning`, `tools`, SSE streaming, a 1,048,576-token context window, and a
 65,535-token maximum output. The public chute record reports a hot, TEE-backed
-SGLang deployment with seven active verified instances at the time checked.
+SGLang deployment with five active verified instances at the time rechecked.
 Most importantly, the source for the exact chute configures
 `--reasoning-parser kimi_k3` and `--tool-call-parser kimi_k3`.
 

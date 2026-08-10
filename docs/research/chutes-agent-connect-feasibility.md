@@ -1,20 +1,22 @@
 # Chutes provider feasibility for Codex Router
 
-Date checked: 2026-08-09
+Date checked: 2026-08-10
 
 ## Outcome
 
 Yes. Chutes is a clean technical fit for Codex Router as an API-key-backed,
-OpenAI-compatible provider. The safe first implementation should register
-`chutes` as a catalog-only provider, let the user store a Chutes key through the
-router's hidden local prompt/tray flow, discover models from Chutes' public live
-catalog, and locally curate the models the user wants. It can participate in the
+OpenAI-compatible provider. The implementation registers `chutes` as a
+catalog-only provider, lets the user store a Chutes key through the router's
+hidden local prompt/tray flow, discovers models from Chutes' public live
+catalog, and locally curates the models the user wants. It can participate in the
 router's signed-in coexistence mode without replacing or reading the user's
 ChatGPT authentication.
 
-This feasibility check made no authenticated inference or quota-bearing request.
-The remaining uncertainties require an explicitly approved, small compatibility
-probe after implementation.
+The 2026-08-10 recheck used only the unauthenticated public catalog, public chute
+record, and official source repositories. It made no authenticated account or
+inference request. Earlier explicitly authorized compatibility probes are
+recorded separately in `chutes-kimi-k3-reasoning-cache-tools.md`; they were not
+repeated for this update.
 
 ## Official Chutes contract
 
@@ -49,12 +51,17 @@ probe after implementation.
 - The management API exposes authenticated usage/quota surfaces including
   `GET /invocations/usage`, `GET /invocations/stats/llm`,
   `GET /users/me/quotas`, and `GET /users/me/subscription_usage`; the latter is
-  described as monthly and four-hour usage versus caps. Chutes also documents
+  described as monthly and four-hour usage versus caps. The current official
+  user router returns the account's effective finite balance from `GET /users/me`,
+  returns `{ subscription: false }` for an unsubscribed account, and marks a
+  custom subscription's monthly window `{ uncapped: true }` while retaining its
+  four-hour cap. Chutes also documents
   OAuth 2.0/PKCE with `chutes:invoke`, `account:read`, and `billing:read` scopes.
   [Invocations API](https://chutes.ai/docs/api-reference/invocations),
+  [Users API reference](https://chutes.ai/docs/api-reference/users),
   [Chutes authentication](https://chutes.ai/docs/getting-started/authentication),
   [Sign in with Chutes](https://chutes.ai/docs/sign-in-with-chutes/overview),
-  [Management OpenAPI](https://api.chutes.ai/openapi.json)
+  [current user/account source](https://github.com/chutesai/chutes-api/blob/646a97480329a414363257872f09c3e87d969cc2/api/user/router.py#L1221-L1349)
 
 ## Why the existing router can carry it
 
@@ -93,33 +100,30 @@ The local router already has the needed seams:
 | Max output | Ready as metadata | Current catalog reports 65,535. |
 | Reasoning effort picker | Conservative initially | `reasoning` is advertised, but Chutes does not document Kimi K3's accepted effort ladder in the model OpenAPI. Ship one conservative level or omit effort translation until a probe confirms the exact parameter/values. |
 | Native v2 subagents | Disabled initially | Must remain unset until marker-return spawn, encrypted payload relay, and same-thread follow-up pass through signed coexistence. |
-| Usage in tray | Implementable | Router traffic works generically; Chutes account quota/usage endpoints can be adapted after their authenticated response shape is captured without spending inference quota. Balance/credit semantics should not be claimed until confirmed. |
+| Usage in tray | Ready | The official account and subscription handlers define effective balance, ordinary monthly/four-hour caps, custom uncapped monthly plans, and unsubscribed responses. The adapter queries both independently and retains whichever usable metrics succeed. |
 
-## Recommended implementation shape
+## Implemented shape and remaining boundary
 
-1. Add a canonical `chutes` provider definition with the official base URL,
+1. The canonical `chutes` provider definition uses the official base URL,
    `CHUTES_API_KEY`, a dedicated protected credential filename, a dedicated
-   Keychain service name, and no OAuth requirement for the first version.
-2. Ship it as **catalog-only**, because Chutes explicitly says the live catalog
-   can change and static IDs are examples. Extend discovery/curation tests so
-   `GET /v1/models` metadata can seed context, image, and feature choices without
-   blindly asserting unverified capabilities.
-3. For this user's current goal, locally curate
-   `moonshotai/Kimi-K3-TEE` with context 1,048,576, auto-compact 900,000,
-   max output 65,535, and picker input modalities `text,image`.
-4. Add the tray provider icon/setup card, installer/provider-selection paths,
-   doctor checks, support-bundle redaction, catalog/routing tests, and graceful
-   usage-unavailable behavior before calling the provider complete.
-5. After a fresh explicit quota-test approval, run the smallest sequence that
-   proves: authenticated streaming response, forced tool call, tool result
-   continuation, image input, accurate/usable token counts, signed-coexistence
-   routing evidence, and only then the native subagent marker/follow-up checks.
-   Do not enable `multiAgentVersion: "v2"` before all collaboration checks pass.
+   Keychain service name, and no OAuth requirement.
+2. It remains **catalog-only**, because Chutes' live catalog can change. Public
+   discovery and deterministic local curation are covered without checking a
+   model into the shared registry or asserting capabilities from its name.
+3. Installer selection, provider enablement, protected credentials, doctor,
+   support-bundle redaction, tray setup/icon, LiteLLM routing, request profiles,
+   and account degradation paths all have Chutes-specific regression coverage.
+4. Account reporting preserves every finite balance, including zero and
+   negative values, beside subscription quotas. Partial failure of one account
+   endpoint does not hide valid metrics from the other; custom inference base
+   URLs do not trigger calls to Chutes' official account service.
+5. No checked-in Chutes model declares native v2 collaboration. That remains a
+   local curation decision unless a model is intentionally shipped to every
+   installer with fresh compatibility evidence.
 
 ## Recommendation
 
-Proceed if the user wants Chutes in the router. The lowest-risk first release is
-API-key authentication plus catalog-only discovery and local Kimi K3 curation.
+Ship API-key authentication plus catalog-only discovery and local curation.
 OAuth is technically possible, but it adds app registration, PKCE callback,
 refresh-token storage, scopes, and expiry handling without being necessary for
-the user's immediate goal; it should be a separate, explicitly chosen follow-up.
+this provider surface; it should be a separate, explicitly chosen follow-up.
