@@ -8,13 +8,16 @@ import { EmptyCompletionGuard } from "../src/empty-completion-guard.mjs";
 async function runGuard(
   input,
   {
-    retried = false,
-    suppressPrologue = false,
     contentType = "text/event-stream; charset=utf-8",
     chunkSize = 0,
+    maxPreludeBytes,
+    maxPreludeMs,
   } = {},
 ) {
-  const guard = new EmptyCompletionGuard(contentType, { retried, suppressPrologue });
+  const guard = new EmptyCompletionGuard(contentType, {
+    ...(maxPreludeBytes === undefined ? {} : { maxPreludeBytes }),
+    ...(maxPreludeMs === undefined ? {} : { maxPreludeMs }),
+  });
   const chunks = [];
   const collector = new Writable({
     write(chunk, _encoding, callback) {
@@ -36,7 +39,6 @@ async function runGuard(
   return {
     body: Buffer.concat(chunks).toString("utf8"),
     empty: guard.isEmpty(),
-    sawPrologue: guard.sawPrologue(),
   };
 }
 
@@ -102,23 +104,16 @@ test("a turn with output text passes through untouched and is not empty", async 
   assert.match(body, /response\.done/);
 });
 
-test("a reasoning-only turn is flagged empty and its terminal events are suppressed", async () => {
+test("a reasoning-only turn is flagged empty and the entire attempt is discarded", async () => {
   const { body, empty } = await runGuard(EMPTY_TURN);
   assert.equal(empty, true);
-  // Live events (created, reasoning) still stream; the terminal events that
-  // would let the client record a silent success do not.
-  assert.match(body, /response\.created/);
-  assert.match(body, /reasoning_text\.delta/);
-  assert.doesNotMatch(body, /response\.completed/);
-  assert.doesNotMatch(body, /response\.done/);
+  assert.equal(body, "");
 });
 
-test("in retried mode an empty turn emits a stated error instead of silence", async () => {
-  const { body, empty } = await runGuard(EMPTY_TURN, { retried: true });
-  assert.equal(empty, true);
-  assert.match(body, /event: error/);
-  assert.match(body, /empty_completion/);
-  assert.doesNotMatch(body, /response\.completed/);
+test("a content turn is released byte for byte after classification", async () => {
+  const { body, empty } = await runGuard(CONTENT_TURN, { chunkSize: 11 });
+  assert.equal(empty, false);
+  assert.equal(body, CONTENT_TURN);
 });
 
 test("a tool-call turn is not empty and its terminal events survive", async () => {
@@ -213,31 +208,24 @@ test("a chat-completions turn with only reasoning is still empty", async () => {
   assert.doesNotMatch(body, /\[DONE\]/);
 });
 
-test("a retry drops its duplicate prologue so one response has one created event", async () => {
-  const { body } = await runGuard(CONTENT_TURN, { retried: true, suppressPrologue: true });
-  // The first attempt already sent `response.created`; a second one inside the
-  // same response would restart ids and sequence numbers mid-stream.
-  assert.doesNotMatch(body, /response\.created/);
-  assert.match(body, /Hello/);
-  assert.match(body, /response\.completed/);
-});
-
-test("a retry keeps its prologue when the first attempt never sent one", async () => {
-  const { body } = await runGuard(CONTENT_TURN, { retried: true, suppressPrologue: false });
-  assert.match(body, /response\.created/);
-});
-
-test("the guard reports whether it opened the turn for the client", async () => {
-  assert.equal((await runGuard(EMPTY_TURN)).sawPrologue, true);
-  const noPrologue = [
-    'event: response.output_text.delta',
-    'data: {"type":"response.output_text.delta","delta":"hi"}',
+test("multiple data fields are joined per the SSE dispatch algorithm", async () => {
+  const input = [
+    "event: response.output_text.delta",
+    'data: {"type":"response.output_text.delta",',
+    'data: "delta":"multiline"}',
     "",
-    'event: response.completed',
-    'data: {"type":"response.completed","response":{"id":"r1","output":[]}}',
+    "data: [DONE]",
     "",
   ].join("\n");
-  assert.equal((await runGuard(noPrologue)).sawPrologue, false);
+  const { body, empty } = await runGuard(input, { chunkSize: 7 });
+  assert.equal(empty, false);
+  assert.equal(body, input);
+});
+
+test("the pre-content byte bound fails open to one coherent original attempt", async () => {
+  const { body, empty } = await runGuard(EMPTY_TURN, { maxPreludeBytes: 1 });
+  assert.equal(empty, false);
+  assert.equal(body, EMPTY_TURN);
 });
 
 test("non-SSE bodies pass through byte for byte and are never empty", async () => {

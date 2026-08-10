@@ -3,6 +3,8 @@ import { StringDecoder } from "node:string_decoder";
 
 const SSE_FIELD_LINE = /^(?:event|data|id|retry):/;
 const SSE_SNIFF_BYTES = 256;
+const MAX_PRECONTENT_BYTES = 1024 * 1024;
+const MAX_PRECONTENT_MS = 30_000;
 
 // A terminal SSE event for a Responses turn. `response.completed` is the
 // protocol's end-of-response marker; `response.done` is the stream terminator
@@ -15,13 +17,6 @@ function isTerminalEvent(eventType, dataText) {
     eventType === "response.completed" ||
     eventType === "response.done"
   );
-}
-
-// The prologue a turn opens with. It carries no content, so a retry that
-// repeats it would put a second `response.created` -- new response id,
-// restarted sequence numbers -- into a stream the client already opened.
-function isPrologueEvent(eventType) {
-  return eventType === "response.created" || eventType === "response.in_progress";
 }
 
 function itemHasText(item) {
@@ -72,7 +67,12 @@ function chunkHasChatContent(data) {
 // this guard exists to catch.
 function isContentEvent(eventType, data) {
   if (typeof eventType === "string") {
-    if (/(?:^|\.)output_text\.(?:delta|done)$/.test(eventType)) return true;
+    if (/(?:^|\.)output_text\.delta$/.test(eventType)) {
+      return typeof data?.delta === "string" && data.delta.length > 0;
+    }
+    if (/(?:^|\.)output_text\.done$/.test(eventType)) {
+      return typeof data?.text === "string" && data.text.length > 0;
+    }
     if (/function_call_arguments\.(?:delta|done)$/.test(eventType)) return true;
     if (
       eventType === "response.output_item.added" ||
@@ -97,52 +97,48 @@ function isContentEvent(eventType, data) {
   return chunkHasChatContent(data);
 }
 
-// The error frame mirrors `endStreamedResponse` in http-utils.mjs so the app
-// renders it the same way: a stated failure instead of a silent empty success.
-const EMPTY_COMPLETION_ERROR = {
-  type: "error",
-  code: "empty_completion",
-  message:
-    "The model returned an empty completion. The router retried once and the completion was empty again.",
-  param: null,
-};
-
 // Watches a routed Responses stream for the "empty completion" failure mode:
 // the upstream answers 200 and emits `response.completed` but never produced
 // output text or a tool call. The client has no code path for "the model said
 // nothing", so it silently marks the turn done — the "random stop" the app
-// cannot explain. The guard detects that state and, on the first attempt,
-// suppresses the terminal events so the caller can retry the identical request
-// without the client ever seeing a completed-but-empty response.
+// cannot explain. The guard holds the entire pre-content attempt, not merely
+// its terminal events: an empty first attempt must contribute no response id,
+// sequence number, reasoning, or other prologue bytes to the retry the caller
+// ultimately sees.
 export class EmptyCompletionGuard extends Transform {
   #eventStream;
   #decoder = new StringDecoder("utf8");
-  #buffer = "";
+  #parseBuffer = "";
+  #chunks = [];
+  #bufferedBytes = 0;
   #sawContent = false;
-  #sawPrologue = false;
-  #held = [];
+  #sawTerminal = false;
   #empty = false;
-  #retried;
-  #suppressPrologue;
+  #released = false;
   #undeclared;
+  #maxPreludeBytes;
+  #timer;
 
-  constructor(contentType = "", { retried = false, suppressPrologue = false } = {}) {
+  constructor(
+    contentType = "",
+    { maxPreludeBytes = MAX_PRECONTENT_BYTES, maxPreludeMs = MAX_PRECONTENT_MS } = {},
+  ) {
     super();
-    this.#retried = retried;
-    this.#suppressPrologue = suppressPrologue;
     const declared = String(contentType).toLowerCase();
     this.#eventStream = declared.includes("text/event-stream");
     this.#undeclared = !this.#eventStream && !declared.includes("json");
+    this.#maxPreludeBytes =
+      Number.isFinite(maxPreludeBytes) && maxPreludeBytes >= 0
+        ? Math.floor(maxPreludeBytes)
+        : MAX_PRECONTENT_BYTES;
+    if (this.#eventStream && Number.isFinite(maxPreludeMs) && maxPreludeMs >= 0) {
+      this.#timer = setTimeout(() => this.#release(), maxPreludeMs);
+      this.#timer.unref?.();
+    }
   }
 
   isEmpty() {
     return this.#empty;
-  }
-
-  // Whether this attempt already opened the turn for the client. The retry
-  // uses it to decide if it must relay its own prologue or drop the duplicate.
-  sawPrologue() {
-    return this.#sawPrologue;
   }
 
   _transform(chunk, _encoding, callback) {
@@ -159,97 +155,113 @@ export class EmptyCompletionGuard extends Transform {
       callback();
       return;
     }
-    this.#buffer += this.#decoder.write(chunk);
+    if (this.#released) {
+      this.push(chunk);
+      callback();
+      return;
+    }
+    const bytes = Buffer.from(chunk);
+    this.#chunks.push(bytes);
+    this.#bufferedBytes += bytes.length;
+    this.#parseBuffer += this.#decoder.write(bytes);
     this.#consumeBlocks();
+    if (!this.#released && this.#bufferedBytes > this.#maxPreludeBytes) this.#release();
     callback();
   }
 
   _flush(callback) {
+    this.#clearTimer();
     if (!this.#eventStream) {
       this.push(this.#decoder.end());
       callback();
       return;
     }
-    this.#buffer += this.#decoder.end();
-    if (this.#buffer) {
+    if (this.#released) {
+      callback();
+      return;
+    }
+    this.#parseBuffer += this.#decoder.end();
+    if (this.#parseBuffer) {
       // The final block may lack its trailing blank line; it is still a
       // complete SSE block for our purposes.
-      this.#consumeBlock(this.#buffer, "");
-      this.#buffer = "";
+      this.#classifyBlock(this.#parseBuffer);
+      this.#parseBuffer = "";
     }
-    this.#settle();
+    if (!this.#sawContent && this.#sawTerminal) {
+      this.#empty = true;
+      this.#chunks = [];
+      this.#bufferedBytes = 0;
+    } else {
+      // A clean EOF without a protocol terminal is not proof of an empty
+      // completion. Preserve it and let ordinary stream handling decide.
+      this.#release();
+    }
     callback();
   }
 
+  _destroy(error, callback) {
+    this.#clearTimer();
+    callback(error);
+  }
+
   #consumeBlocks() {
-    const blocks = this.#buffer.split(/\r?\n\r?\n/);
-    this.#buffer = blocks.pop() || "";
+    const blocks = this.#parseBuffer.split(/\r?\n\r?\n/);
+    this.#parseBuffer = blocks.pop() || "";
     for (const block of blocks) {
-      this.#consumeBlock(block, "\n\n");
+      this.#classifyBlock(block);
+      if (this.#released) return;
     }
   }
 
-  #consumeBlock(block, separator) {
-    if (this.#sawContent) {
-      this.push(Buffer.from(block + separator));
-      return;
-    }
+  #classifyBlock(block) {
     const { eventType, dataText } = this.#fields(block);
     // Content is decided before the terminal check: a gateway that puts the
     // whole turn in `response.completed` emits a terminal event that is also
     // the only content event in the stream.
     if (this.#contentOf(eventType, dataText)) {
       this.#sawContent = true;
-      // A content event after a held terminal cannot happen in practice
-      // (terminal events close the response), but ordering must survive it.
-      for (const held of this.#held) this.push(Buffer.from(held));
-      this.#held = [];
-      this.push(Buffer.from(block + separator));
+      this.#release();
       return;
     }
     if (isTerminalEvent(eventType, dataText)) {
-      // Terminal events are the last thing the upstream emits, so holding
-      // them changes nothing the client has already seen.
-      this.#held.push(block + separator);
-      return;
+      this.#sawTerminal = true;
     }
-    if (isPrologueEvent(eventType)) {
-      this.#sawPrologue = true;
-      // The first attempt already opened this turn for the client. Repeating
-      // the prologue would hand it a second `response.created` with a new id
-      // and restarted sequence numbers inside one response.
-      if (this.#suppressPrologue) return;
-    }
-    this.push(Buffer.from(block + separator));
   }
 
-  #settle() {
-    if (!this.#sawContent && this.#held.length) {
-      this.#empty = true;
-      if (this.#retried) {
-        // The retry was also empty: the client must see a stated failure, not
-        // a second silent success.
-        this.push(
-          Buffer.from(`\n\nevent: error\ndata: ${JSON.stringify(EMPTY_COMPLETION_ERROR)}\n\n`),
-        );
-      }
-      // On the first attempt the held terminal is dropped instead: the caller
-      // retries the turn, and the client must never see a completed event for
-      // a turn that produced nothing.
-      return;
+  #release() {
+    if (this.#released) return;
+    this.#released = true;
+    this.#clearTimer();
+    for (const chunk of this.#chunks) this.push(chunk);
+    this.#chunks = [];
+    this.#bufferedBytes = 0;
+    this.#parseBuffer = "";
+  }
+
+  #clearTimer() {
+    if (this.#timer) {
+      clearTimeout(this.#timer);
+      this.#timer = undefined;
     }
-    for (const held of this.#held) this.push(Buffer.from(held));
-    this.#held = [];
   }
 
   #fields(block) {
     let eventType = undefined;
-    let dataText = undefined;
+    const dataLines = [];
     for (const line of block.split(/\r?\n/)) {
       if (line.startsWith("event:")) eventType = line.slice(6).trim();
-      else if (line.startsWith("data:")) dataText = line.slice(5).trimStart();
+      else if (line.startsWith("data:")) {
+        const value = line.slice(5);
+        dataLines.push(value.startsWith(" ") ? value.slice(1) : value);
+      }
     }
-    return { eventType, dataText };
+    return {
+      eventType,
+      // The SSE algorithm joins repeated data fields with a line feed before
+      // dispatch. Overwriting them truncates valid multiline JSON and can turn
+      // a content event into a false empty completion.
+      dataText: dataLines.length ? dataLines.join("\n") : undefined,
+    };
   }
 
   #contentOf(eventType, dataText) {
