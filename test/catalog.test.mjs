@@ -57,8 +57,26 @@ const grok = {
 };
 
 test("routed catalog is exposed only when the active provider reaches the router", () => {
+  // An absent base URL is the first-install case: setup has not written the
+  // caller capability yet, but the catalog still needs to be buildable.
   assert.equal(routedCatalogConfigured(""), true);
   assert.equal(routedCatalogConfigured('model_provider = "openai"\n'), true);
+  assert.equal(
+    routedCatalogConfigured('openai_base_url = "https://foreign.invalid/v1"\n'),
+    false,
+  );
+  assert.equal(
+    routedCatalogConfigured(`model_provider = "openai"
+openai_base_url = "https://foreign.invalid/v1"
+`),
+    false,
+  );
+  assert.equal(
+    routedCatalogConfigured(`model_provider = "openai"
+openai_base_url = "http://127.0.0.1:4102/_codex-router/test-caller-secret-with-sufficient-length/v1"
+`),
+    true,
+  );
   assert.equal(routedCatalogConfigured('model_provider = "custom"\n'), false);
   assert.equal(
     routedCatalogConfigured(`model_provider = "custom"

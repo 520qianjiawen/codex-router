@@ -870,6 +870,116 @@ Authorization = "Bearer PROVIDER_HEADER_SECRET"
   }
 });
 
+test("signed routing snapshots a quoted provider id containing a closing bracket", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-signed-quoted-id-"));
+  const stateDir = path.join(codexHome, "router-state");
+  const configPath = path.join(codexHome, "config.toml");
+  writeFileSync(
+    configPath,
+    `model_provider = "custom]id"
+
+[model_providers."custom]id"]
+name = "Foreign provider"
+base_url = "https://foreign.invalid/v1"
+
+[model_providers."custom]id".query_params]
+api_key = "QUOTED_QUERY_SECRET"
+
+[model_providers."custom]id".auth]
+token = "QUOTED_AUTH_SECRET"
+
+[model_providers."custom]id".http_headers]
+Authorization = "Bearer QUOTED_HEADER_SECRET"
+`,
+    { mode: 0o600 },
+  );
+
+  try {
+    const enabled = run("signed-enable", codexHome, stateDir);
+    assert.equal(enabled.signed_routing, true);
+    const active = readFileSync(configPath, "utf8");
+    assert.equal((active.match(/\[model_providers\."custom\]id"\]/g) || []).length, 1);
+    assert.doesNotMatch(active, /https:\/\/foreign\.invalid/);
+    assert.doesNotMatch(active, /QUOTED_(?:QUERY|AUTH|HEADER)_SECRET/);
+    assert.doesNotMatch(
+      active,
+      /\[model_providers\."custom\]id"\.(?:query_params|auth|http_headers)\]/,
+    );
+
+    run("signed-disable", codexHome, stateDir);
+    const restored = readFileSync(configPath, "utf8");
+    assert.match(restored, /base_url = "https:\/\/foreign\.invalid\/v1"/);
+    assert.match(restored, /api_key = "QUOTED_QUERY_SECRET"/);
+    assert.match(restored, /token = "QUOTED_AUTH_SECRET"/);
+    assert.match(restored, /Authorization = "Bearer QUOTED_HEADER_SECRET"/);
+    assert.doesNotMatch(restored, /codex-router-signed-provider-managed/);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("signed routing ignores table-looking lines inside multiline TOML strings", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-signed-multiline-"));
+  const stateDir = path.join(codexHome, "router-state");
+  const configPath = path.join(codexHome, "config.toml");
+  writeFileSync(
+    configPath,
+    `model_provider = "custom"
+
+[model_providers.custom]
+description = """
+[looks.like.a.table]
+This is provider documentation, not a TOML table.
+"""
+base_url = "https://foreign.invalid/v1"
+
+[model_providers.custom.query_params]
+api_key = "MULTILINE_QUERY_SECRET"
+`,
+    { mode: 0o600 },
+  );
+
+  try {
+    run("signed-enable", codexHome, stateDir);
+    const active = readFileSync(configPath, "utf8");
+    assert.doesNotMatch(active, /\[looks\.like\.a\.table\]/);
+    assert.doesNotMatch(active, /https:\/\/foreign\.invalid/);
+    assert.doesNotMatch(active, /MULTILINE_QUERY_SECRET/);
+
+    run("signed-disable", codexHome, stateDir);
+    const restored = readFileSync(configPath, "utf8");
+    assert.match(restored, /description = """\n\[looks\.like\.a\.table\]/);
+    assert.match(restored, /api_key = "MULTILINE_QUERY_SECRET"/);
+    assert.doesNotMatch(restored, /codex-router-signed-provider-managed/);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("signed routing fails closed before writing ambiguous TOML boundaries", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-signed-ambiguous-"));
+  const stateDir = path.join(codexHome, "router-state");
+  const configPath = path.join(codexHome, "config.toml");
+  const original = `model_provider = "custom"
+
+[model_providers.custom]
+description = """
+[looks.like.a.table]
+`;
+  writeFileSync(configPath, original, { mode: 0o600 });
+
+  try {
+    assert.throws(
+      () => run("signed-enable", codexHome, stateDir),
+      /ambiguous TOML|unterminated multiline/i,
+    );
+    assert.equal(readFileSync(configPath, "utf8"), original);
+    assert.equal(existsSync(path.join(stateDir, "signed-provider-mode.json")), false);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
 test("ordinary enable keeps signed routing active without reviving nested provider secrets", () => {
   const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-signed-update-"));
   const stateDir = path.join(codexHome, "router-state");

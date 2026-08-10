@@ -246,7 +246,13 @@ export function routedCatalogConfigured(contents, override = process.env.MODEL_R
   const firstTable = String(contents || "").search(/^\s*\[/m);
   const root = firstTable === -1 ? String(contents || "") : String(contents || "").slice(0, firstTable);
   const provider = root.match(/^\s*model_provider\s*=\s*["\']([^"\']+)["\']/m)?.[1];
-  if (!provider || provider === "openai") return true;
+  if (!provider || provider === "openai") {
+    const baseUrl = root.match(/^\s*openai_base_url\s*=\s*["']([^"']+)["']/m)?.[1];
+    // Before first install there is no managed URL yet, but the catalog still
+    // has to be buildable. Once an URL is present, only the caller-capability
+    // endpoint proves that OpenAI traffic actually reaches this router.
+    return baseUrl === undefined || isManagedCallerBaseUrl(baseUrl);
+  }
 
   const providerId = provider.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const header = new RegExp(

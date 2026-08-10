@@ -519,26 +519,167 @@ function tomlDottedKey(raw) {
   return undefined;
 }
 
-function tableHeaderPath(line) {
-  const match = String(line).match(/^\s*\[\s*([^\[\]]+?)\s*\]\s*(?:#.*)?$/);
-  return match ? tomlDottedKey(match[1]) : undefined;
+function ambiguousTomlBoundary(line, detail) {
+  throw new Error(
+    `Refusing ambiguous TOML table boundaries at line ${line}: ${detail}.`,
+  );
+}
+
+function tableHeaderAtLine(line, lineNumber) {
+  let index = 0;
+  while (/\s/.test(line[index] || "")) index += 1;
+  if (line[index] !== "[") return undefined;
+  const array = line[index + 1] === "[";
+  index += array ? 2 : 1;
+  const start = index;
+  let quote;
+  let escaped = false;
+  let end = -1;
+  while (index < line.length) {
+    const character = line[index];
+    if (quote === '"') {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = undefined;
+      index += 1;
+      continue;
+    }
+    if (quote === "'") {
+      if (character === quote) quote = undefined;
+      index += 1;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      index += 1;
+      continue;
+    }
+    if (character === "[") {
+      ambiguousTomlBoundary(lineNumber, "an unquoted opening bracket appears in a table header");
+    }
+    if (character === "]") {
+      if (array && line[index + 1] !== "]") {
+        ambiguousTomlBoundary(lineNumber, "an array-table header has only one closing bracket");
+      }
+      end = index;
+      index += array ? 2 : 1;
+      break;
+    }
+    index += 1;
+  }
+  if (quote) ambiguousTomlBoundary(lineNumber, "a quoted table key is unterminated");
+  if (end === -1) ambiguousTomlBoundary(lineNumber, "a table header is unterminated");
+  const remainder = line.slice(index).trimStart();
+  if (remainder && !remainder.startsWith("#")) {
+    ambiguousTomlBoundary(lineNumber, "unexpected text follows a table header");
+  }
+  const path = tomlDottedKey(line.slice(start, end).trim());
+  if (!path) ambiguousTomlBoundary(lineNumber, "the table key cannot be decoded safely");
+  return path;
+}
+
+// This is deliberately a boundary lexer rather than a TOML value parser. It
+// finds raw table extents without mistaking quoted `]` characters or
+// table-looking lines inside multiline strings for structural delimiters. Any
+// unfinished lexical state makes provider replacement unsafe, so signed mode
+// refuses before either config or restore state is written.
+function tomlTableHeaders(contents) {
+  const lines = contents.split("\n");
+  const headers = [];
+  let multiline;
+  let arrayDepth = 0;
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
+    const lineNumber = lineIndex + 1;
+    if (!multiline && arrayDepth === 0) {
+      const header = tableHeaderAtLine(line, lineNumber);
+      if (header) {
+        headers.push({ index: lineIndex, path: header });
+        continue;
+      }
+    }
+
+    let index = 0;
+    while (index < line.length) {
+      if (multiline) {
+        const quote = multiline === "basic" ? '"' : "'";
+        if (multiline === "basic" && line[index] === "\\") {
+          index += 2;
+          continue;
+        }
+        if (line[index] !== quote) {
+          index += 1;
+          continue;
+        }
+        let run = 1;
+        while (line[index + run] === quote) run += 1;
+        if (run >= 3) multiline = undefined;
+        index += run;
+        continue;
+      }
+
+      const character = line[index];
+      if (character === "#") break;
+      if (character === '"' || character === "'") {
+        const quote = character;
+        let run = 1;
+        while (line[index + run] === quote) run += 1;
+        if (run >= 3) {
+          multiline = quote === '"' ? "basic" : "literal";
+          index += 3;
+          continue;
+        }
+        index += 1;
+        let closed = false;
+        while (index < line.length) {
+          if (quote === '"' && line[index] === "\\") {
+            index += 2;
+            continue;
+          }
+          if (line[index] === quote) {
+            index += 1;
+            closed = true;
+            break;
+          }
+          index += 1;
+        }
+        if (!closed) {
+          ambiguousTomlBoundary(lineNumber, "a single-line string is unterminated");
+        }
+        continue;
+      }
+      if (character === "[") arrayDepth += 1;
+      else if (character === "]") {
+        if (arrayDepth === 0) {
+          ambiguousTomlBoundary(lineNumber, "an unmatched closing bracket was found");
+        }
+        arrayDepth -= 1;
+      }
+      index += 1;
+    }
+  }
+
+  if (multiline) {
+    ambiguousTomlBoundary(lines.length, `an unterminated multiline ${multiline} string was found`);
+  }
+  if (arrayDepth !== 0) {
+    ambiguousTomlBoundary(lines.length, "an unterminated array was found");
+  }
+  return { lines, headers };
 }
 
 function providerTableRanges(contents, providerId) {
-  const lines = contents.split("\n");
-  const tables = lines
-    .map((line, index) => (tableHeaderPath(line) ? index : -1))
-    .filter((index) => index !== -1);
-  const starts = tables.filter((index) => {
-    const header = tableHeaderPath(lines[index]);
-    return header?.[0] === "model_providers" && header?.[1] === providerId;
-  });
-  const direct = starts.filter((index) => tableHeaderPath(lines[index]).length === 2);
+  const { lines, headers } = tomlTableHeaders(contents);
+  const starts = headers.filter(({ path: header }) =>
+    header[0] === "model_providers" && header[1] === providerId
+  );
+  const direct = starts.filter(({ path: header }) => header.length === 2);
   if (direct.length > 1) {
     throw new Error(`Refusing duplicate model provider tables for ${providerId}.`);
   }
-  return starts.map((start) => {
-    const next = tables.find((index) => index > start);
+  return starts.map(({ index: start }) => {
+    const next = headers.find(({ index }) => index > start)?.index;
     return { lines, start, end: next ?? lines.length };
   });
 }
