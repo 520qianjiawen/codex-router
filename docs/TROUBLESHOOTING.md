@@ -240,7 +240,10 @@ without bound.
 Retried turns are marked in the state directory's `usage-events.jsonl`:
 `emptyCompletionRetried: true` on every retried turn, plus `emptyCompletion:
 true` when the turn produced nothing in the end. The token counts on those rows
-cover both attempts, because both were sent and both were billed. Count them:
+combine provider-reported usage from both complete, bounded attempts, including
+an incompatible retry body the router rejects. A bodyless, oversized, stalled,
+transport-failed, or usage-free attempt stays unknown rather than becoming an
+invented zero. Count retried turns:
 
 ```sh
 grep -c emptyCompletionRetried "$CODEX_HOME/codex-router/usage-events.jsonl"

@@ -128,6 +128,53 @@ const REFUSAL_OUTPUT_SSE = [
   "",
 ].join("\n");
 
+const CHAT_REFUSAL_SSE = [
+  `data: ${JSON.stringify({
+    id: "chat-refusal",
+    choices: [{ index: 0, delta: { refusal: "I cannot help with that." } }],
+  })}`,
+  "",
+  "data: [DONE]",
+  "",
+].join("\n");
+
+const HEADERLESS_PREFIX_TOOL_SSE = Buffer.from(
+  [
+    "\uFEFF: keepalive\r\n\r\n",
+    "\n",
+    "event: response.created\n",
+    'data: {"type":"response.created","sequence_number":0,"response":{"id":"r-prefix-tool"}}\n\n',
+    "event: response.output_item.done\n",
+    `data: ${JSON.stringify({
+      type: "response.output_item.done",
+      sequence_number: 1,
+      item: {
+        type: "function_call",
+        name: "collaboration__spawn_agent",
+        call_id: "call_prefix_tool",
+        arguments: "{}",
+      },
+    })}\n\n`,
+    "event: response.completed\n",
+    `data: ${JSON.stringify({
+      type: "response.completed",
+      sequence_number: 2,
+      response: {
+        id: "r-prefix-tool",
+        output: [],
+        usage: {
+          input_tokens: 19,
+          output_tokens: 2,
+          total_tokens: 21,
+          input_tokens_details: { cached_tokens: 7 },
+        },
+      },
+    })}\n\n`,
+    "data: [DONE]\n\n",
+  ].join(""),
+  "utf8",
+);
+
 // The same two turns with the provider's own token counts attached, so a test
 // can check what a retried turn reports as spend.
 const EMPTY_SSE_METERED = [
@@ -630,6 +677,50 @@ for (const retryKind of ["json", "bodyless"]) {
   });
 }
 
+test("an incompatible JSON retry still contributes its reported usage", async () => {
+  let posts = 0;
+  const gw = await gateway((_request, response) => {
+    posts += 1;
+    if (posts === 1) {
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.end(EMPTY_SSE_METERED);
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(
+      JSON.stringify({
+        id: "incompatible-json-retry",
+        output: [],
+        usage: {
+          input_tokens: 100,
+          output_tokens: 3,
+          total_tokens: 103,
+          input_tokens_details: { cached_tokens: 80 },
+        },
+      }),
+    );
+  });
+  const routerPort = await openPort();
+  const router = run(routerEnv(gw.port, routerPort));
+
+  try {
+    await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+    const result = await readRouted(routerPort, TURN_BODY);
+    assert.equal(result.status, 502);
+    assert.match(result.body, /empty_completion_retry_protocol_error/);
+
+    const [event] = await waitForUsageEvents(router.stateDir, 1, router);
+    assert.equal(event.inputTokens, 200);
+    assert.equal(event.outputTokens, 3);
+    assert.equal(event.totalTokens, 203);
+    assert.equal(event.cachedInputTokens, 140);
+    assert.equal(event.emptyCompletionRetried, true);
+  } finally {
+    await stopChild(router);
+    await closeServer(gw.server);
+  }
+});
+
 test("a transport-failed retry keeps first-attempt usage, cache, and markers", async () => {
   let posts = 0;
   const gw = await gateway((_request, response) => {
@@ -673,6 +764,7 @@ for (const [name, body, expected] of [
   ["custom tool input", CUSTOM_TOOL_CALL_SSE, /move pointer/],
   ["refusal events", REFUSAL_EVENT_SSE, /response\.refusal\.delta/],
   ["completed refusal output", REFUSAL_OUTPUT_SSE, /I cannot help with that/],
+  ["chat-completions refusal", CHAT_REFUSAL_SSE, /I cannot help with that/],
 ]) {
   test(`valid ${name} is content and is never retried`, async () => {
     let posts = 0;
@@ -701,6 +793,59 @@ for (const [name, body, expected] of [
     }
   });
 }
+
+test("a headerless first attempt preserves guard, usage, and namespace transforms", async () => {
+  let posts = 0;
+  const gw = await gateway((_request, response) => {
+    posts += 1;
+    response.writeHead(200);
+    let offset = 0;
+    const sizes = [1, 1, 1, 2, 3, 5, 1, 4, 7, 2, 11];
+    const writeNext = () => {
+      if (offset >= HEADERLESS_PREFIX_TOOL_SSE.length) {
+        response.end();
+        return;
+      }
+      const size = sizes.shift() || HEADERLESS_PREFIX_TOOL_SSE.length;
+      const next = Math.min(HEADERLESS_PREFIX_TOOL_SSE.length, offset + size);
+      response.write(HEADERLESS_PREFIX_TOOL_SSE.subarray(offset, next));
+      offset = next;
+      setImmediate(writeNext);
+    };
+    writeNext();
+  });
+  const routerPort = await openPort();
+  const router = run(routerEnv(gw.port, routerPort));
+
+  try {
+    await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+    const result = await readRouted(routerPort, {
+      ...TURN_BODY,
+      tools: [
+        {
+          type: "namespace",
+          name: "collaboration",
+          tools: [{ type: "function", name: "spawn_agent" }],
+        },
+      ],
+    });
+    assert.equal(result.status, 200);
+    assert.match(result.body, /"name":"spawn_agent"/);
+    assert.match(result.body, /"namespace":"collaboration"/);
+    assert.doesNotMatch(result.body, /collaboration__spawn_agent/);
+    assert.equal(posts, 1);
+
+    const [event] = await waitForUsageEvents(router.stateDir, 1, router);
+    assert.equal(event.inputTokens, 19);
+    assert.equal(event.outputTokens, 2);
+    assert.equal(event.totalTokens, 21);
+    assert.equal(event.cachedInputTokens, 7);
+    assert.equal(event.emptyCompletionRetried, undefined);
+  } finally {
+    await stopChild(router);
+    await closeServer(gw.server);
+  }
+});
 
 test("a client cancel during the retry meters and logs status zero", async () => {
   let posts = 0;

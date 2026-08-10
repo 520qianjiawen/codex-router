@@ -1,6 +1,8 @@
 import { Transform } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 
+import { HeaderlessSseDetector } from "./sse-prefix.mjs";
+
 // The Codex client ships most of its toolset as `type: "namespace"` entries:
 // the collaboration runtime, the app toolset (threads, automations,
 // navigation), and every MCP server (node_repl, peekaboo, github, ...).
@@ -68,8 +70,6 @@ export function injectSessionModelForSpawnCalls(item, model) {
 }
 
 const MAX_JSON_CAPTURE_BYTES = 64 * 1024 * 1024;
-const SSE_FIELD_LINE = /^(?:event|data):/m;
-const SSE_SNIFF_BYTES = 512;
 
 // Flatten every namespace entry into plain functions named
 // `<namespace>__<tool>`. Returns the set of namespaces that were flattened
@@ -243,7 +243,7 @@ export class NamespaceToolCallTransform extends Transform {
   #buffer = "";
   #pending = Buffer.alloc(0);
   #released = false;
-  #undeclared;
+  #headerlessDetector;
   #lookups;
   #sessionModel;
 
@@ -253,20 +253,33 @@ export class NamespaceToolCallTransform extends Transform {
     this.#sessionModel = sessionModel;
     const declared = String(contentType).toLowerCase();
     this.#eventStream = declared.includes("text/event-stream");
-    this.#undeclared = !this.#eventStream && !declared.includes("json");
+    this.#headerlessDetector =
+      !this.#eventStream && !declared.includes("json")
+        ? new HeaderlessSseDetector()
+        : undefined;
   }
 
   _transform(chunk, _encoding, callback) {
-    if (this.#undeclared && chunk.length) {
-      this.#undeclared = false;
-      this.#eventStream = SSE_FIELD_LINE.test(
-        chunk.subarray(0, SSE_SNIFF_BYTES).toString("utf8"),
-      );
+    if (this.#headerlessDetector) {
+      const detected = this.#headerlessDetector.write(chunk);
+      if (detected.decision === "pending") {
+        callback();
+        return;
+      }
+      this.#headerlessDetector = undefined;
+      this.#eventStream = detected.decision === "event-stream";
+      for (const buffered of detected.chunks) this.#transformChunk(buffered);
+      callback();
+      return;
     }
+    this.#transformChunk(chunk);
+    callback();
+  }
+
+  #transformChunk(chunk) {
     if (!this.#eventStream) {
       if (this.#released) {
         this.push(chunk);
-        callback();
         return;
       }
       this.#pending = this.#pending.length ? Buffer.concat([this.#pending, chunk]) : chunk;
@@ -275,15 +288,19 @@ export class NamespaceToolCallTransform extends Transform {
         this.#pending = Buffer.alloc(0);
         this.#released = true;
       }
-      callback();
       return;
     }
     this.#buffer += this.#decoder.write(chunk);
     this.#emitCompleteEvents();
-    callback();
   }
 
   _flush(callback) {
+    if (this.#headerlessDetector) {
+      const detected = this.#headerlessDetector.end();
+      this.#headerlessDetector = undefined;
+      this.#eventStream = detected.decision === "event-stream";
+      for (const buffered of detected.chunks) this.#transformChunk(buffered);
+    }
     if (!this.#eventStream) {
       const body = this.#pending;
       this.#pending = Buffer.alloc(0);

@@ -467,6 +467,28 @@ test("meters a headerless stream whose first event spans two chunks", async () =
   });
 });
 
+test("meters headerless SSE after a split BOM, comments, and blank lines", async () => {
+  const body = Buffer.from(
+    `\uFEFF: keepalive\r\n\r\n\n${completedEvent({
+      input_tokens: 17,
+      output_tokens: 4,
+      total_tokens: 21,
+    })}data: [DONE]\n\n`,
+    "utf8",
+  );
+  const transform = new ResponseUsageTransform("");
+  const output = await passThrough(
+    transform,
+    [...body].map((byte) => Buffer.from([byte])),
+  );
+  assert.equal(output, body.toString("utf8"));
+  assert.deepEqual(transform.tokenUsage(), {
+    inputTokens: 17,
+    outputTokens: 4,
+    totalTokens: 21,
+  });
+});
+
 test("still reads a headerless body as JSON when it is not an event stream", async () => {
   const body = JSON.stringify({ usage: { input_tokens: 7, output_tokens: 3 } });
   const transform = new ResponseUsageTransform("");

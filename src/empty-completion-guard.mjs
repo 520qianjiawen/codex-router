@@ -1,8 +1,8 @@
 import { Transform } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 
-const SSE_FIELD_LINE = /^(?:event|data|id|retry):/;
-const SSE_SNIFF_BYTES = 256;
+import { HeaderlessSseDetector } from "./sse-prefix.mjs";
+
 const MAX_PRECONTENT_BYTES = 1024 * 1024;
 const MAX_PRECONTENT_MS = 30_000;
 
@@ -52,6 +52,7 @@ function chunkHasChatContent(data) {
     const delta = choice?.delta ?? choice?.message;
     if (!delta || typeof delta !== "object") return false;
     if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) return true;
+    if (typeof delta.refusal === "string") return delta.refusal.length > 0;
     if (typeof delta.content === "string") return delta.content.length > 0;
     // Some gateways send content as an array of parts, same as Responses.
     if (Array.isArray(delta.content)) return itemHasContent(delta);
@@ -129,7 +130,7 @@ export class EmptyCompletionGuard extends Transform {
   #sawTerminal = false;
   #empty = false;
   #released = false;
-  #undeclared;
+  #headerlessDetector;
   #maxPreludeBytes;
   #maxPreludeMs;
   #timer;
@@ -141,7 +142,10 @@ export class EmptyCompletionGuard extends Transform {
     super();
     const declared = String(contentType).toLowerCase();
     this.#eventStream = declared.includes("text/event-stream");
-    this.#undeclared = !this.#eventStream && !declared.includes("json");
+    this.#headerlessDetector =
+      !this.#eventStream && !declared.includes("json")
+        ? new HeaderlessSseDetector()
+        : undefined;
     this.#maxPreludeBytes =
       Number.isFinite(maxPreludeBytes) && maxPreludeBytes >= 0
         ? Math.floor(maxPreludeBytes)
@@ -162,23 +166,32 @@ export class EmptyCompletionGuard extends Transform {
   }
 
   _transform(chunk, _encoding, callback) {
-    if (this.#undeclared && chunk.length) {
-      this.#undeclared = false;
-      this.#eventStream = SSE_FIELD_LINE.test(
-        chunk.subarray(0, SSE_SNIFF_BYTES).toString("utf8"),
-      );
+    if (this.#headerlessDetector) {
+      const detected = this.#headerlessDetector.write(chunk);
+      if (detected.decision === "pending") {
+        callback();
+        return;
+      }
+      this.#headerlessDetector = undefined;
+      this.#eventStream = detected.decision === "event-stream";
       if (this.#eventStream) this.#startTimer();
+      for (const buffered of detected.chunks) this.#transformChunk(buffered);
+      callback();
+      return;
     }
+    this.#transformChunk(chunk);
+    callback();
+  }
+
+  #transformChunk(chunk) {
     if (!this.#eventStream) {
       // Non-streaming bodies pass through untouched; only streamed turns
       // exhibit the empty-completion failure.
       this.push(chunk);
-      callback();
       return;
     }
     if (this.#released) {
       this.push(chunk);
-      callback();
       return;
     }
     const bytes = Buffer.from(chunk);
@@ -187,10 +200,16 @@ export class EmptyCompletionGuard extends Transform {
     this.#parseBuffer += this.#decoder.write(bytes);
     this.#consumeBlocks();
     if (!this.#released && this.#bufferedBytes > this.#maxPreludeBytes) this.#release();
-    callback();
   }
 
   _flush(callback) {
+    if (this.#headerlessDetector) {
+      const detected = this.#headerlessDetector.end();
+      this.#headerlessDetector = undefined;
+      this.#eventStream = detected.decision === "event-stream";
+      if (this.#eventStream) this.#startTimer();
+      for (const buffered of detected.chunks) this.#transformChunk(buffered);
+    }
     this.#clearTimer();
     if (!this.#eventStream) {
       this.push(this.#decoder.end());

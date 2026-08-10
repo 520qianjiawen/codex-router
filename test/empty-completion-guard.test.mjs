@@ -252,6 +252,18 @@ test("chat-completions deltas count as content", async () => {
   assert.match(body, /\[DONE\]/);
 });
 
+test("a chat-completions refusal delta counts as content", async () => {
+  const input = [
+    `data: ${JSON.stringify({ choices: [{ delta: { refusal: "I cannot help with that." } }] })}`,
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const { body, empty } = await runGuard(input);
+  assert.equal(empty, false);
+  assert.equal(body, input);
+});
+
 test("a chat-completions tool call counts as content", async () => {
   const input = [
     `data: ${JSON.stringify({
@@ -317,6 +329,25 @@ test("the pre-content time bound also covers a headerless SSE attempt", async ()
   );
   assert.equal(guard.isEmpty(), false);
   assert.equal(Buffer.concat(chunks).toString("utf8"), EMPTY_TURN);
+});
+
+test("headerless SSE detection spans a split BOM, comments, and blank lines", async () => {
+  const input = Buffer.from(`\uFEFF: keepalive\r\n\r\n\n${CONTENT_TURN}`, "utf8");
+  const guard = new EmptyCompletionGuard("");
+  const chunks = [];
+  await pipeline(
+    Readable.from([...input].map((byte) => Buffer.from([byte]))),
+    guard,
+    new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(Buffer.from(chunk));
+        callback();
+      },
+    }),
+  );
+  assert.equal(guard.isEmpty(), false);
+  assert.equal(guard.hasContent(), true);
+  assert.deepEqual(Buffer.concat(chunks), input);
 });
 
 test("non-SSE bodies pass through byte for byte and are never empty", async () => {

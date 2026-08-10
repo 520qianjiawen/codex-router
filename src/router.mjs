@@ -56,6 +56,11 @@ import { activityMetadataFromHeaders } from "./codex-session-names.mjs";
 import { translateGatewayError } from "./error-translation.mjs";
 import { recordUsageEvent } from "./usage-events.mjs";
 import {
+  classifySsePrefix,
+  HEADERLESS_SSE_SNIFF_BYTES,
+  HEADERLESS_SSE_SNIFF_MS,
+} from "./sse-prefix.mjs";
+import {
   describeImage,
   evidenceCache,
   hasNativeSession,
@@ -389,11 +394,8 @@ function sumEstimatedInputTokens(first, second) {
   return first + second;
 }
 
-const HEADERLESS_SSE_SNIFF_BYTES = 256;
-const HEADERLESS_SSE_SNIFF_MS = 30_000;
-const HEADERLESS_SSE_PREFIX =
-  /^(?:\uFEFF)?(?:(?::[^\r\n]*)?\r?\n)*(?:event|data|id|retry):/;
 const HEADERLESS_SSE_TIMEOUT = Symbol("headerless-sse-timeout");
+const MAX_REJECTED_RETRY_USAGE_BYTES = 8 * 1024 * 1024;
 
 async function readHeaderlessSseChunk(reader, timeoutMs) {
   let timer;
@@ -408,6 +410,60 @@ async function readHeaderlessSseChunk(reader, timeoutMs) {
   }
 }
 
+function responseWithBody(upstream, body) {
+  return new Response(body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: upstream.headers,
+  });
+}
+
+// Rejected retries are still upstream requests and may be billed. Drain only
+// a complete bounded body through the ordinary usage observer; an oversized,
+// stalled, or failed body has unknowable usage and is canceled without
+// inventing token counts.
+async function observeRejectedRetryUsage(upstream) {
+  if (!upstream?.body) return undefined;
+  const reader = upstream.body.getReader();
+  const observer = new ResponseUsageTransform(
+    upstream.headers.get("content-type") || "",
+  );
+  observer.on("data", () => {});
+  const deadline = Date.now() + HEADERLESS_SSE_SNIFF_MS;
+  let total = 0;
+  try {
+    while (true) {
+      const result = await readHeaderlessSseChunk(
+        reader,
+        Math.max(0, deadline - Date.now()),
+      );
+      if (result === HEADERLESS_SSE_TIMEOUT) {
+        void reader.cancel().catch(() => {});
+        observer.destroy();
+        return undefined;
+      }
+      if (result.done) break;
+      total += result.value?.byteLength || 0;
+      if (total > MAX_REJECTED_RETRY_USAGE_BYTES) {
+        void reader.cancel().catch(() => {});
+        observer.destroy();
+        return undefined;
+      }
+      if (result.value?.byteLength) observer.write(Buffer.from(result.value));
+    }
+    await new Promise((resolve, reject) => {
+      observer.once("finish", resolve);
+      observer.once("error", reject);
+      observer.end();
+    });
+    return observer.tokenUsage();
+  } catch {
+    void reader.cancel().catch(() => {});
+    observer.destroy();
+    return undefined;
+  }
+}
+
 // A retry without Content-Type is still compatible when its bytes prove it is
 // SSE. Peek through one tee branch, then relay the untouched branch through
 // the normal transforms. A headerless JSON body is rejected before any of it
@@ -417,7 +473,8 @@ async function prepareEventStreamRetry(upstream) {
   if (contentType.toLowerCase().includes("text/event-stream")) {
     return { response: upstream, pipelineContentType: contentType };
   }
-  if (contentType || !upstream?.body) return undefined;
+  if (contentType) return { rejectedResponse: upstream };
+  if (!upstream?.body) return undefined;
 
   const [probe, relay] = upstream.body.tee();
   const reader = probe.getReader();
@@ -430,17 +487,23 @@ async function prepareEventStreamRetry(upstream) {
         reader,
         Math.max(0, deadline - Date.now()),
       );
-      if (result === HEADERLESS_SSE_TIMEOUT || result.done) break;
+      if (result === HEADERLESS_SSE_TIMEOUT) break;
+      if (result.done) {
+        compatible = classifySsePrefix(prefix, { end: true }) === "event-stream";
+        break;
+      }
       if (result.value?.byteLength) {
         const remaining = HEADERLESS_SSE_SNIFF_BYTES - prefix.length;
         prefix = Buffer.concat([
           prefix,
           Buffer.from(result.value).subarray(0, remaining),
         ]);
-        if (HEADERLESS_SSE_PREFIX.test(prefix.toString("utf8"))) {
+        const decision = classifySsePrefix(prefix);
+        if (decision === "event-stream") {
           compatible = true;
           break;
         }
+        if (decision === "other") break;
       }
     }
   } catch (error) {
@@ -450,16 +513,12 @@ async function prepareEventStreamRetry(upstream) {
   }
 
   if (!compatible) {
-    await Promise.allSettled([reader.cancel(), relay.cancel()]);
-    return undefined;
+    void reader.cancel().catch(() => {});
+    return { rejectedResponse: responseWithBody(upstream, relay) };
   }
   void reader.cancel().catch(() => {});
   return {
-    response: new Response(relay, {
-      status: upstream.status,
-      statusText: upstream.statusText,
-      headers: upstream.headers,
-    }),
+    response: responseWithBody(upstream, relay),
     pipelineContentType: "text/event-stream",
   };
 }
@@ -1462,6 +1521,7 @@ async function handleResponses(request, response, requestUrl) {
   let usageTransform;
   let retryUsageTransform;
   let retryEmptyCompletionGuard;
+  let retryUsage;
   let usage;
   let estimatedInputTokens;
   let emptyCompletion = false;
@@ -1799,12 +1859,15 @@ async function handleResponses(request, response, requestUrl) {
         finalStatus = 502;
       }
       if (upstream2) {
-        const preparedRetry =
-          upstream2.ok && upstream2.body
-            ? await prepareEventStreamRetry(upstream2)
-            : undefined;
-        if (!preparedRetry) {
-          await upstream2.body?.cancel().catch(() => {});
+        const preparedRetry = upstream2.body
+          ? await prepareEventStreamRetry(upstream2)
+          : undefined;
+        const compatibleRetry = upstream2.ok && preparedRetry?.response;
+        if (!compatibleRetry) {
+          const rejectedResponse =
+            preparedRetry?.rejectedResponse ?? preparedRetry?.response ?? upstream2;
+          retryUsage = await observeRejectedRetryUsage(rejectedResponse);
+          await rejectedResponse.body?.cancel().catch(() => {});
           writeEmptyCompletionError(
             response,
             upstream2.ok
@@ -1816,7 +1879,7 @@ async function handleResponses(request, response, requestUrl) {
           );
           finalStatus = 502;
         } else {
-          upstream2 = preparedRetry.response;
+          upstream2 = compatibleRetry;
           clearStagedResponseHead(response);
           const retryContentType = preparedRetry.pipelineContentType;
           const secondPipeline = createResponsePipeline(retryContentType);
@@ -1845,12 +1908,13 @@ async function handleResponses(request, response, requestUrl) {
             finalStatus = upstream2.status;
             emptyCompletion = false;
           }
+          retryUsage = retryUsageTransform?.tokenUsage();
         }
       }
       // Both attempts were billed, so the meter reports both. A retry that
       // fails before returning a body still preserves the known first-attempt
       // usage instead of dropping it with the transport error.
-      usage = mergeTokenUsage(usage, retryUsageTransform?.tokenUsage());
+      usage = mergeTokenUsage(usage, retryUsage ?? retryUsageTransform?.tokenUsage());
       estimatedInputTokens = sumEstimatedInputTokens(
         estimatedInputTokens,
         retryUsageTransform?.substitutedInputTokens(),
@@ -1898,7 +1962,7 @@ async function handleResponses(request, response, requestUrl) {
     if (usageTransform) {
       usage = mergeTokenUsage(
         usageTransform.tokenUsage(),
-        retryUsageTransform?.tokenUsage(),
+        retryUsageTransform?.tokenUsage() ?? retryUsage,
       );
       estimatedInputTokens = sumEstimatedInputTokens(
         usageTransform.substitutedInputTokens(),
