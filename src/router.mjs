@@ -1539,6 +1539,7 @@ async function handleResponses(request, response, requestUrl) {
   let estimatedInputTokens;
   let emptyCompletion = false;
   let emptyCompletionRetried = false;
+  let guardReleasedForBudget = false;
   let finalStatus;
   let activityStatus;
   let usageRecorded = false;
@@ -1835,6 +1836,13 @@ async function handleResponses(request, response, requestUrl) {
       clientGone || (response.destroyed && !response.writableFinished);
     finalStatus = clientWalkedAway ? 0 : upstream.status;
     emptyCompletion = emptyCompletionGuard?.isEmpty() === true && !clientWalkedAway;
+    // The guard releases long turns at its byte/time budget without a verdict.
+    // Those turns may have been empty completions the router chose not to
+    // retry, which must stay distinguishable from healthy long turns in the
+    // meter — otherwise a 40-second reasoning-only empty completion reads as a
+    // successful 40-second turn.
+    guardReleasedForBudget =
+      emptyCompletionGuard?.releasedForBudget() === true && !clientWalkedAway;
     if (emptyCompletion) {
       // The upstream answered 200 with nothing. Retry the identical request
       // once: same bytes, same headers, same signal. The guard discarded the
@@ -1965,6 +1973,7 @@ async function handleResponses(request, response, requestUrl) {
       estimatedInputTokens,
       ...(emptyCompletion ? { emptyCompletion: true } : {}),
       ...(emptyCompletionRetried ? { emptyCompletionRetried: true } : {}),
+      ...(guardReleasedForBudget ? { emptyCompletionGuardReleased: true } : {}),
     });
     usageRecorded = true;
     activityStatus = finalStatus;
@@ -2035,6 +2044,7 @@ async function handleResponses(request, response, requestUrl) {
         ...(response.headersSent ? { streamAborted: true } : {}),
         ...(emptyCompletion ? { emptyCompletion: true } : {}),
         ...(emptyCompletionRetried ? { emptyCompletionRetried: true } : {}),
+        ...(guardReleasedForBudget ? { emptyCompletionGuardReleased: true } : {}),
       });
       usageRecorded = true;
     }

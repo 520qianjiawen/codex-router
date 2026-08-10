@@ -102,3 +102,40 @@ test("an aborted stream persists its marker and reads back", async () => {
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+test("a guard budget release persists its marker and reads back", async () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "model-router-usage-"));
+  const previousStateDir = process.env.MODEL_ROUTER_STATE_DIR;
+  process.env.MODEL_ROUTER_STATE_DIR = stateDir;
+  try {
+    const usage = await import(`../src/usage-events.mjs?guard=1&ts=${Date.now()}`);
+    usage.recordUsageEvent({
+      model: "opencode-go/deepseek-v4-flash",
+      provider: "opencode-go",
+      status: 200,
+      durationMs: 40_100,
+      emptyCompletionGuardReleased: true,
+    });
+    const [event] = usage
+      .recentUsageEvents()
+      .filter((candidate) => candidate.emptyCompletionGuardReleased === true);
+    assert.equal(event.status, 200);
+    assert.equal(event.durationMs, 40_100);
+    // An ordinary turn never carries the marker, so the release path stays
+    // distinguishable from a healthy turn of the same duration.
+    usage.recordUsageEvent({
+      model: "opencode-go/deepseek-v4-flash",
+      provider: "opencode-go",
+      status: 200,
+      durationMs: 40_100,
+    });
+    const [ordinary] = usage
+      .recentUsageEvents()
+      .filter((candidate) => candidate.emptyCompletionGuardReleased !== true);
+    assert.equal("emptyCompletionGuardReleased" in ordinary, false);
+  } finally {
+    if (previousStateDir === undefined) delete process.env.MODEL_ROUTER_STATE_DIR;
+    else process.env.MODEL_ROUTER_STATE_DIR = previousStateDir;
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
