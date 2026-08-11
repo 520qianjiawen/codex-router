@@ -98,7 +98,16 @@ function runAgentCheckOnce(
     writeFileSync(path.join(workspace, marker), "ok\n", "utf8");
     const result = spawn(
       codex,
-      ["exec", "--model", slug, "--skip-git-repo-check", CHECK_PROMPT],
+      [
+        "exec",
+        "--ephemeral",
+        "--sandbox",
+        "read-only",
+        "--model",
+        slug,
+        "--skip-git-repo-check",
+        CHECK_PROMPT,
+      ],
       { cwd: workspace, encoding: "utf8", timeout: timeoutMs },
     );
     const graded = gradeCodexRun(

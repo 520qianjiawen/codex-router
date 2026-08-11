@@ -23,6 +23,10 @@ test("routed agent definitions select the router provider and exact model slug",
   assert.match(definition.contents, /^# Managed by Codex Router\./);
   assert.match(definition.contents, /model_provider = "codex-router"/);
   assert.match(definition.contents, /model = "kimi-oauth\/k3"/);
+  assert.match(definition.contents, /cite the exact file and line/);
+  assert.match(definition.contents, /Before claiming that something is absent/);
+  assert.match(definition.contents, /Never invent or reuse a stale name/);
+  assert.match(definition.contents, /Do not stop after merely announcing a next action/);
 });
 
 test("agent sync writes one private definition for every routed model", () => {
