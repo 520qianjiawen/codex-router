@@ -55,9 +55,13 @@ async function main() {
 
   const committedLines = committed.split("\n");
   const regeneratedLines = regenerated.split("\n");
-  const firstDifference = committedLines.findIndex(
+  // A committed file that is a prefix of the regenerated one has no differing
+  // line at all, and findIndex then reports -1 -- which would print line 0 and
+  // quote two identical lines. The first missing line is the difference there.
+  const differing = committedLines.findIndex(
     (line, index) => line !== regeneratedLines[index],
   );
+  const firstDifference = differing === -1 ? committedLines.length : differing;
   throw new Error(
     [
       `${FORMULA_PATH} no longer matches requirements/python.txt.`,

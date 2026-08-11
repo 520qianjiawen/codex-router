@@ -1653,13 +1653,6 @@ async function handleResponses(request, response, requestUrl) {
       // `reasoning_content` on the tool-call message.
       carryReasoningThroughInput(input);
       const provider = providerForModel(route);
-      // Capture collaboration schema metadata for every routed provider. The
-      // response transform uses the exact spawn_agent model enum to remove an
-      // invented or stale optional override before Codex validates the call.
-      // Responses-native providers keep the namespace tools untouched; chat
-      // bridges additionally receive the flattened form below.
-      const namespaceInventory = flattenNamespaceTools(payload.tools);
-      flattenedNamespaces = namespaceInventory.namespaces;
       // LiteLLM's Responses -> Chat Completions bridge drops namespace tools,
       // which is how the client ships the collaboration runtime, the app
       // toolset (threads, automations, navigation), and every MCP server
@@ -1682,6 +1675,13 @@ async function handleResponses(request, response, requestUrl) {
           payload.tools = flattened.tools;
           flattenedNamespaces = flattened.namespaces;
         }
+      } else {
+        // Responses-native providers keep the namespace tools untouched, so
+        // nothing is flattened and the payload is left alone. The inventory is
+        // still built, because the response transform reads the exact
+        // spawn_agent model enum off it to drop an invented or stale optional
+        // override before Codex validates the call.
+        flattenedNamespaces = flattenNamespaceTools(payload.tools).namespaces;
       }
       let routedInput = input;
       // The stored call history must use the same tool names as the tool
