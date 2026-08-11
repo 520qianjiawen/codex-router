@@ -1532,6 +1532,7 @@ async function handleResponses(request, response, requestUrl) {
   let upstreamRetries;
   let upstreamLatencyMs;
   let usageTransform;
+  let emptyCompletionGuard;
   let retryUsageTransform;
   let retryEmptyCompletionGuard;
   let retryUsage;
@@ -1539,6 +1540,7 @@ async function handleResponses(request, response, requestUrl) {
   let estimatedInputTokens;
   let emptyCompletion = false;
   let emptyCompletionRetried = false;
+  let guardReleasedForBudget = false;
   let finalStatus;
   let activityStatus;
   let usageRecorded = false;
@@ -1820,7 +1822,7 @@ async function handleResponses(request, response, requestUrl) {
     };
     const firstPipeline = createResponsePipeline(upstreamContentType);
     usageTransform = firstPipeline.usageObserver;
-    const emptyCompletionGuard = firstPipeline.guard;
+    emptyCompletionGuard = firstPipeline.guard;
     const relayOpen = Boolean(emptyCompletionGuard);
     await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, firstPipeline.transforms, {
       leaveOpen: relayOpen,
@@ -1835,6 +1837,13 @@ async function handleResponses(request, response, requestUrl) {
       clientGone || (response.destroyed && !response.writableFinished);
     finalStatus = clientWalkedAway ? 0 : upstream.status;
     emptyCompletion = emptyCompletionGuard?.isEmpty() === true && !clientWalkedAway;
+    // The guard releases long turns at its byte/time budget without a verdict.
+    // Those turns may have been empty completions the router chose not to
+    // retry, which must stay distinguishable from healthy long turns in the
+    // meter — otherwise a 40-second reasoning-only empty completion reads as a
+    // successful 40-second turn.
+    guardReleasedForBudget =
+      emptyCompletionGuard?.releasedForBudget() === true && !clientWalkedAway;
     if (emptyCompletion) {
       // The upstream answered 200 with nothing. Retry the identical request
       // once: same bytes, same headers, same signal. The guard discarded the
@@ -1917,6 +1926,10 @@ async function handleResponses(request, response, requestUrl) {
           );
           const retryClientWalkedAway =
             clientGone || (response.destroyed && !response.writableFinished);
+          guardReleasedForBudget =
+            guardReleasedForBudget ||
+            (retryEmptyCompletionGuard?.releasedForBudget() === true &&
+              !retryClientWalkedAway);
           if (retryClientWalkedAway) {
             finalStatus = 0;
             if (secondPipeline.guard.hasContent()) emptyCompletion = false;
@@ -1965,6 +1978,7 @@ async function handleResponses(request, response, requestUrl) {
       estimatedInputTokens,
       ...(emptyCompletion ? { emptyCompletion: true } : {}),
       ...(emptyCompletionRetried ? { emptyCompletionRetried: true } : {}),
+      ...(guardReleasedForBudget ? { emptyCompletionGuardReleased: true } : {}),
     });
     usageRecorded = true;
     activityStatus = finalStatus;
@@ -1982,6 +1996,15 @@ async function handleResponses(request, response, requestUrl) {
   } catch (error) {
     upstreamLatencyMs ??= Date.now() - startedAt;
     if (retryEmptyCompletionGuard?.hasContent()) emptyCompletion = false;
+    if (!clientGone) {
+      // A pipeline can fail after either guard has released its held bytes but
+      // before the success path samples the accessor. Preserve that verdict in
+      // the failure event too.
+      guardReleasedForBudget =
+        guardReleasedForBudget ||
+        emptyCompletionGuard?.releasedForBudget() === true ||
+        retryEmptyCompletionGuard?.releasedForBudget() === true;
+    }
     if (usageTransform) {
       usage = mergeTokenUsage(
         usageTransform.tokenUsage(),
@@ -2035,6 +2058,7 @@ async function handleResponses(request, response, requestUrl) {
         ...(response.headersSent ? { streamAborted: true } : {}),
         ...(emptyCompletion ? { emptyCompletion: true } : {}),
         ...(emptyCompletionRetried ? { emptyCompletionRetried: true } : {}),
+        ...(guardReleasedForBudget ? { emptyCompletionGuardReleased: true } : {}),
       });
       usageRecorded = true;
     }

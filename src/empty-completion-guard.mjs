@@ -130,6 +130,7 @@ export class EmptyCompletionGuard extends Transform {
   #sawTerminal = false;
   #empty = false;
   #released = false;
+  #releasedForBudget = false;
   #headerlessDetector;
   #maxPreludeBytes;
   #maxPreludeMs;
@@ -163,6 +164,17 @@ export class EmptyCompletionGuard extends Transform {
 
   hasContent() {
     return this.#sawContent;
+  }
+
+  // True when the stream was released by the hold budget (byte cap or timer)
+  // rather than by a content or terminal verdict. The turn is then relayed
+  // unchanged and never classified empty — the conservative choice — but the
+  // caller can tell "released because we could not afford to hold it" apart
+  // from "released because it produced something", which is the difference
+  // between "may have been an empty completion we chose not to retry" and a
+  // healthy turn in the meter.
+  releasedForBudget() {
+    return this.#releasedForBudget;
   }
 
   _transform(chunk, _encoding, callback) {
@@ -199,7 +211,9 @@ export class EmptyCompletionGuard extends Transform {
     this.#bufferedBytes += bytes.length;
     this.#parseBuffer += this.#decoder.write(bytes);
     this.#consumeBlocks();
-    if (!this.#released && this.#bufferedBytes > this.#maxPreludeBytes) this.#release();
+    if (!this.#released && this.#bufferedBytes > this.#maxPreludeBytes) {
+      this.#release({ budget: true });
+    }
   }
 
   _flush(callback) {
@@ -258,19 +272,29 @@ export class EmptyCompletionGuard extends Transform {
     // Content is decided before the terminal check: a gateway that puts the
     // whole turn in `response.completed` emits a terminal event that is also
     // the only content event in the stream.
-    if (this.#contentOf(eventType, dataText)) {
+    const content = this.#contentOf(eventType, dataText);
+    if (content === true) {
       this.#sawContent = true;
       this.#release();
       return;
     }
     if (isTerminalEvent(eventType, dataText)) {
+      // A terminal event whose payload cannot be parsed is not evidence of an
+      // empty completion — the very event that would carry the output is the
+      // one we could not read. Release the stream (indeterminate) rather than
+      // declaring the turn empty and forcing a retry of a possibly valid one.
+      if (content === undefined) {
+        this.#release();
+        return;
+      }
       this.#sawTerminal = true;
     }
   }
 
-  #release() {
+  #release({ budget = false } = {}) {
     if (this.#released) return;
     this.#released = true;
+    if (budget) this.#releasedForBudget = true;
     this.#clearTimer();
     for (const chunk of this.#chunks) this.push(chunk);
     this.#chunks = [];
@@ -287,7 +311,7 @@ export class EmptyCompletionGuard extends Transform {
 
   #startTimer() {
     if (this.#timer || this.#released) return;
-    this.#timer = setTimeout(() => this.#release(), this.#maxPreludeMs);
+    this.#timer = setTimeout(() => this.#release({ budget: true }), this.#maxPreludeMs);
     this.#timer.unref?.();
   }
 
@@ -316,7 +340,11 @@ export class EmptyCompletionGuard extends Transform {
       const data = JSON.parse(dataText);
       return isContentEvent(eventType ?? data?.type, data);
     } catch {
-      return false;
+      // Indeterminate, not "no content": the payload could not be parsed, so
+      // the absence of recognized content says nothing about whether the turn
+      // produced output. Callers must not treat this as evidence of an empty
+      // completion.
+      return undefined;
     }
   }
 }

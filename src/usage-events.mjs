@@ -49,6 +49,12 @@ export function recordUsageEvent({
   // cover both attempts, because both were sent and both were billed. This
   // marker is what says the reported spend belongs to two attempts at one turn.
   emptyCompletionRetried,
+  // True when the guard released the stream at its byte/time hold budget
+  // without a verdict, so this turn may have been an empty completion the
+  // router chose not to retry. Kept apart from `emptyCompletion` because the
+  // release is the conservative path: the turn is relayed as-is and cannot be
+  // proven empty, but it must not read as a guaranteed-healthy turn either.
+  emptyCompletionGuardReleased,
   // Present only when the router replaced an upstream `input_tokens: 0` with
   // its own estimate on the way to Codex (#95). The reported counts above stay
   // exactly as the provider sent them, so an estimated turn is never mistaken
@@ -67,6 +73,9 @@ export function recordUsageEvent({
     ...(streamAborted === true ? { streamAborted: true } : {}),
     ...(emptyCompletion === true ? { emptyCompletion: true } : {}),
     ...(emptyCompletionRetried === true ? { emptyCompletionRetried: true } : {}),
+    ...(emptyCompletionGuardReleased === true
+      ? { emptyCompletionGuardReleased: true }
+      : {}),
     ...(safeRetryCount(retries) !== undefined ? { retries: safeRetryCount(retries) } : {}),
     ...(safeTokenCount(inputTokens) !== undefined
       ? { inputTokens: safeTokenCount(inputTokens) }
@@ -142,6 +151,9 @@ export function recentUsageEvents({ sinceMs = 24 * 60 * 60 * 1000, limit = 1_000
           ...(event.emptyCompletion === true ? { emptyCompletion: true } : {}),
           ...(event.emptyCompletionRetried === true
             ? { emptyCompletionRetried: true }
+            : {}),
+          ...(event.emptyCompletionGuardReleased === true
+            ? { emptyCompletionGuardReleased: true }
             : {}),
           ...(retries !== undefined ? { retries } : {}),
           ...(inputTokens !== undefined ? { inputTokens } : {}),

@@ -359,3 +359,96 @@ test("non-SSE bodies pass through byte for byte and are never empty", async () =
   assert.equal(empty, false);
   assert.equal(body, json);
 });
+
+test("a byte-budget release reports releasedForBudget", async () => {
+  const guard = new EmptyCompletionGuard("text/event-stream", { maxPreludeBytes: 1 });
+  const chunks = [];
+  await pipeline(
+    Readable.from([Buffer.from(EMPTY_TURN)]),
+    guard,
+    new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(Buffer.from(chunk));
+        callback();
+      },
+    }),
+  );
+  assert.equal(guard.isEmpty(), false);
+  assert.equal(guard.releasedForBudget(), true);
+  assert.equal(Buffer.concat(chunks).toString("utf8"), EMPTY_TURN);
+});
+
+test("a time-budget release reports releasedForBudget and never classifies empty", async () => {
+  const split = EMPTY_TURN.indexOf("event: response.completed");
+  async function* delayedTurn() {
+    yield Buffer.from(EMPTY_TURN.slice(0, split));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    yield Buffer.from(EMPTY_TURN.slice(split));
+  }
+  const guard = new EmptyCompletionGuard("", { maxPreludeMs: 5 });
+  const chunks = [];
+  await pipeline(
+    Readable.from(delayedTurn()),
+    guard,
+    new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(Buffer.from(chunk));
+        callback();
+      },
+    }),
+  );
+  assert.equal(guard.isEmpty(), false);
+  assert.equal(guard.releasedForBudget(), true);
+  assert.equal(Buffer.concat(chunks).toString("utf8"), EMPTY_TURN);
+});
+
+test("a content release never reports releasedForBudget", async () => {
+  const { empty } = await runGuard(CONTENT_TURN);
+  assert.equal(empty, false);
+  // content release goes through the same runGuard pipeline, so re-run with a
+  // direct guard to assert the accessor stays false for a content verdict
+  const guard = new EmptyCompletionGuard("text/event-stream");
+  await pipeline(
+    Readable.from([Buffer.from(CONTENT_TURN)]),
+    guard,
+    new Writable({
+      write(_chunk, _encoding, callback) {
+        callback();
+      },
+    }),
+  );
+  assert.equal(guard.releasedForBudget(), false);
+  assert.equal(guard.hasContent(), true);
+});
+
+test("a terminal event whose data fails to parse is indeterminate, not empty", async () => {
+  const input = [
+    "event: response.created",
+    'data: {"type":"response.created","response":{"id":"r1"}}',
+    "",
+    "event: response.completed",
+    "data: {not valid json",
+    "",
+    "event: response.done",
+    'data: {"type":"response.done","response":{"id":"r1"}}',
+    "",
+  ].join("\n");
+  const guard = new EmptyCompletionGuard("text/event-stream");
+  const chunks = [];
+  await pipeline(
+    Readable.from([Buffer.from(input)]),
+    guard,
+    new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(Buffer.from(chunk));
+        callback();
+      },
+    }),
+  );
+  // A parse failure at the terminal event is not evidence of "nothing was
+  // produced": the guard must not declare the turn empty and force a retry.
+  assert.equal(guard.isEmpty(), false);
+  assert.equal(guard.hasContent(), false);
+  assert.equal(guard.releasedForBudget(), false);
+  assert.equal(Buffer.concat(chunks).toString("utf8"), input);
+});
