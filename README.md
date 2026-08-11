@@ -60,6 +60,28 @@ Requirements:
 
 Linux installations support the Codex CLI.
 
+### Homebrew
+
+This repository is its own tap, so the tap URL is required once. Afterwards the
+formula resolves by name like any other:
+
+```sh
+brew tap duolahypercho/codex-router https://github.com/duolahypercho/codex-router
+brew install codex-router
+codex-router setup --guided
+```
+
+Upgrades come from `brew upgrade codex-router`. Before `brew uninstall`, run
+`codex-router uninstall` to remove the per-user service and the managed Codex
+configuration; Homebrew deletes its own files but knows nothing about either.
+
+Homebrew builds every Python dependency from source, so the first install
+compiles LiteLLM, polars, and tokenizers and takes considerably longer than the
+guided installer, which uses published wheels. `Formula/codex-router.rb` is
+generated from `requirements/python.txt` by
+`packaging/homebrew/generate-formula.mjs` and refreshed by the release workflow;
+edit the lock and regenerate rather than editing the formula.
+
 ## Models and authentication
 
 | Picker label | Model ID | Authentication |

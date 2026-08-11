@@ -45,3 +45,34 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes
+      # This repository is its own Homebrew tap, so the formula is committed back
+      # to main rather than pushed to a second repository. It points at the
+      # release asset built above, whose checksum this job computed itself:
+      # GitHub's generated archive/refs/tags tarballs are not stable enough to
+      # pin a sha256 against. Pushing to main cannot retrigger this workflow,
+      # which only runs on v* tags.
+      - name: Update Homebrew formula
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          tarball="codex-router-${version}.tar.gz"
+          sha=$(awk -v file="$tarball" '$2 == file { print $1 }' dist/SHA256SUMS)
+          test -n "$sha"
+          # The job checked out the tag, which leaves HEAD detached. Reset a
+          # local main onto the remote tip rather than assuming a branch exists.
+          git fetch origin main
+          git checkout -B main origin/main
+          node packaging/homebrew/generate-formula.mjs \
+            --version "$version" \
+            --source-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${tarball}" \
+            --source-sha256 "$sha" \
+            --output Formula/codex-router.rb
+          if git diff --quiet -- Formula/codex-router.rb; then
+            echo "Formula already matches ${GITHUB_REF_NAME}."
+            exit 0
+          fi
+          git add Formula/codex-router.rb
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "chore: update Homebrew formula for ${GITHUB_REF_NAME}"
+          git push origin main
