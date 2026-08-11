@@ -29,7 +29,44 @@ If compatible authentication already exists, an agent can finish everything
 except the final app restart. Provider credentials are entered only through a
 hidden local terminal prompt.
 
-## Guided install
+## Install
+
+### Homebrew
+
+If you already use Homebrew, install Codex Router from this repository's tap:
+
+```sh
+brew tap duolahypercho/codex-router https://github.com/duolahypercho/codex-router
+brew install codex-router
+codex-router setup --guided
+```
+
+The tap URL is needed only once. Homebrew installs the formula's Node.js,
+Python, and build dependencies; `codex-router setup --guided` performs the
+one-time provider selection, credential-safe authentication, background
+service installation, and Codex integration. When setup finishes, fully quit
+and reopen Codex, create a new task, and choose a routed model from the picker.
+
+Upgrade an existing Homebrew installation with:
+
+```sh
+brew upgrade codex-router
+```
+
+Before removing the formula, remove the per-user service and managed Codex
+configuration that Homebrew does not own:
+
+```sh
+codex-router uninstall
+brew uninstall codex-router
+```
+
+The first Homebrew install can take considerably longer than the guided
+installer below because the formula builds the locked Python dependencies from
+source. The release workflow generates `Formula/codex-router.rb` from
+`requirements/python.txt` and refreshes it for each release.
+
+### Guided installer
 
 macOS or Linux:
 
@@ -59,28 +96,6 @@ Requirements:
 - Git for the managed one-command checkout and rollback.
 
 Linux installations support the Codex CLI.
-
-### Homebrew
-
-This repository is its own tap, so the tap URL is required once. Afterwards the
-formula resolves by name like any other:
-
-```sh
-brew tap duolahypercho/codex-router https://github.com/duolahypercho/codex-router
-brew install codex-router
-codex-router setup --guided
-```
-
-Upgrades come from `brew upgrade codex-router`. Before `brew uninstall`, run
-`codex-router uninstall` to remove the per-user service and the managed Codex
-configuration; Homebrew deletes its own files but knows nothing about either.
-
-Homebrew builds every Python dependency from source, so the first install
-compiles LiteLLM, polars, and tokenizers and takes considerably longer than the
-guided installer, which uses published wheels. `Formula/codex-router.rb` is
-generated from `requirements/python.txt` by
-`packaging/homebrew/generate-formula.mjs` and refreshed by the release workflow;
-edit the lock and regenerate rather than editing the formula.
 
 ## Models and authentication
 
