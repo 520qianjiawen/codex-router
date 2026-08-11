@@ -35,7 +35,21 @@ function clientRoutedTools() {
       type: "namespace",
       name: "collaboration",
       tools: [
-        { type: "function", name: "spawn_agent" },
+        {
+          type: "function",
+          name: "spawn_agent",
+          inputSchema: {
+            type: "object",
+            properties: {
+              model: {
+                anyOf: [
+                  { type: "string", enum: ["gpt-5.6-sol", "gpt-5.6-terra"] },
+                  { type: "null" },
+                ],
+              },
+            },
+          },
+        },
         { type: "function", name: "wait_agent" },
       ],
     },
@@ -327,6 +341,41 @@ test("response transform restores namespace on unambiguous unprefixed calls", as
   assert.match(output, /"namespace":"collaboration"/);
   assert.match(output, /"name":"create_thread"/);
   assert.match(output, /"namespace":"codex_app"/);
+});
+
+test("response transform drops a spawn-agent model override not offered by the tool schema", async () => {
+  const { namespaces } = flattenNamespaceTools(clientRoutedTools());
+  const lookups = buildNamespaceLookups(namespaces);
+  const invalid = rewriteNamespaceResponsePayload(
+    {
+      output: [
+        {
+          type: "function_call",
+          name: "collaboration__spawn_agent",
+          arguments: JSON.stringify({ message: "verify", model: "gpt-5.6-luna" }),
+        },
+      ],
+    },
+    lookups,
+  );
+  assert.deepEqual(JSON.parse(invalid.output[0].arguments), { message: "verify" });
+
+  const valid = rewriteNamespaceResponsePayload(
+    {
+      output: [
+        {
+          type: "function_call",
+          name: "collaboration__spawn_agent",
+          arguments: JSON.stringify({ message: "verify", model: "gpt-5.6-terra" }),
+        },
+      ],
+    },
+    lookups,
+  );
+  assert.deepEqual(JSON.parse(valid.output[0].arguments), {
+    message: "verify",
+    model: "gpt-5.6-terra",
+  });
 });
 
 test("response transform detects headerless SSE after split framing prelude", async () => {

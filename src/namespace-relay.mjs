@@ -30,6 +30,24 @@ import { HeaderlessSseDetector } from "./sse-prefix.mjs";
 
 export const NAMESPACE_DELIMITER = "__";
 
+// Metadata derived from the request's exact tool schema. Keeping it beside the
+// Map in a WeakMap preserves the Map's public shape for existing callers while
+// letting the response path validate model-generated overrides.
+const SPAWN_AGENT_MODELS = new WeakMap();
+
+function schemaStringValues(schema, values = new Set()) {
+  if (!schema || typeof schema !== "object") return values;
+  if (typeof schema.const === "string") values.add(schema.const);
+  if (Array.isArray(schema.enum)) {
+    for (const value of schema.enum) if (typeof value === "string") values.add(value);
+  }
+  for (const keyword of ["anyOf", "oneOf", "allOf"]) {
+    if (!Array.isArray(schema[keyword])) continue;
+    for (const branch of schema[keyword]) schemaStringValues(branch, values);
+  }
+  return values;
+}
+
 // A fresh local thread inherits the routed session model when the caller did
 // not choose one. Follow-up messages intentionally keep the target thread's
 // settings, and cloud tasks require model omission, so neither is rewritten.
@@ -78,6 +96,7 @@ export function flattenNamespaceTools(tools) {
   if (!Array.isArray(tools)) return { tools, flattened: false, namespaces: new Map() };
   const flattened = [];
   const namespaces = new Map();
+  const spawnAgentModels = new Set();
   let changed = false;
   for (const tool of tools) {
     if (tool?.type === "namespace" && Array.isArray(tool.tools)) {
@@ -89,6 +108,9 @@ export function flattenNamespaceTools(tools) {
           name: `${tool.name}${NAMESPACE_DELIMITER}${fn.name}`,
         });
         names.add(fn.name);
+        if (tool.name === "collaboration" && fn.name === "spawn_agent") {
+          schemaStringValues(fn.inputSchema?.properties?.model, spawnAgentModels);
+        }
       }
       if (names.size > 0) {
         namespaces.set(tool.name, names);
@@ -98,6 +120,7 @@ export function flattenNamespaceTools(tools) {
     }
     flattened.push(tool);
   }
+  if (spawnAgentModels.size > 0) SPAWN_AGENT_MODELS.set(namespaces, spawnAgentModels);
   return { tools: flattened, flattened: changed, namespaces };
 }
 
@@ -160,7 +183,29 @@ export function buildNamespaceLookups(namespaces) {
       bareToNamespaces.get(name).add(namespace);
     }
   }
-  return { flatToNative, bareToNamespaces };
+  return {
+    flatToNative,
+    bareToNamespaces,
+    spawnAgentModels: SPAWN_AGENT_MODELS.get(namespaces),
+  };
+}
+
+function sanitizeSpawnAgentModel(item, lookups) {
+  if (item?.namespace !== "collaboration" || item.name !== "spawn_agent") return item;
+  const allowed = lookups.spawnAgentModels;
+  if (!(allowed instanceof Set) || allowed.size === 0 || typeof item.arguments !== "string") {
+    return item;
+  }
+  let args;
+  try {
+    args = JSON.parse(item.arguments);
+  } catch {
+    return item;
+  }
+  if (typeof args !== "object" || args === null || Array.isArray(args)) return item;
+  if (typeof args.model !== "string" || allowed.has(args.model)) return item;
+  const { model: _invalidModel, ...safeArgs } = args;
+  return { ...item, arguments: JSON.stringify(safeArgs) };
 }
 
 // Restore one SSE event's function call to the client's native namespace
@@ -188,6 +233,7 @@ function rewriteNamespaceFunctionCallItem(item, lookups, sessionModel) {
       };
     }
   }
+  rewritten = sanitizeSpawnAgentModel(rewritten, lookups);
   rewritten = injectSessionModelForSpawnCalls(rewritten, sessionModel);
   return rewritten === item ? undefined : rewritten;
 }
