@@ -53,6 +53,30 @@ const CONTENT_SSE = [
   "",
 ].join("\n");
 
+// Large enough to force the guard past its 1 MiB pre-content hold budget
+// before any client-visible output arrives.
+const BUDGET_RELEASE_REASONING_SSE = [
+  "event: response.created",
+  'data: {"type":"response.created","response":{"id":"r-budget"}}',
+  "",
+  "event: response.reasoning_text.delta",
+  `data: ${JSON.stringify({
+    type: "response.reasoning_text.delta",
+    delta: "x".repeat(2 * 1024 * 1024),
+  })}`,
+  "",
+].join("\n");
+
+const BUDGET_RELEASE_EMPTY_SSE = [
+  BUDGET_RELEASE_REASONING_SSE,
+  "event: response.completed",
+  'data: {"type":"response.completed","response":{"id":"r-budget","output":[]}}',
+  "",
+  "event: response.done",
+  'data: {"type":"response.done","response":{"id":"r-budget"}}',
+  "",
+].join("\n");
+
 const CUSTOM_TOOL_CALL_SSE = [
   "event: response.created",
   'data: {"type":"response.created","sequence_number":0,"response":{"id":"r-custom-tool"}}',
@@ -540,6 +564,35 @@ test("a retried turn meters the tokens of both attempts", async () => {
     assert.equal(event.cachedInputTokens, 140);
     assert.equal(event.outputTokens, 5);
     assert.equal(event.totalTokens, 205);
+  } finally {
+    await stopChild(router);
+    await closeServer(gw.server);
+  }
+});
+
+test("a retry that crosses the guard byte budget records the release", async () => {
+  let posts = 0;
+  const gw = await gateway((_request, response) => {
+    posts += 1;
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.end(posts === 1 ? EMPTY_SSE : BUDGET_RELEASE_EMPTY_SSE);
+  });
+  const routerPort = await openPort();
+  const router = run(routerEnv(gw.port, routerPort));
+
+  try {
+    await waitFor(`${callerBaseUrl(routerPort, CALLER_KEY)}/models`, router);
+    const result = await readRouted(routerPort, TURN_BODY);
+
+    assert.equal(result.status, 200);
+    assert.equal(result.complete, true);
+    assert.match(result.body, /r-budget/);
+    assert.equal(posts, 2);
+
+    const [event] = await waitForUsageEvents(router.stateDir, 1, router);
+    assert.equal(event.status, 200);
+    assert.equal(event.emptyCompletionRetried, true);
+    assert.equal(event.emptyCompletionGuardReleased, true);
   } finally {
     await stopChild(router);
     await closeServer(gw.server);

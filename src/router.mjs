@@ -1532,6 +1532,7 @@ async function handleResponses(request, response, requestUrl) {
   let upstreamRetries;
   let upstreamLatencyMs;
   let usageTransform;
+  let emptyCompletionGuard;
   let retryUsageTransform;
   let retryEmptyCompletionGuard;
   let retryUsage;
@@ -1821,7 +1822,7 @@ async function handleResponses(request, response, requestUrl) {
     };
     const firstPipeline = createResponsePipeline(upstreamContentType);
     usageTransform = firstPipeline.usageObserver;
-    const emptyCompletionGuard = firstPipeline.guard;
+    emptyCompletionGuard = firstPipeline.guard;
     const relayOpen = Boolean(emptyCompletionGuard);
     await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, firstPipeline.transforms, {
       leaveOpen: relayOpen,
@@ -1925,6 +1926,10 @@ async function handleResponses(request, response, requestUrl) {
           );
           const retryClientWalkedAway =
             clientGone || (response.destroyed && !response.writableFinished);
+          guardReleasedForBudget =
+            guardReleasedForBudget ||
+            (retryEmptyCompletionGuard?.releasedForBudget() === true &&
+              !retryClientWalkedAway);
           if (retryClientWalkedAway) {
             finalStatus = 0;
             if (secondPipeline.guard.hasContent()) emptyCompletion = false;
@@ -1991,6 +1996,15 @@ async function handleResponses(request, response, requestUrl) {
   } catch (error) {
     upstreamLatencyMs ??= Date.now() - startedAt;
     if (retryEmptyCompletionGuard?.hasContent()) emptyCompletion = false;
+    if (!clientGone) {
+      // A pipeline can fail after either guard has released its held bytes but
+      // before the success path samples the accessor. Preserve that verdict in
+      // the failure event too.
+      guardReleasedForBudget =
+        guardReleasedForBudget ||
+        emptyCompletionGuard?.releasedForBudget() === true ||
+        retryEmptyCompletionGuard?.releasedForBudget() === true;
+    }
     if (usageTransform) {
       usage = mergeTokenUsage(
         usageTransform.tokenUsage(),
