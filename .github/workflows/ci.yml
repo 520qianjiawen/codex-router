@@ -46,6 +46,37 @@ jobs:
             if ($errors.Count) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
           }
 
+  # The committed formula pins every resource in requirements/python.txt, so a
+  # lock change with no version bump leaves it stale while still looking correct.
+  # Only run when an input actually moved: the check queries PyPI once per
+  # locked package, which is too much traffic to spend on unrelated pull
+  # requests.
+  homebrew-formula:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Check whether the formula inputs changed
+        id: changed
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha || 'HEAD^' }}"
+          if git diff --quiet "$base" HEAD -- requirements/python.txt packaging/homebrew Formula; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - run: npm ci
+        if: steps.changed.outputs.run == 'true'
+      - name: Verify the formula matches the Python lock
+        if: steps.changed.outputs.run == 'true'
+        run: node packaging/homebrew/check-formula.mjs
+
   desktop:
     strategy:
       fail-fast: false
