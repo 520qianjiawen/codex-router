@@ -29,6 +29,7 @@ import {
   MERGED_CATALOG_PATH,
   PORTS,
   SOURCE_ROOT,
+  TARGET,
 } from "./paths.mjs";
 import { CODEX_APP_TOOLS } from "./codex-app-tools.mjs";
 import {
@@ -48,6 +49,7 @@ import {
   readVisionBridgeSettings,
   visionBridgeConfigured,
 } from "./vision-bridge-state.mjs";
+import { venvRuntimeProblem } from "./venv-runtime.mjs";
 
 const checks = [];
 const add = (status, name, detail, fix) => checks.push({ status, name, detail, fix });
@@ -460,6 +462,47 @@ add(
   "Generated gateway config",
   LITELLM_CONFIG_PATH,
   "Run ./bin/doctor --fix.",
+);
+
+// The venv that runs LiteLLM can be broken while every file it needs still
+// exists: an interpreter home pointing at a cleared temporary directory
+// (macOS wipes /private/tmp, and an installer that recorded a temporary
+// Python as the venv home leaves `.venv/bin/python` dangling) keeps the
+// launcher on disk but makes every spawn fail with a bare ENOENT. Probing
+// the interpreter turns that silent restart loop into an actionable check.
+// The probe applies only to the bundled venv: a custom launcher
+// (MODEL_ROUTER_LITELLM_BIN or a codex-target alias) may deliberately ship
+// without the bundled `.venv`, and a fresh checkout has no venv until the
+// installer runs.
+const usesBundledVenv = !process.env.MODEL_ROUTER_LITELLM_BIN &&
+  !(TARGET === "codex" &&
+    (process.env.CODEX_ROUTER_LITELLM_BIN || process.env.KIMI_LITELLM_BIN));
+let venvCheck;
+if (usesBundledVenv) {
+  const venvPython = path.join(
+    SOURCE_ROOT,
+    ".venv",
+    process.platform === "win32" ? "Scripts" : "bin",
+    process.platform === "win32" ? "python.exe" : "python",
+  );
+  const venvProblem = venvRuntimeProblem(venvPython);
+  venvCheck = venvProblem
+    ? {
+        status: "fail",
+        detail: `${venvPython} cannot run (${venvProblem})`,
+      }
+    : { status: "ok", detail: `${venvPython} runs` };
+} else {
+  venvCheck = {
+    status: "ok",
+    detail: "custom LiteLLM launcher configured; bundled venv not required",
+  };
+}
+add(
+  venvCheck.status,
+  "LiteLLM venv runtime",
+  venvCheck.detail,
+  "Run ./bin/doctor --fix; it rebuilds the virtual environment from the pinned lock.",
 );
 
 const secretMode = existsSync(INTERNAL_SECRET_PATH)

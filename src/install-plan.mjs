@@ -123,6 +123,20 @@ function venvPythonVersion(root) {
   return match ? match[1] : "unknown";
 }
 
+// The venv records the base interpreter it was created from. If that
+// directory was cleared -- macOS periodically wipes /private/tmp, and an
+// installer that recorded a temporary Python as the venv home leaves the
+// interpreter dangling after reboot -- the venv is unusable even when
+// `.venv/bin/python` still resolves through a copied binary. Treat an
+// unresolvable home as "not installed" so every install/update rebuilds it.
+export function venvPythonHomeUsable(root = SOURCE_ROOT) {
+  const config = readFile(path.join(root, ".venv", "pyvenv.cfg")) || "";
+  const match = config.match(/^\s*home\s*=\s*(.+)$/m);
+  if (!match) return true; // unknown; the interpreter probe decides
+  const home = match[1].trim();
+  return existsSync(home);
+}
+
 // The companion is one bundle per user, not one per checkout: a `dist/` target
 // inside the repository produces a separate tray for every clone and leaves
 // launchd pointing at whichever one installed last.
@@ -220,6 +234,11 @@ export const STEPS = {
         ].join("\0"),
       ),
     installed: (root, platform) => {
+      // A venv whose interpreter home was cleared (macOS wipes /private/tmp,
+      // and installers that recorded a temporary Python as the venv home end
+      // up with a dangling interpreter) must read as "not installed" so the
+      // next install/update rebuilds it instead of skipping a broken venv.
+      if (!venvPythonHomeUsable(root)) return false;
       if (!existsSync(venvPython(root, platform))) return false;
       return PYTHON_REQUIREMENTS.every((requirement) => {
         const { name, version } = requirementParts(requirement);
@@ -497,6 +516,16 @@ function main(argv) {
     process.stdout.write(`${PYTHON_REQUIREMENTS.join("\n")}\n`);
     return 0;
   }
+  // `venv-home-ok` — 0/1 whether the recorded venv interpreter home still
+  // exists. The installers use this to decide whether a *present* venv must
+  // be cleared and recreated: `status python-deps` already returns "run" for
+  // a broken home, but the uv branch only recreates the venv when the python
+  // launcher itself is absent, so an existing-but-broken venv would otherwise
+  // be pip-installed into without ever rewriting pyvenv.cfg.
+  if (command === "venv-home-ok") {
+    process.stdout.write(venvPythonHomeUsable() ? "ok\n" : "damaged\n");
+    return venvPythonHomeUsable() ? 0 : 1;
+  }
   // `python-install-command <uv|pip> [posix|windows]` — what CI runs so that it
   // exercises the shipped installer's command rather than a copy of it.
   if (command === "python-install-command") {
@@ -505,7 +534,7 @@ function main(argv) {
   }
   console.error(
     "Usage: install-plan.mjs status|record <node-deps|python-deps> | tray-plan | record-tray | " +
-      "requirements | python-install-command <uv|pip> [posix|windows]",
+      "requirements | venv-home-ok | python-install-command <uv|pip> [posix|windows]",
   );
   return 2;
 }

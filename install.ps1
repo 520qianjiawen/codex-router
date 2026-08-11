@@ -247,8 +247,18 @@ try {
   if ((Get-InstallStep "python-deps") -eq "skip") {
     Write-Host "LiteLLM already matches the pinned versions; skipping the Python install."
   } elseif (Get-Command "uv" -ErrorAction SilentlyContinue) {
+    $VenvHomeOk = (& node src/install-plan.mjs venv-home-ok 2>$null | Select-Object -Last 1) -eq "ok"
     if (-not (Test-Path $Python)) {
       & uv venv --python 3.12 .venv
+      if ($LASTEXITCODE -ne 0) { throw "uv could not create the Python environment." }
+    } elseif (-not $VenvHomeOk) {
+      # A venv whose interpreter home was cleared (macOS wipes /private/tmp,
+      # and installers that recorded a temporary Python as the venv home end
+      # up with a dangling interpreter) must be recreated, not pip-installed
+      # into: the launcher may still exist while pyvenv.cfg points at a
+      # vanished home.
+      Write-Host "The virtual environment's interpreter home is missing; recreating the venv."
+      & uv venv --clear --python 3.12 .venv
       if ($LASTEXITCODE -ne 0) { throw "uv could not create the Python environment." }
     }
     # requirements/python.txt is the hash-verified transitive closure of the
@@ -261,14 +271,26 @@ try {
     & node src/install-plan.mjs record python-deps
     if ($LASTEXITCODE -ne 0) { throw "Recording the Python dependency state failed." }
   } else {
+    $VenvHomeOk = (& node src/install-plan.mjs venv-home-ok 2>$null | Select-Object -Last 1) -eq "ok"
+    $RecreateVenv = -not $VenvHomeOk
     if (Get-Command "py" -ErrorAction SilentlyContinue) {
       & py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
       if ($LASTEXITCODE -ne 0) { throw "Python 3.10 or newer is required." }
-      if (-not (Test-Path $Python)) { & py -3 -m venv .venv }
+      if (-not (Test-Path $Python)) {
+        & py -3 -m venv .venv
+      } elseif ($RecreateVenv) {
+        Write-Host "The virtual environment's interpreter home is missing; recreating the venv."
+        & py -3 -m venv --clear .venv
+      }
     } elseif (Get-Command "python" -ErrorAction SilentlyContinue) {
       & python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
       if ($LASTEXITCODE -ne 0) { throw "Python 3.10 or newer is required." }
-      if (-not (Test-Path $Python)) { & python -m venv .venv }
+      if (-not (Test-Path $Python)) {
+        & python -m venv .venv
+      } elseif ($RecreateVenv) {
+        Write-Host "The virtual environment's interpreter home is missing; recreating the venv."
+        & python -m venv --clear .venv
+      }
     } else {
       throw "Python 3.10+ or uv is required. Install uv from https://docs.astral.sh/uv/."
     }
