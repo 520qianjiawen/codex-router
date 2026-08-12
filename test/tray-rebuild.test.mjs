@@ -144,6 +144,16 @@ test("one companion location: the Node and shell sides name the same directory",
   assert.doesNotMatch(script, /\$repo_dir\/dist\/Model Router\.app"\}/);
 });
 
+test("the macOS tray never executes control from an environment-selected checkout", () => {
+  const source = readFileSync(
+    path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "ModelRouterTrayApp.swift"),
+    "utf8",
+  );
+  assert.doesNotMatch(source, /MODEL_ROUTER_SOURCE_ROOT/);
+  assert.match(source, /appendingPathComponent\("router-root"\)/);
+  assert.match(source, /isExecutableFile\(atPath: control\.path\)/);
+});
+
 // Every case names its platform explicitly. Letting it default to
 // process.platform made this pass on macOS and fail on Linux and Windows,
 // where the default reads the Tauri paths and never sees the Swift file the

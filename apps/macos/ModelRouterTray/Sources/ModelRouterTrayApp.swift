@@ -1643,21 +1643,30 @@ final class RouterStore: ObservableObject {
   }
 
   private func sourceRoot() throws -> URL {
-    if let configured = ProcessInfo.processInfo.environment["MODEL_ROUTER_SOURCE_ROOT"], !configured.isEmpty {
-      return URL(fileURLWithPath: configured, isDirectory: true)
-    }
     if let resourceURL = Bundle.main.resourceURL {
       let savedRoot = resourceURL.appendingPathComponent("router-root")
       if let contents = try? String(contentsOf: savedRoot, encoding: .utf8) {
         let root = contents.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !root.isEmpty { return URL(fileURLWithPath: root, isDirectory: true) }
+        if !root.isEmpty {
+          return try validatedSourceRoot(URL(fileURLWithPath: root, isDirectory: true))
+        }
       }
     }
+#if DEBUG
     let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
-    guard FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("bin/control").path) else {
-      throw RouterError("Cannot find this Model Router checkout. Build the tray app from the router repository.")
+    return try validatedSourceRoot(root)
+#else
+    throw RouterError("Cannot find this Model Router checkout. Rebuild the tray app from the router repository.")
+#endif
+  }
+
+  private func validatedSourceRoot(_ root: URL) throws -> URL {
+    let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+    let control = resolvedRoot.appendingPathComponent("bin/control")
+    guard FileManager.default.isExecutableFile(atPath: control.path) else {
+      throw RouterError("Cannot find this Model Router checkout. Rebuild the tray app from the router repository.")
     }
-    return root
+    return resolvedRoot
   }
 }
 
