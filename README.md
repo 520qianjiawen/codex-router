@@ -512,6 +512,12 @@ on the loopback socket and bytes produced after decompression. The defaults are
 `MODEL_ROUTER_MAX_BODY_BYTES` and `MODEL_ROUTER_MAX_DECODED_BODY_BYTES`
 respectively when a deliberately larger local workload requires it.
 
+For routed external models, old textual tool results larger than 32 KiB are
+compacted after the model has acted on them. The four newest tool results stay
+intact, and each compacted result keeps a hash, head/tail evidence, and an exact
+rerun instruction. Native OpenAI traffic is unchanged. Set
+`CODEX_ROUTER_TOOL_RESULT_AGING=0` to disable this optimization immediately.
+
 The integration preserves the built-in OpenAI provider, native GPT models,
 ChatGPT sign-in, profiles, MCP settings, project trust, and reasoning defaults.
 It adds one marked root block and one inert custom-provider table to the user's

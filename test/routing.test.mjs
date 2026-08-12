@@ -3976,6 +3976,103 @@ test("the prompt-token estimate can be switched off", async () => {
   }
 });
 
+test("router ages consumed large tool results but preserves the newest result frontier", async () => {
+  const gatewayBodies = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayBodies.push(await bodyJson(request));
+    json(response, 200, { output: [{ type: "message", role: "assistant", content: "ok" }] });
+  });
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "routing-tool-result-aging-"));
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+    MODEL_ROUTER_STATE_DIR: stateDir,
+  });
+  const large = `old-head\n${"old-middle\n".repeat(4_000)}old-tail`;
+  const input = [
+    { type: "function_call", call_id: "old", name: "exec_command", arguments: "{}" },
+    { type: "function_call_output", call_id: "old", output: large },
+    { type: "message", role: "assistant", content: "I acted on the old result." },
+    ...Array.from({ length: 4 }, (_, index) => [
+      { type: "function_call", call_id: `new-${index}`, name: "exec_command", arguments: "{}" },
+      {
+        type: "function_call_output",
+        call_id: `new-${index}`,
+        output: `${index}:${"n".repeat(34_000)}`,
+      },
+      { type: "message", role: "assistant", content: `used ${index}` },
+    ]).flat(),
+  ];
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: "deepseek/deepseek-v4-pro", stream: false, input }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    const forwarded = gatewayBodies[0].input;
+    assert.match(forwarded[1].output, /Older tool result compacted by Codex Router/);
+    assert.match(forwarded[1].output, /old-head/);
+    assert.match(forwarded[1].output, /old-tail/);
+    for (let index = 0; index < 4; index += 1) {
+      const result = forwarded.find((item) => item.call_id === `new-${index}` && item.type === "function_call_output");
+      assert.equal(result.output, `${index}:${"n".repeat(34_000)}`);
+    }
+    const [event] = await waitForUsageEvents(stateDir, 1, router);
+    assert.equal(event.toolResultsAged, 1);
+    assert.ok(event.toolResultBytesSaved > 30_000);
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("tool-result aging kill switch forwards the same large output", async () => {
+  const gatewayBodies = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayBodies.push(await bodyJson(request));
+    json(response, 200, { output: [{ type: "message", role: "assistant", content: "ok" }] });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_TOOL_RESULT_AGING: "0",
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const large = "x".repeat(40_000);
+  const input = [
+    { type: "function_call", call_id: "old", name: "exec_command", arguments: "{}" },
+    { type: "function_call_output", call_id: "old", output: large },
+    { type: "message", role: "assistant", content: "acted" },
+  ];
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: "deepseek/deepseek-v4-pro", stream: false, input }),
+    });
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(gatewayBodies[0].input[1].output, large);
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+  }
+});
+
 test("an image a text-only model fetched with view_image never reaches the provider", async () => {
   // The shape that broke: a paste carries the image *and* its path as text, so
   // a text-only model calls Codex's `view_image` on the path and the tool

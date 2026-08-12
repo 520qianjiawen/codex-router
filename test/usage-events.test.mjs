@@ -19,6 +19,10 @@ test("usage events persist only bounded request metadata in a private file", asy
       cachedInputTokens: 90,
       outputTokens: 35,
       totalTokens: 155,
+      toolResultsAged: 2,
+      toolResultBytesBefore: 80_000,
+      toolResultBytesAfter: 5_000,
+      toolResultBytesSaved: 75_000,
       prompt: "never persisted",
     });
     assert.deepEqual(usage.recentUsageEvents(), [
@@ -33,6 +37,10 @@ test("usage events persist only bounded request metadata in a private file", asy
         cachedInputTokens: 90,
         outputTokens: 35,
         totalTokens: 155,
+        toolResultsAged: 2,
+        toolResultBytesBefore: 80_000,
+        toolResultBytesAfter: 5_000,
+        toolResultBytesSaved: 75_000,
       },
     ]);
     if (process.platform !== "win32") {

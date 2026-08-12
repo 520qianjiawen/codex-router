@@ -61,6 +61,13 @@ export function recordUsageEvent({
   // for the provider having recovered -- and a run of these events is the
   // signal that it has not.
   estimatedInputTokens,
+  // Present only when the routed request compacted old, already-consumed tool
+  // results. Counts and bytes describe the request sent upstream, never the
+  // result contents themselves.
+  toolResultsAged,
+  toolResultBytesBefore,
+  toolResultBytesAfter,
+  toolResultBytesSaved,
   at = Date.now(),
 }) {
   const event = {
@@ -91,6 +98,16 @@ export function recordUsageEvent({
       : {}),
     ...(safeTokenCount(estimatedInputTokens) !== undefined
       ? { estimatedInputTokens: safeTokenCount(estimatedInputTokens) }
+      : {}),
+    ...(safeTokenCount(toolResultsAged) ? { toolResultsAged: safeTokenCount(toolResultsAged) } : {}),
+    ...(safeTokenCount(toolResultBytesBefore)
+      ? { toolResultBytesBefore: safeTokenCount(toolResultBytesBefore) }
+      : {}),
+    ...(safeTokenCount(toolResultBytesAfter)
+      ? { toolResultBytesAfter: safeTokenCount(toolResultBytesAfter) }
+      : {}),
+    ...(safeTokenCount(toolResultBytesSaved)
+      ? { toolResultBytesSaved: safeTokenCount(toolResultBytesSaved) }
       : {}),
   };
   try {
@@ -135,6 +152,10 @@ export function recentUsageEvents({ sinceMs = 24 * 60 * 60 * 1000, limit = 1_000
         const totalTokens = safeTokenCount(event.totalTokens);
         const retries = safeRetryCount(event.retries);
         const estimatedInputTokens = safeTokenCount(event.estimatedInputTokens);
+        const toolResultsAged = safeTokenCount(event.toolResultsAged);
+        const toolResultBytesBefore = safeTokenCount(event.toolResultBytesBefore);
+        const toolResultBytesAfter = safeTokenCount(event.toolResultBytesAfter);
+        const toolResultBytesSaved = safeTokenCount(event.toolResultBytesSaved);
         return {
           ...(event.meteringVersion === 1 ? { meteringVersion: 1 } : {}),
           at: event.at,
@@ -161,6 +182,10 @@ export function recentUsageEvents({ sinceMs = 24 * 60 * 60 * 1000, limit = 1_000
           ...(outputTokens !== undefined ? { outputTokens } : {}),
           ...(totalTokens !== undefined ? { totalTokens } : {}),
           ...(estimatedInputTokens !== undefined ? { estimatedInputTokens } : {}),
+          ...(toolResultsAged ? { toolResultsAged } : {}),
+          ...(toolResultBytesBefore ? { toolResultBytesBefore } : {}),
+          ...(toolResultBytesAfter ? { toolResultBytesAfter } : {}),
+          ...(toolResultBytesSaved ? { toolResultBytesSaved } : {}),
         };
       });
   } catch {

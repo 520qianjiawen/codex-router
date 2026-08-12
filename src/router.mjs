@@ -75,6 +75,7 @@ import {
 import { readHiddenModels } from "./model-picker-state.mjs";
 import { readVisionBridgeSettings } from "./vision-bridge-state.mjs";
 import { installedNativeVisionEngines } from "./vision-engines.mjs";
+import { ageToolResults } from "./tool-result-aging.mjs";
 import { VERSION } from "./version.mjs";
 
 const LISTEN_HOST =
@@ -114,6 +115,11 @@ const QUIET =
 // operator who would rather see the provider's own numbers can turn it off
 // without downgrading the router.
 const ZERO_INPUT_ESTIMATE = process.env.CODEX_ROUTER_ZERO_INPUT_ESTIMATE !== "0";
+// Old large tool results are replayed to routed models on every later turn.
+// Compact only results the model has already acted on, while keeping the
+// newest result frontier intact. This never changes native OpenAI traffic and
+// can be disabled immediately if a provider or workload needs exact history.
+const TOOL_RESULT_AGING = process.env.CODEX_ROUTER_TOOL_RESULT_AGING !== "0";
 // Kill switch for the empty-completion guard and its single retry. It is on
 // because an empty completion is otherwise invisible -- the client records the
 // turn as a silent success -- but the retry re-sends the whole prompt, so an
@@ -1396,8 +1402,10 @@ async function summarize(request, payload, route, signal) {
   // inside a `/goal` or subagent session summarizes opaque payloads. The relay
   // is cached by ciphertext, so a conversation whose turns already resolved
   // costs nothing extra here.
+  const normalized = await normalizeRoutedAgentInput(request, originalInput, signal);
+  const aged = ageToolResults(normalized, { enabled: TOOL_RESULT_AGING });
   const bridged = await bridgeVisionInput(
-    await normalizeRoutedAgentInput(request, originalInput, signal),
+    aged.input,
     route,
     request,
   );
@@ -1425,7 +1433,12 @@ async function summarize(request, payload, route, signal) {
   });
   const bytes = Buffer.from(await upstream.arrayBuffer());
   if (bytes.length > 32 * 1024 * 1024) {
-    return { ok: false, status: 502, payload: { error: { message: "Compact response is too large." } } };
+    return {
+      ok: false,
+      status: 502,
+      payload: { error: { message: "Compact response is too large." } },
+      toolResultAging: aged.stats,
+    };
   }
   const parsed = JSON.parse(bytes.toString("utf8"));
   // Compaction is a plain non-streaming call, so the usage block (when the
@@ -1434,9 +1447,21 @@ async function summarize(request, payload, route, signal) {
   // fields entirely rather than metering an invented zero.
   const usage = tokenUsageFromPayload(parsed);
   if (!upstream.ok) {
-    return { ok: false, status: upstream.status, payload: parsed, usage };
+    return {
+      ok: false,
+      status: upstream.status,
+      payload: parsed,
+      usage,
+      toolResultAging: aged.stats,
+    };
   }
-  return { ok: true, summary: extractResponseText(parsed), input: originalInput, usage };
+  return {
+    ok: true,
+    summary: extractResponseText(parsed),
+    input: originalInput,
+    usage,
+    toolResultAging: aged.stats,
+  };
 }
 
 function compactionSnapshot(model, item, status = "completed") {
@@ -1483,7 +1508,11 @@ async function handleRoutedCompaction(request, response, payload, route, signal,
   const result = await summarize(request, payload, route, signal);
   if (!result.ok) {
     writeJson(response, result.status, result.payload);
-    return { status: result.status, usage: result.usage };
+    return {
+      status: result.status,
+      usage: result.usage,
+      toolResultAging: result.toolResultAging,
+    };
   }
   if (v2) {
     if (payload.stream === false) {
@@ -1496,10 +1525,18 @@ async function handleRoutedCompaction(request, response, payload, route, signal,
     } else {
       writeCompactionSse(response, payload.model, result.summary);
     }
-    return { status: 200, usage: result.usage };
+    return {
+      status: 200,
+      usage: result.usage,
+      toolResultAging: result.toolResultAging,
+    };
   }
   writeJson(response, 200, { output: compactOutput(result.input, result.summary) });
-  return { status: 200, usage: result.usage };
+  return {
+    status: 200,
+    usage: result.usage,
+    toolResultAging: result.toolResultAging,
+  };
 }
 
 async function handleModels(response) {
@@ -1554,6 +1591,7 @@ async function handleResponses(request, response, requestUrl) {
   let retryUsage;
   let usage;
   let estimatedInputTokens;
+  let toolResultAging;
   let emptyCompletion = false;
   let emptyCompletionRetried = false;
   let guardReleasedForBudget = false;
@@ -1637,6 +1675,7 @@ async function handleResponses(request, response, requestUrl) {
         status: compaction.status,
         durationMs: Date.now() - startedAt,
         ...compaction.usage,
+        ...compaction.toolResultAging,
       });
       usage = compaction.usage;
       finalStatus = compaction.status;
@@ -1656,8 +1695,15 @@ async function handleResponses(request, response, requestUrl) {
     let namespacesFlattened = false;
     let flattenedNamespaces = new Map();
     if (route) {
+      const normalized = await normalizeRoutedAgentInput(
+        request,
+        payload.input,
+        controller.signal,
+      );
+      const aged = ageToolResults(normalized, { enabled: TOOL_RESULT_AGING });
+      toolResultAging = aged.stats;
       const input = await bridgeVisionInput(
-        await normalizeRoutedAgentInput(request, payload.input, controller.signal),
+        aged.input,
         route,
         request,
       );
@@ -2000,6 +2046,7 @@ async function handleResponses(request, response, requestUrl) {
       retries: upstreamRetries,
       ...usage,
       estimatedInputTokens,
+      ...toolResultAging,
       ...(emptyCompletion ? { emptyCompletion: true } : {}),
       ...(emptyCompletionRetried ? { emptyCompletionRetried: true } : {}),
       ...(guardReleasedForBudget ? { emptyCompletionGuardReleased: true } : {}),
@@ -2013,6 +2060,10 @@ async function handleResponses(request, response, requestUrl) {
         `[codex-router] model=${requestedModel || "unknown"} provider=${route?.provider || "openai"} status=${finalStatus}${
           upstreamRetries ? ` retries=${upstreamRetries}` : ""
         }${estimatedInputTokens ? ` estimated-input-tokens=${estimatedInputTokens}` : ""}${
+          toolResultAging?.toolResultBytesSaved
+            ? ` aged-tool-results=${toolResultAging.toolResultsAged} saved-tool-bytes=${toolResultAging.toolResultBytesSaved}`
+            : ""
+        }${
           emptyCompletionRetried ? " empty-completion-retried=true" : ""
         }${emptyCompletion ? " empty-completion=true" : ""}`,
       );
@@ -2057,6 +2108,7 @@ async function handleResponses(request, response, requestUrl) {
           retries: upstreamRetries,
           ...usage,
           estimatedInputTokens,
+          ...toolResultAging,
           ...(emptyCompletion ? { emptyCompletion: true } : {}),
           ...(emptyCompletionRetried ? { emptyCompletionRetried: true } : {}),
         });
@@ -2079,6 +2131,7 @@ async function handleResponses(request, response, requestUrl) {
         retries: upstreamRetries,
         ...usage,
         estimatedInputTokens,
+        ...toolResultAging,
         ...(response.headersSent ? { streamAborted: true } : {}),
         ...(emptyCompletion ? { emptyCompletion: true } : {}),
         ...(emptyCompletionRetried ? { emptyCompletionRetried: true } : {}),
