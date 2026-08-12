@@ -7,7 +7,7 @@
 // `.venv/`), so deleting the artifact invalidates the stamp automatically and
 // no state directory has to stay in sync with the checkout.
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -168,7 +168,9 @@ const TRAY_PLATFORMS = {
     },
     artifact: (root, home) =>
       path.join(trayBundleDir("darwin", home), "Contents", "MacOS", "ModelRouterTray"),
-    stamp: (root, home) => path.join(trayBundleDir("darwin", home), "Contents", STAMP_NAME),
+    // The source fingerprint is mutable router state, not an app resource.
+    // Keeping it inside Contents would invalidate the completed bundle seal.
+    stamp: (root, home) => path.join(home, ".codex", "codex-router", "tray-build.json"),
     // Companions built before the per-user move live inside the checkout.
     legacy: (root) =>
       path.join(root, "dist", "Model Router.app", "Contents", "MacOS", "ModelRouterTray"),
@@ -288,10 +290,11 @@ export function recordTrayBuild({
   const definition = TRAY_PLATFORMS[platform];
   if (!definition) throw new Error(`The desktop companion is not built on ${platform}.`);
   const target = definition.stamp(root, home);
+  mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
   writeFileSync(
     target,
     `${JSON.stringify({ version: 1, step: "tray", fingerprint: traySourceFingerprint(root, platform) }, null, 2)}\n`,
-    { encoding: "utf8" },
+    { encoding: "utf8", mode: 0o600 },
   );
   return target;
 }

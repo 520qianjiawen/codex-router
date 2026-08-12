@@ -22,15 +22,18 @@ if [ -d "$binary_dir/ModelRouterTray_ModelRouterTray.bundle" ]; then
   rm -rf "$bundle_dir/Contents/Resources/ModelRouterTray_ModelRouterTray.bundle" \
     "$bundle_dir/ModelRouterTray_ModelRouterTray.bundle"
   cp -R "$binary_dir/ModelRouterTray_ModelRouterTray.bundle" "$bundle_dir/Contents/Resources/"
-  # SwiftPM's generated accessor resolves resources from Bundle.main.bundleURL
-  # (the .app itself) and falls back to the build directory — it never looks in
-  # Contents/Resources. Without this copy the app runs only while .build
-  # survives, and dies with a fatalError once that is cleaned.
-  cp -R "$binary_dir/ModelRouterTray_ModelRouterTray.bundle" "$bundle_dir/"
 fi
-# Keep the checkout relationship as a bundle-owned filesystem link. The tray
-# resolves this link directly instead of parsing a path from file contents and
-# then treating that text as an executable location.
-ln -sfn "$repo_dir" "$bundle_dir/Contents/Resources/router-root"
+# Seal the checkout relationship into Info.plist itself. An external symlink is
+# invalid inside a strict macOS code-signed bundle; a loose text resource would
+# be executable-path input. This value is covered by the final signature, so
+# changing the selected checkout also invalidates verification.
+/usr/libexec/PlistBuddy -c "Add :ModelRouterSourceRoot string $repo_dir" \
+  "$bundle_dir/Contents/Info.plist"
+
+# The copied SwiftPM executable carries an ad-hoc signature. Sign only after
+# every executable, resource, and link is in its final location; mutating the
+# live signed bundle is what produced taskgated "Invalid Page" terminations.
+/usr/bin/codesign --force --deep --sign - "$bundle_dir"
+/usr/bin/codesign --verify --deep --strict "$bundle_dir"
 
 printf '%s\n' "$bundle_dir"

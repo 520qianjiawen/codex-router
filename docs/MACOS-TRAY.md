@@ -49,8 +49,12 @@ nothing around to notice the next launch. Combined with **Start at login**,
 this makes the tray fully automatic: it waits invisibly after a reboot and
 shows up exactly while Codex is open. While hidden, reopen Codex (or run
 `defaults write io.github.codex-router.tray ModelRouterTray.presenceMode
-always` and relaunch) to reach the toggle again. The router's background
-service is unaffected by visibility.
+always` and relaunch) to reach the toggle again. In **With Codex** mode the
+router endpoint starts as soon as Codex or ChatGPT appears and stops only after
+both remain absent for 30 seconds and active requests have drained. The watcher
+also polls the process list every five seconds so a missed workspace
+notification cannot strand the next launch. **Always** leaves the endpoint
+under launchd continuously.
 
 ## Provider usage
 

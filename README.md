@@ -970,7 +970,11 @@ the Settings tab's **Start at login** toggle or System Settings › Login Items
 turns that off, and the choice is never re-applied behind your back. A
 **Show tray** setting can additionally tie every tray surface to the Codex
 and ChatGPT desktop apps, appearing when they launch and hiding when they
-quit. See the [macOS tray guide](docs/MACOS-TRAY.md) for behavior and
+quit. In **With Codex** mode the endpoint starts with either app and stops only
+after both remain closed for 30 seconds and active requests have drained. A
+periodic process recheck backs up workspace notifications so a missed launch
+cannot strand Codex without its endpoint. **Always** keeps it continuously on.
+See the [macOS tray guide](docs/MACOS-TRAY.md) for behavior and
 rebuild notes.
 
 The app also places a Dynamic-Island-style overlay at the top center of the
