@@ -2,6 +2,7 @@ import http from "node:http";
 
 import {
   applyKeepAliveTimeouts,
+  formatErrorChain,
   HOP_BY_HOP_HEADERS,
   httpErrorStatus,
   pipeResponse,
@@ -226,7 +227,11 @@ const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
     const status = httpErrorStatus(error);
     const authenticationFailure = status === 401;
-    console.error("[kimi-oauth] request failed");
+    // Names and codes only: a refresh failure can wrap upstream response text
+    // in its message, and bodies never belong in the log (#171).
+    console.error(
+      `[kimi-oauth] request failed: ${formatErrorChain(error, { messages: false })}`,
+    );
     if (!response.headersSent) {
       writeJson(response, status, {
         error: {

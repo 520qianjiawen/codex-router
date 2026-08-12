@@ -74,6 +74,41 @@ export function writeJson(response, status, payload) {
   response.end(body);
 }
 
+// The transport reports every connection-level failure as a bare
+// `TypeError: fetch failed`; the code that says why (ECONNREFUSED,
+// UND_ERR_CONNECT_TIMEOUT, ENOTFOUND, ...) lives on the `cause` chain, and a
+// log line that stops at the top error is what left #171's repeated native
+// failures unexplainable from the retained log. Walk the chain and name every
+// link. Services whose failures can wrap upstream response text pass
+// `messages: false` and record names and codes only, which never carry a body.
+const MAX_ERROR_CHAIN_DEPTH = 8;
+
+export function formatErrorChain(error, { messages = true } = {}) {
+  const parts = [];
+  let current = error;
+  for (
+    let depth = 0;
+    current !== undefined && current !== null && depth < MAX_ERROR_CHAIN_DEPTH;
+    depth += 1
+  ) {
+    if (typeof current !== "object") {
+      parts.push(String(current));
+      break;
+    }
+    const name = typeof current.name === "string" && current.name ? current.name : "Error";
+    const message =
+      messages && typeof current.message === "string" && current.message
+        ? `: ${current.message}`
+        : "";
+    const code = current.code !== undefined ? ` (${current.code})` : "";
+    parts.push(`${name}${message}${code}`);
+    // AggregateError (a dual-stack connect failure) links its members through
+    // `errors` rather than `cause`; the first member names the socket failure.
+    current = current.cause ?? (Array.isArray(current.errors) ? current.errors[0] : undefined);
+  }
+  return parts.length ? parts.join(" <- ") : String(error);
+}
+
 export function httpErrorStatus(error, fallback = 502) {
   const status = Number(error?.status);
   return Number.isInteger(status) && status >= 400 && status <= 599

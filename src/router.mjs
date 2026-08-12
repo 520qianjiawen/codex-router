@@ -18,6 +18,7 @@ import {
   applyKeepAliveTimeouts,
   endStreamedResponse,
   finishResponse,
+  formatErrorChain,
   HOP_BY_HOP_HEADERS,
   httpErrorStatus,
   pipeResponse,
@@ -2159,12 +2160,13 @@ async function handleNativeRequest(request, response, requestUrl, defaultModel) 
   const startedAt = Date.now();
   const activity = beginRequestActivity();
   let clientGone = false;
+  let requestedModel = defaultModel;
   try {
     if (!requireCodexTransport(request, response)) return;
     const encoded = await readRequestBody(request);
     const body = decodeBody(encoded, request.headers["content-encoding"]);
     const payload = parseBody(body);
-    const requestedModel =
+    requestedModel =
       typeof payload.model === "string" ? payload.model : defaultModel;
     activity.setRoute({
       provider: "openai",
@@ -2224,11 +2226,29 @@ async function handleNativeRequest(request, response, requestUrl, defaultModel) 
       );
     }
   } catch (error) {
+    // A failure with no usage event is invisible to the diagnostic that
+    // separates "the upstream failed" from "the request died inside the
+    // router" — the distinction #171 turned on. Meter this path the way the
+    // turn path does: a departed client as 0, everything else by its status.
     if (clientGone) {
+      recordUsageEvent({
+        model: requestedModel,
+        provider: "openai",
+        status: 0,
+        durationMs: Date.now() - startedAt,
+      });
       activity.finish(0);
       return;
     }
-    activity.finish(500);
+    const status = response.headersSent ? 502 : httpErrorStatus(error);
+    recordUsageEvent({
+      model: requestedModel,
+      provider: "openai",
+      status,
+      durationMs: Date.now() - startedAt,
+      ...(response.headersSent ? { streamAborted: true } : {}),
+    });
+    activity.finish(status);
     throw error;
   } finally {
     activity.finish(response.statusCode);
@@ -2306,13 +2326,11 @@ const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
     const status = httpErrorStatus(error);
     // The bare string this used to log made every mid-stream failure
-    // indistinguishable in production. The cause belongs in the log; response
-    // bodies never do, so only the error's own message and code are recorded.
-    console.error(
-      `[codex-router] request failed: ${
-        error instanceof Error ? `${error.name}: ${error.message}` : String(error)
-      }${error?.code ? ` (${error.code})` : ""}`,
-    );
+    // indistinguishable in production, and stopping at the top error was the
+    // second half of the same problem: a native connect failure logs
+    // `TypeError: fetch failed` with the socket-level code buried on its cause
+    // (#171). The whole chain belongs in the log; response bodies never do.
+    console.error(`[codex-router] request failed: ${formatErrorChain(error)}`);
     if (!response.headersSent) {
       writeJson(response, status, {
         error: {
@@ -2358,6 +2376,24 @@ server.on("error", (error) => {
     }${error?.code ? ` (${error.code})` : ""}`,
   );
   process.exit(96);
+});
+// One escaped error here takes native and routed traffic down together, and
+// the default crash leaves nothing in the service log but the supervisor's
+// exit line — #171 recorded `exited (code=4294967295)` on Windows with no way
+// to tell an in-process crash from an external kill. Name the failure and its
+// whole cause chain before exiting, and use exit codes distinct from the
+// listen-failure ones above so the supervisor's line alone classifies the
+// death. The exit itself stays: after an uncaught throw the process state is
+// unknowable, and the service manager owns the restart.
+process.on("uncaughtException", (error) => {
+  console.error(`[codex-router] uncaught exception: ${formatErrorChain(error)}`);
+  if (error?.stack) console.error(error.stack);
+  process.exit(95);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error(`[codex-router] unhandled rejection: ${formatErrorChain(reason)}`);
+  if (reason?.stack) console.error(reason.stack);
+  process.exit(94);
 });
 server.requestTimeout = 0;
 applyKeepAliveTimeouts(server);

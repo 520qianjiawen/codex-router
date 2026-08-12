@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   applyKeepAliveTimeouts,
+  formatErrorChain,
   httpErrorStatus,
   readRequestBody,
   requireInternalAuth,
@@ -16,6 +17,7 @@ import { PORTS } from "./paths.mjs";
 import { MODELS } from "./model-registry.mjs";
 import { ensureFreshGrokOAuthToken } from "./grok-oauth-session.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
+import { objectRootToolSchema } from "./tool-schema-root.mjs";
 import { VERSION } from "./version.mjs";
 
 // LiteLLM speaks OpenAI Chat Completions to this forwarder. It reuses the
@@ -185,7 +187,11 @@ export function toResponsesRequest(chat, options = {}) {
           type: "function",
           name: tool.function.name,
           description: tool.function.description,
-          parameters: tool.function.parameters || { type: "object", properties: {} },
+          // xAI 400s the whole request over a union-rooted parameter schema,
+          // which Codex's own `automation_update` app tool ships.
+          parameters: objectRootToolSchema(
+            tool.function.parameters || { type: "object", properties: {} },
+          ),
           strict: false,
         }))
     : [];
@@ -485,7 +491,11 @@ if (isMain) {
   const server = http.createServer((request, response) => {
     handleRequest(request, response).catch((error) => {
       const status = httpErrorStatus(error);
-      console.error("[grok-oauth] request failed");
+      // Names and codes only: a refresh failure can wrap upstream response
+      // text in its message, and bodies never belong in the log (#171).
+      console.error(
+        `[grok-oauth] request failed: ${formatErrorChain(error, { messages: false })}`,
+      );
       if (!response.headersSent) {
         writeJson(response, status, {
           error: {

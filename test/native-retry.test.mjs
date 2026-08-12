@@ -469,6 +469,35 @@ test("a connect failure is retried and an abort never is", async () => {
   assert.equal(abortCalls, 1);
 });
 
+// #171: a Windows machine under loopback churn failed native connects with
+// codes outside the original set while the same origin answered other
+// requests in the same window. Each of these fails before a connection
+// exists, so a retry can never re-execute work.
+test("pre-connection failures added after #171 are retried", async () => {
+  for (const code of ["ENOTFOUND", "EADDRNOTAVAIL", "ENOBUFS"]) {
+    let calls = 0;
+    const retried = await fetchWithRetry(
+      "http://upstream.invalid/responses",
+      {},
+      {
+        retries: 1,
+        backoffMs: 0,
+        fetchImpl: async () => {
+          calls += 1;
+          if (calls < 2) {
+            const error = new TypeError("fetch failed");
+            error.cause = Object.assign(new Error(`socket ${code}`), { code });
+            throw error;
+          }
+          return new Response("ok", { status: 200 });
+        },
+      },
+    );
+    assert.equal(calls, 2, `${code} was not retried`);
+    assert.equal(retried.response.status, 200);
+  }
+});
+
 // A 504 the edge spent half a minute producing is still a 504, but retrying it
 // twice would turn a slow failure into a hang.
 test("a retryable failure that was slow to arrive is not retried", async () => {

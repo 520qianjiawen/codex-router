@@ -78,7 +78,15 @@ export const RETRYABLE_STATUSES = new Set([502, 503, 504, 520, 521, 522, 523, 52
 
 // Transport failures where no response ever started. `fetch` reports these as
 // a generic TypeError whose cause carries the socket-level code.
+//
+// ENOTFOUND, EADDRNOTAVAIL, and ENOBUFS joined after #171: a Windows machine
+// under loopback churn failed native connects repeatedly while the same
+// origin answered other requests in the same window, which is the transient
+// shape this bound exists to absorb. All three fail before a connection
+// exists — a name that did not resolve, no ephemeral port to bind, no kernel
+// buffer for the socket — so a retry can never be a second execution.
 const RETRYABLE_ERROR_CODES = new Set([
+  "EADDRNOTAVAIL",
   "ECONNABORTED",
   "ECONNREFUSED",
   "ECONNRESET",
@@ -86,6 +94,8 @@ const RETRYABLE_ERROR_CODES = new Set([
   "EHOSTUNREACH",
   "ENETDOWN",
   "ENETUNREACH",
+  "ENOBUFS",
+  "ENOTFOUND",
   "EPIPE",
   "ETIMEDOUT",
   "UND_ERR_CONNECT_TIMEOUT",

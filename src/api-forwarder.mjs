@@ -2,6 +2,7 @@ import http from "node:http";
 
 import {
   applyKeepAliveTimeouts,
+  formatErrorChain,
   HOP_BY_HOP_HEADERS,
   httpErrorStatus,
   pipeResponse,
@@ -701,7 +702,12 @@ async function handleRequest(request, response) {
 const server = http.createServer((request, response) => {
   handleRequest(request, response).catch((error) => {
     const status = httpErrorStatus(error);
-    console.error("[api-forwarder] request failed");
+    // Names and codes only: a forwarder failure can wrap upstream response
+    // text in its message, and bodies never belong in the log. The code chain
+    // is what distinguishes a dead socket from a refused connect (#171).
+    console.error(
+      `[api-forwarder] request failed: ${formatErrorChain(error, { messages: false })}`,
+    );
     if (!response.headersSent) {
       writeJson(response, status, {
         error: {
