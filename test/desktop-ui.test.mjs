@@ -6,7 +6,9 @@ import {
   chartGeometry,
   compactTokens,
   dailySeries,
+  observedModelSpeed,
   quotaWindow,
+  visibleLocalDownload,
 } from "../apps/desktop/ui/model.mjs";
 
 test("desktop usage series fills missing local calendar days", () => {
@@ -91,4 +93,40 @@ test("token counts remain compact without hiding small values", () => {
   assert.equal(compactTokens(1_250), "1.3k");
   assert.equal(compactTokens(28_800), "29k");
   assert.equal(compactTokens(2_500_000), "2.5m");
+});
+
+test("completed local downloads disappear when the model is no longer installed", () => {
+  const done = { tag: "gemma4:12b", status: "done", percent: 100 };
+  assert.equal(visibleLocalDownload({ models: [], download: done }), null);
+  assert.deepEqual(
+    visibleLocalDownload({ models: [{ tag: "gemma4:12b" }], download: done }),
+    done,
+  );
+  const active = { tag: "gemma4:12b", status: "downloading", percent: 42 };
+  assert.deepEqual(visibleLocalDownload({ models: [], download: active }), active);
+});
+
+test("active model speed prefers its provider and matches qualified slugs", () => {
+  const usage = {
+    providers: [
+      {
+        id: "deepseek",
+        models: [
+          {
+            slug: "deepseek/deepseek-v4-flash",
+            displayName: "deepseek-v4-flash",
+            observedTokensPerSecond: 18.7,
+            speedSampleCount: 4,
+          },
+        ],
+      },
+    ],
+  };
+  assert.deepEqual(observedModelSpeed(usage, "deepseek", "deepseek/deepseek-v4-flash"), {
+    speed: 18.7,
+    samples: 4,
+  });
+  usage.providers[0].models[0].observedTokensPerSecond = null;
+  assert.equal(observedModelSpeed(usage, "deepseek", "deepseek/deepseek-v4-flash"), null);
+  assert.equal(observedModelSpeed(usage, "deepseek", "missing/model"), null);
 });

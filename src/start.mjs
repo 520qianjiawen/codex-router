@@ -16,6 +16,8 @@ import {
 } from "./paths.mjs";
 import { waitForHealth as pollHealth } from "./health-probe.mjs";
 import { writeLiteLlmConfig } from "./litellm-config.mjs";
+import { readLocalModelSelection } from "./local-models.mjs";
+import { ensureOllamaHeadless } from "./ollama-runtime.mjs";
 import { venvRuntimeProblem } from "./venv-runtime.mjs";
 
 const litellm =
@@ -76,6 +78,18 @@ const callerKey = assertCallerSecret(
   readFileSync(CALLER_SECRET_PATH, "utf8").trim(),
 );
 writeLiteLlmConfig();
+
+// A checked local model means the operator intends to route through Ollama,
+// so keep its daemon available for the gateway. This never installs software
+// or pulls a model during service startup; a missing runtime remains a doctor
+// warning, while a present runtime is started as a detached, headless server.
+if (readLocalModelSelection().enabled.length) {
+  try {
+    await ensureOllamaHeadless({ install: false });
+  } catch (error) {
+    console.error(`Local Ollama is unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
 const commonEnv = {
   MODEL_ROUTER_TARGET: TARGET,

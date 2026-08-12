@@ -13,6 +13,7 @@ process.env.CODEX_ROUTER_STATE_DIR = stateDir;
 
 const {
   CODEX_PROMPT_TOKENS,
+  EXPLORE_LOCAL_MODELS,
   describeMachine,
   fitAdvisory,
   localModelsSnapshot,
@@ -25,6 +26,7 @@ const {
   renderLocalModels,
   setLocalModelEnabled,
   suggestedLocalModels,
+  suggestedExploreModels,
   suggestedVisionModels,
 } = await import("../src/local-models.mjs");
 
@@ -308,7 +310,9 @@ test("the listing renders for a person, not only for the tray", () => {
   // The two groups answer different questions and are never merged.
   assert.match(rendered, /For coding — experimental/);
   assert.match(rendered, /For reading images only — cannot code:/);
-  assert.match(rendered, /control local-models install /);
+  assert.match(rendered, /Explore Ollama tags/);
+  assert.match(rendered, /qwen3\.5:cloud\s+cloud only · not downloadable/);
+  assert.match(rendered, /control local-models install .* --yes/);
 });
 
 test("an empty machine reads as empty rather than as a broken table", () => {
@@ -340,6 +344,70 @@ test("coding models are separated from image readers", () => {
   // The smallest reader scored zero on text, so size must not float it up.
   assert.notEqual(vision[0].tag, "moondream");
   assert.ok(vision.at(-1).accuracy === "captions-only");
+});
+
+test("the explore catalog groups the requested Ollama families and keeps fit visible", () => {
+  const entries = suggestedExploreModels({
+    capacity: machineCapacity({ totalMemoryBytes: 16e9, unifiedMemory: true }),
+  });
+  const tags = new Set(entries.map((entry) => entry.tag));
+  for (const tag of [
+    "gemma4:e2b-it-q4_K_M",
+    "gemma4:12b",
+    "gemma4:31b-mlx-bf16",
+    "qwen3.5:9b",
+    "qwen3.5:35b-a3b-coding-nvfp4",
+    "qwen3.6:27b",
+    "qwen3.6:35b-a3b-mtp-q4_K_M",
+    "nemotron-3-super:120b",
+    "nemotron-3-super:120b-a12b-q8_0",
+    "nemotron-3.5-lightning:latest",
+    "nemotron-3.5-lightning:30b",
+    "nemotron-3.5-lightning:30b-a3b",
+    "nemotron-3.5-lightning:30b-a3b-q4_K_M",
+    "nemotron-3.5-lightning:30b-a3b-mlx",
+    "nemotron-3.5-lightning:30b-a3b-mlx-bf16",
+    "nemotron-3.5-lightning:30b-a3b-mxfp8",
+    "nemotron-3.5-lightning:30b-a3b-nvfp4",
+    "nemotron-3.5-lightning:30b-a3b-q8_0",
+    "nemotron-3.5-lightning:30b-a3b-bf16",
+    "nemotron-3.5-lightning:30b-mlx",
+    "ornith:9b",
+    "ornith:35b-bf16",
+    "nemotron3:33b",
+    "nemotron3:33b-q8",
+    "muse-glimmer:30b",
+    "muse-glimmer:30b-mlx-bf16-dflash",
+  ]) assert.ok(tags.has(tag), tag);
+  assert.equal(entries.find((entry) => entry.tag === "nemotron-3-super:120b").fit, "too-large");
+  assert.equal(entries.find((entry) => entry.tag === "gemma4:12b").tools, false);
+  assert.equal(EXPLORE_LOCAL_MODELS.length, 189);
+  assert.equal(new Set(EXPLORE_LOCAL_MODELS.map((entry) => entry.tag)).size, 189);
+  const cloud = entries.find((entry) => entry.tag === "qwen3.5:cloud");
+  assert.equal(cloud.downloadable, false);
+  assert.equal(cloud.fit, "cloud-only");
+  assert.equal(cloud.diskFit, "cloud-only");
+  assert.equal(entries.find((entry) => entry.tag === "qwen3.5:2b-q4_K_M").sizeGb, 1.9);
+  assert.equal(
+    entries.find((entry) => entry.tag === "gemma4:latest").researchStatus,
+    "Official Ollama · 49 tags",
+  );
+  assert.deepEqual(
+    entries.find((entry) => entry.tag === "gemma4:latest").researchCapabilities,
+    ["vision", "tools", "thinking", "audio"],
+  );
+  assert.equal(
+    entries.find((entry) => entry.tag === "muse-glimmer:latest").researchStatus,
+    "Official Ollama · 15 tags",
+  );
+  assert.equal(
+    entries.find((entry) => entry.tag === "nemotron-3.5-lightning:latest").researchStatus,
+    "Official Ollama · 11 tags",
+  );
+  assert.deepEqual(
+    entries.find((entry) => entry.tag === "nemotron-3.5-lightning:latest").researchCapabilities,
+    ["tools", "thinking"],
+  );
 });
 
 // A GGUF header built by hand, so the parser is tested without the network and

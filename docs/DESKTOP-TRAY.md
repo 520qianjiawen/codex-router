@@ -33,10 +33,18 @@ and disables its activity-pill switch; router monitoring continues normally.
 - **Connections** includes a **Use without OpenAI login** switch for new Codex
   sessions. It requires a connected, enabled external provider and restores the
   prior model-provider setting when switched off.
-- **Models** has two accordions: **Subagent models** exposes every enabled
+- **Models** has three accordions: **Subagent models** exposes every enabled
   model, or only selected models, as Codex v2 subagent overrides, and
   **Model picker** hides or shows individual models without changing their
   provider connection.
+- **Local LLMs** installs, enables, and removes Ollama models on this machine.
+  Installs poll their detached download worker and show live percentage;
+  removals keep a visible operation banner even when the installed row
+  disappears immediately. A completed download is hidden after its model is
+  removed, so stale `ready · 100%` state never implies that it is still on disk.
+- **Usage** shows the active or most recently used model's observed output
+  throughput when the upstream reports output tokens. The rate is end-to-end
+  tokens per second from successful metered replies, not a synthetic estimate.
 
 The status mark uses Thinking Orbs **Shaping** while idle, **Thinking** while a
 model is generating, and **Solving** for errors. Starting retains its colored

@@ -102,6 +102,9 @@ export function aggregateProviderUsage(events, { days = 90, now = Date.now() } =
       inputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
+      speedOutputTokens: 0,
+      speedDurationMs: 0,
+      speedSampleCount: 0,
       lastUsedAt: new Date(at).toISOString(),
     };
     model.requests += 1;
@@ -116,6 +119,12 @@ export function aggregateProviderUsage(events, { days = 90, now = Date.now() } =
     model.inputTokens += inputTokens;
     model.outputTokens += outputTokens;
     model.totalTokens += totalTokens;
+    const durationMs = nonnegative(event.durationMs);
+    if (event.status >= 200 && event.status < 400 && outputTokens > 0 && durationMs > 0) {
+      model.speedOutputTokens += outputTokens;
+      model.speedDurationMs += durationMs;
+      model.speedSampleCount += 1;
+    }
     if (at >= Date.parse(model.lastUsedAt)) model.lastUsedAt = new Date(at).toISOString();
     provider.models.set(slug, model);
   }
@@ -128,9 +137,17 @@ export function aggregateProviderUsage(events, { days = 90, now = Date.now() } =
       dailyUsageBuckets: [...daily.values()].sort((left, right) =>
         left.startDate.localeCompare(right.startDate),
       ),
-      models: [...models.values()].sort(
-        (left, right) => right.totalTokens - left.totalTokens || right.requests - left.requests,
-      ),
+      models: [...models.values()]
+        .map(({ speedOutputTokens, speedDurationMs, ...model }) => ({
+          ...model,
+          observedTokensPerSecond:
+            speedDurationMs > 0
+              ? Math.round((speedOutputTokens * 1_000 * 10) / speedDurationMs) / 10
+              : null,
+        }))
+        .sort(
+          (left, right) => right.totalTokens - left.totalTokens || right.requests - left.requests,
+        ),
     })),
   };
 }

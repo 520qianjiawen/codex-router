@@ -618,7 +618,7 @@ for (const provider of PROVIDERS.values()) {
       // Local models are downloaded and checked, never curated from a remote
       // catalog, so naming `curate-models` here points at the wrong command.
       provider.keyless
-        ? `Download one with ./bin/control local-models install <tag>, then check it with ./bin/control local-models set <tag> on.`
+        ? `Install one with ./bin/control local-models install <tag-or-url> --yes; tool-capable models are checked automatically.`
         : `Run ./bin/curate-models ${provider.id} in an interactive terminal.`,
     );
   }

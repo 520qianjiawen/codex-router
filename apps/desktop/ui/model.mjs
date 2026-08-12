@@ -184,6 +184,32 @@ export function sevenDayTokens(source, today = new Date()) {
   return dailySeries(source?.buckets || [], 7, today).reduce((total, point) => total + point.tokens, 0);
 }
 
+export function visibleLocalDownload(localModels = {}) {
+  const download = localModels?.download;
+  if (!download) return null;
+  if (download.status !== "done" || !download.tag) return download;
+  const installed = new Set((localModels.models || []).map((model) => model.tag));
+  return installed.has(download.tag) ? download : null;
+}
+
+export function observedModelSpeed(providerUsage, providerId, modelSlug) {
+  if (!modelSlug) return null;
+  const displayName = String(modelSlug).split("/").at(-1);
+  const providers = providerUsage?.providers || [];
+  const preferred = providers.find((provider) => provider.id === providerId);
+  const candidates = preferred ? [preferred, ...providers.filter((provider) => provider !== preferred)] : providers;
+  const model = candidates
+    .flatMap((provider) => provider.models || [])
+    .find((entry) => entry.slug === modelSlug || entry.displayName === displayName);
+  if (model?.observedTokensPerSecond === null || model?.observedTokensPerSecond === undefined) {
+    return null;
+  }
+  const speed = Number(model?.observedTokensPerSecond);
+  return Number.isFinite(speed) && speed >= 0
+    ? { speed, samples: Math.max(0, Number(model.speedSampleCount) || 0) }
+    : null;
+}
+
 function smoothPath(points) {
   if (!points.length) return "";
   if (points.length === 1) return `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`;

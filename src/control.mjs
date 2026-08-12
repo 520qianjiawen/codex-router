@@ -107,6 +107,13 @@ async function emitProbe() {
     await import("./vision-host.mjs");
   const { readVisionDownload } = await import("./vision-download.mjs");
   const { readBenchmarkResults } = await import("./vision-benchmark.mjs");
+  const { readLocalBenchmarks } = await import("./local-benchmark.mjs");
+  const visionBenchmarks = readBenchmarkResults();
+  const localBenchmarks = readLocalBenchmarks();
+  const localAndVisionBenchmarks = Object.fromEntries(
+    [...new Set([...Object.keys(visionBenchmarks), ...Object.keys(localBenchmarks)])]
+      .map((tag) => [tag, { ...visionBenchmarks[tag], ...localBenchmarks[tag] }]),
+  );
   const { localModelsSnapshot } = await import("./local-models.mjs");
   const { selectedConfiguredListedModels } = await import("./provider-selection.mjs");
   // Bounded and weekly: the tray reads this snapshot constantly, so a fresh
@@ -165,7 +172,7 @@ async function emitProbe() {
             modelSettings: {
               subagents: subagentSettingsSnapshot(),
               picker: modelPickerSnapshot(),
-              localModels: localModelsSnapshot({ benchmarks: readBenchmarkResults() }),
+              localModels: localModelsSnapshot({ benchmarks: localAndVisionBenchmarks }),
               visionBridge: (() => {
                 const candidates = selectedConfiguredListedModels();
                 // Only the native models that actually shipped into the picker.
@@ -620,6 +627,18 @@ function refreshModelSettingsCatalog({ routes = false } = {}) {
   }
 }
 
+async function restartRouterForLocalRoutes() {
+  // User-model routes live in files the running router only reads at startup,
+  // so a local model toggle needs the same service reload curated-model apply
+  // performs. Foreground/dev routers have no service and are skipped.
+  const { restartRouterServiceIfInstalled } = await import("./router-restart.mjs");
+  const restarted = restartRouterServiceIfInstalled();
+  if (restarted) {
+    process.stderr.write("Router service restarted so local routes are live.\n");
+  }
+  return restarted;
+}
+
 async function knownModelSlug(slug) {
   try {
     const { MERGED_CATALOG_PATH } = await import("./paths.mjs");
@@ -708,7 +727,7 @@ async function runVisionBridgeSetup({ consent }) {
 
   // Nothing is serving one. Pulling is a multi-gigabyte download, so it needs
   // both a runtime and explicit consent.
-  if (!ollamaAvailable()) {
+  if (!ollamaAvailable() && !consent) {
     process.stderr.write(
       `No local vision runtime is running.\n` +
         `Recommended for this machine (${profile.memGib} GB ${profile.arch}): ${chosen}.\n` +
@@ -724,6 +743,11 @@ async function runVisionBridgeSetup({ consent }) {
     );
     return;
   }
+  // Explicit consent also covers installing the missing runtime. The runtime
+  // manager uses `ollama serve` detached, so this setup path never opens the
+  // Ollama chat window.
+  const { ensureOllamaHeadless } = await import("./ollama-runtime.mjs");
+  await ensureOllamaHeadless({ install: true });
   process.stderr.write(`Downloading ${chosen} with Ollama…\n`);
   pullOllamaModel(chosen);
   setVisionBridgeLocal({ model: chosen, baseUrl });
@@ -948,11 +972,21 @@ async function handleVisionBridge(action, value, extra) {
 async function handleLocalModels(action, value, flag) {
   const {
     localModelsSnapshot,
+    readLocalModelSelection,
     removeLocalModel,
     setLocalModelEnabled,
   } = await import("./local-models.mjs");
   const { readBenchmarkResults } = await import("./vision-benchmark.mjs");
-  const snapshot = () => localModelsSnapshot({ benchmarks: readBenchmarkResults() });
+  const { readLocalBenchmarks } = await import("./local-benchmark.mjs");
+  const visionBenchmarks = readBenchmarkResults();
+  const localBenchmarks = readLocalBenchmarks();
+  const localAndVisionBenchmarks = Object.fromEntries(
+    [...new Set([...Object.keys(visionBenchmarks), ...Object.keys(localBenchmarks)])]
+      .map((tag) => [tag, { ...visionBenchmarks[tag], ...localBenchmarks[tag] }]),
+  );
+  const snapshot = () => localModelsSnapshot({
+    benchmarks: localAndVisionBenchmarks,
+  });
   if (action === "list" || action === "status" || !action) {
     const current = snapshot();
     // The tray and any script read JSON; a person at a terminal was handed a
@@ -986,13 +1020,15 @@ async function handleLocalModels(action, value, flag) {
   if (action === "inspect") {
     // Answers "can Codex drive this?" for a few kilobytes instead of a
     // multi-gigabyte download.
-    const tag = String(value || "").trim();
+    const { normalizeLocalModelTag } = await import("./local-model-ref.mjs");
+    const tag = normalizeLocalModelTag(value);
     if (!tag) throw new Error("Usage: control local-models inspect <model-tag>");
     const {
       fetchRegistryCapabilities,
       fetchRegistryContext,
       describeMachine,
       detectMachine,
+      rateDiskFit,
       rateModelFit,
     } = await import("./local-models.mjs");
     // Both are read from the model's own files rather than assumed: the chat
@@ -1012,6 +1048,7 @@ async function handleLocalModels(action, value, flag) {
               ...info,
               context: context ?? null,
               fit: rateModelFit(info.sizeGb, capacity) ?? null,
+              diskFit: rateDiskFit(info.sizeGb, capacity) ?? null,
               machine: describeMachine(capacity),
             }
           : { tag, unknown: true, context: context ?? null, machine: describeMachine(capacity) },
@@ -1019,73 +1056,173 @@ async function handleLocalModels(action, value, flag) {
     );
     return;
   }
-  if (action === "install") {
-    // Same detached worker the vision picker uses: gigabytes must not block.
+  if (action === "runtime") {
+    const { localOllamaRuntimeSnapshot, ensureOllamaHeadless, updateOllamaRuntime } = await import(
+      "./ollama-runtime.mjs"
+    );
+    const subcommand = String(value || "status").trim();
+    if (subcommand === "status") {
+      process.stdout.write(`${JSON.stringify(localOllamaRuntimeSnapshot())}\n`);
+      return;
+    }
+    if (subcommand === "update") {
+      if (flag !== "--yes") throw new Error("Updating Ollama changes system software. Pass --yes to confirm.");
+      const result = updateOllamaRuntime();
+      const running = await ensureOllamaHeadless({ install: false });
+      process.stdout.write(`${JSON.stringify({ ...result, running: running.running })}\n`);
+      return;
+    }
+    if (subcommand === "start") {
+      const result = await ensureOllamaHeadless({ install: flag === "--yes" });
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+      return;
+    }
+    throw new Error("Usage: control local-models runtime status|start [--yes]|update --yes");
+  }
+  if (action === "benchmark") {
+    const { benchmarkLocalModel } = await import("./local-benchmark.mjs");
     const tag = String(value || "").trim();
-    if (!tag) throw new Error("Usage: control local-models install <model-tag>");
-    const { ollamaAvailable, OLLAMA_INSTALL_HINT } = await import("./vision-host.mjs");
-    if (!ollamaAvailable()) throw new Error(`Ollama is not installed. ${OLLAMA_INSTALL_HINT}`);
-    const { readVisionDownload, writeVisionDownload } = await import("./vision-download.mjs");
-    const active = readVisionDownload();
+    if (!tag) throw new Error("Usage: control local-models benchmark <model-tag>");
+    const result = await benchmarkLocalModel(tag);
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
+  if (action === "install" || action === "install-and-use") {
+    // Same detached-worker principle as the vision picker, but this worker is
+    // for Codex chat models: successful completion checks the model on and
+    // publishes the route automatically.
+    const { normalizeLocalModelTag, splitLocalModelTag } = await import("./local-model-ref.mjs");
+    const tag = normalizeLocalModelTag(value);
+    const identity = splitLocalModelTag(tag);
+    const { readLocalDownload, writeLocalDownload } = await import("./local-download.mjs");
+    const active = readLocalDownload();
     if (active?.status === "downloading" && active.tag !== tag) {
       throw new Error(`${active.tag} is already downloading (${active.percent || 0}%).`);
     }
-    const { fetchRegistryCapabilities, detectMachine, fitAdvisory, rateModelFit } =
-      await import("./local-models.mjs");
-    const advertised = await fetchRegistryCapabilities(tag);
-    // A missing tool template costs nothing to discover afterwards; gigabytes
-    // that cannot run cost the download and the disk. So the tool note stays
-    // advisory while a model too large for this machine is refused unless the
-    // operator overrides it deliberately.
-    const capacity = detectMachine();
-    const fit = advertised ? rateModelFit(advertised.sizeGb, capacity) : undefined;
-    if (fit === "too-large" && flag !== "--yes" && value !== "--yes") {
-      throw new Error(
-        `${fitAdvisory(tag, advertised.sizeGb, capacity)} Pass --yes to download it anyway.`,
-      );
+    if (active?.status === "downloading" && active.tag === tag) {
+      process.stdout.write(`${JSON.stringify({
+        started: false,
+        existing: true,
+        tag,
+        percent: active.percent || 0,
+        detail: active.detail || "downloading",
+      })}\n`);
+      return;
     }
-    writeVisionDownload({
+    const startedAt = Date.now();
+    const writePhase = (detail, extra = {}) => writeLocalDownload({
       version: 1,
       tag,
       status: "downloading",
-      detail: "starting",
+      detail,
       percent: 0,
-      startedAt: Date.now(),
+      startedAt,
       updatedAt: Date.now(),
+      workerPid: process.pid,
+      ...extra,
     });
-    spawn(process.execPath, [path.join(REPO_ROOT, "src", "vision-download.mjs"), tag], {
-      detached: true,
-      stdio: "ignore",
-    }).unref();
-    // Advisory, never blocking: the operator may well want a vision-only
-    // model, but they should know before the gigabytes land.
-    process.stdout.write(
-      `${JSON.stringify({ started: true, tag, tools: advertised?.tools ?? null, fit: fit ?? null })}\n`,
-    );
-    const fitNote = advertised ? fitAdvisory(tag, advertised.sizeGb, capacity) : undefined;
-    if (fitNote) process.stderr.write(`Note: ${fitNote}\n`);
-    if (advertised && !advertised.tools) {
-      process.stderr.write(
-        `Note: ${tag} does not advertise tool calling, so Codex cannot use it as a chat model. ` +
-          `It can still serve as a vision reader.\n`,
+    // Persist the optimistic state before any network lookup or runtime
+    // installation. The tray may refresh while either one is in progress, and
+    // the operator should still see that the click was accepted.
+    writePhase("Checking model and machine fit");
+    try {
+      const { fetchRegistryCapabilities, detectMachine, fitAdvisory, rateDiskFit, rateModelFit } =
+        await import("./local-models.mjs");
+      const advertised = await fetchRegistryCapabilities(tag);
+      // A missing tool template costs nothing to discover afterwards; gigabytes
+      // that cannot run cost the download and the disk. So the tool note stays
+      // advisory while a model too large for this machine is refused unless the
+      // operator overrides it deliberately.
+      const capacity = detectMachine();
+      const fit = advertised ? rateModelFit(advertised.sizeGb, capacity) : undefined;
+      const diskFit = advertised ? rateDiskFit(advertised.sizeGb, capacity) : undefined;
+      if ((fit === "too-large" || diskFit === "too-large") && flag !== "--force") {
+        throw new Error(
+          `${fitAdvisory(tag, advertised.sizeGb, capacity) || `${tag} may not fit on this machine's free disk.`} Pass --force to download it anyway.`,
+        );
+      }
+      writePhase("Preparing headless Ollama");
+      const { ensureOllamaHeadless } = await import("./ollama-runtime.mjs");
+      // A missing runtime is installed only as part of an explicit install click
+      // (`--yes`). Existing runtimes are started with `ollama serve`, detached
+      // from the tray so no GUI window is involved.
+      await ensureOllamaHeadless({ install: flag === "--yes" });
+      writePhase("Starting model download");
+      const child = spawn(process.execPath, [path.join(REPO_ROOT, "src", "local-download.mjs"), tag], {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      child.unref();
+      writeLocalDownload({
+        ...readLocalDownload(),
+        version: 1,
+        tag,
+        status: "downloading",
+        detail: "Starting model download",
+        percent: 0,
+        startedAt,
+        updatedAt: Date.now(),
+        workerPid: child.pid,
+      });
+      // Advisory, never blocking: the operator may well want a vision-only
+      // model, but they should know before the gigabytes land.
+      process.stdout.write(
+        `${JSON.stringify({
+          started: true,
+          tag,
+          family: advertised?.family || identity.family,
+          variant: advertised?.variant || identity.variant,
+          tools: advertised?.tools ?? null,
+          fit: fit ?? null,
+          diskFit: diskFit ?? null,
+          runtime: "headless",
+        })}\n`,
       );
+      const fitNote = advertised ? fitAdvisory(tag, advertised.sizeGb, capacity) : undefined;
+      if (fitNote) process.stderr.write(`Note: ${fitNote}\n`);
+      if (advertised && !advertised.tools) {
+        process.stderr.write(
+          `Note: ${tag} does not advertise tool calling, so Codex cannot use it as a chat model. ` +
+            `It can still serve as a vision reader.\n`,
+        );
+      }
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      writeLocalDownload({
+        ...readLocalDownload(),
+        version: 1,
+        tag,
+        status: "error",
+        detail: "failed",
+        percent: readLocalDownload()?.percent || 0,
+        startedAt,
+        updatedAt: Date.now(),
+        error: message,
+      });
+      throw error;
     }
-    return;
   }
   if (action === "uninstall") {
     const tag = String(value || "").trim();
     if (!tag) throw new Error("Usage: control local-models uninstall <model-tag> --yes");
     removeLocalModel(tag, { confirmed: flag === "--yes" || value === "--yes" });
     refreshModelSettingsCatalog({ routes: true });
+    await restartRouterForLocalRoutes();
   } else if (action === "set") {
     if (!["on", "off"].includes(flag)) {
       throw new Error("Usage: control local-models set <model-tag> <on|off>");
     }
-    setLocalModelEnabled(value, flag === "on");
+    const enabled = flag === "on";
+    const wasEnabled = readLocalModelSelection().enabled.includes(String(value).trim());
+    setLocalModelEnabled(value, enabled);
     refreshModelSettingsCatalog({ routes: true });
+    if (wasEnabled !== enabled) await restartRouterForLocalRoutes();
   } else {
     throw new Error(
-      "Usage: control local-models list|install <tag>|uninstall <tag> --yes|set <tag> <on|off>",
+      "Usage: control local-models list|inspect <tag-or-url>|install <tag-or-url> [--yes]|" +
+        "benchmark <tag>|runtime status|start|update --yes|uninstall <tag> --yes|set <tag> <on|off>",
     );
   }
   process.stdout.write(`${JSON.stringify(snapshot())}\n`);

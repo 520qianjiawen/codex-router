@@ -3,30 +3,23 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import {
+  ollamaAvailable as runtimeOllamaAvailable,
+  ollamaInstallHint,
+} from "./ollama-runtime.mjs";
 import { STATE_DIR } from "./paths.mjs";
 import {
   DEFAULT_LOCAL_VISION_BASE_URL,
   DEFAULT_LOCAL_VISION_MODEL,
 } from "./vision-bridge.mjs";
 
-export const OLLAMA_INSTALL_HINT =
-  process.platform === "win32"
-    ? "Install Ollama from https://ollama.com/download, then re-run this."
-    : process.platform === "darwin"
-      ? "Install Ollama from https://ollama.com/download (or `brew install ollama`), then re-run this."
-      : "Install Ollama: `curl -fsSL https://ollama.com/install.sh | sh`, then re-run this.";
+export const OLLAMA_INSTALL_HINT = `Install Ollama (${ollamaInstallHint()}), then retry.`;
 
-// A runtime is the operator's own software; the installer never installs it
-// silently. This only reports whether the `ollama` CLI is already on PATH so
-// the setup flow can pull a model with it or, when it is absent, print the one
-// install command and stop.
+// A runtime is the operator's own software. This helper only reports whether
+// the CLI is present; the local-model install flow may install it after the
+// operator explicitly clicks/approves a model download.
 export function ollamaAvailable({ spawn = spawnSync } = {}) {
-  try {
-    const result = spawn("ollama", ["--version"], { stdio: "ignore" });
-    return result.status === 0;
-  } catch {
-    return false;
-  }
+  return runtimeOllamaAvailable({ spawn });
 }
 
 // A model download is gigabytes, so it is never silent: the caller passes an

@@ -100,6 +100,10 @@ fn main() {
             account_usage,
             provider_usage,
             provider_setup,
+            local_models,
+            install_local_model,
+            uninstall_local_model,
+            set_local_model_enabled,
             install_provider_cli,
             connect_oauth,
             save_api_key,
@@ -268,6 +272,74 @@ async fn provider_setup(state: State<'_, RouterState>) -> Result<Value, String> 
     run_json_command(
         state.inner().clone(),
         vec!["providers".into(), "--json".into()],
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn local_models(state: State<'_, RouterState>) -> Result<Value, String> {
+    run_json_command(
+        state.inner().clone(),
+        vec!["local-models".into(), "list".into(), "--json".into()],
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn install_local_model(
+    state: State<'_, RouterState>,
+    model: String,
+) -> Result<Value, String> {
+    validate_local_model_ref(&model)?;
+    run_json_command(
+        state.inner().clone(),
+        vec![
+            "local-models".into(),
+            "install".into(),
+            model,
+            "--yes".into(),
+        ],
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn uninstall_local_model(
+    state: State<'_, RouterState>,
+    model: String,
+) -> Result<Value, String> {
+    validate_local_model_ref(&model)?;
+    run_json_command(
+        state.inner().clone(),
+        vec![
+            "local-models".into(),
+            "uninstall".into(),
+            model,
+            "--yes".into(),
+        ],
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn set_local_model_enabled(
+    state: State<'_, RouterState>,
+    model: String,
+    enabled: bool,
+) -> Result<Value, String> {
+    validate_local_model_ref(&model)?;
+    run_json_command(
+        state.inner().clone(),
+        vec![
+            "local-models".into(),
+            "set".into(),
+            model,
+            (if enabled { "on" } else { "off" }).into(),
+        ],
         None,
     )
     .await
@@ -959,6 +1031,34 @@ fn validate_provider_kind(provider: &str, kind: ProviderKind) -> Result<(), Stri
     }
 }
 
+// Ollama tags may be namespaced (including hf.co paths) and install also
+// accepts an official ollama.com model page. This is only an argument-shape
+// guard; the router's stricter normalizer remains authoritative.
+fn validate_local_model_ref(model: &str) -> Result<(), String> {
+    let trimmed = model.trim();
+    let valid_characters = trimmed.chars().all(|character| {
+        character.is_ascii_alphanumeric()
+            || matches!(
+                character,
+                '.' | '_' | '/' | ':' | '-' | '?' | '=' | '&' | '%'
+            )
+    });
+    let is_tag = !trimmed.contains("://")
+        && !trimmed.starts_with('-')
+        && !trimmed.contains("//")
+        && !trimmed.split('/').any(|part| matches!(part, "." | ".."))
+        && valid_characters;
+    let is_ollama_url = ["https://ollama.com/", "https://www.ollama.com/"]
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+        && valid_characters;
+    if !trimmed.is_empty() && trimmed.len() <= 512 && (is_tag || is_ollama_url) {
+        Ok(())
+    } else {
+        Err("Enter a valid Ollama model tag or model-page URL.".into())
+    }
+}
+
 fn sanitize_error(raw: &str) -> String {
     let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.is_empty() {
@@ -1009,6 +1109,17 @@ mod tests {
         assert!(validate_provider_kind("clinepass", ProviderKind::Oauth).is_err());
         assert!(validate_provider_kind("chutes", ProviderKind::Api).is_ok());
         assert!(validate_provider_kind("chutes", ProviderKind::Oauth).is_err());
+    }
+
+    #[test]
+    fn accepts_only_ollama_shaped_model_references() {
+        assert!(validate_local_model_ref("gemma4:12b").is_ok());
+        assert!(validate_local_model_ref("hf.co/user/model:Q4_K_M").is_ok());
+        assert!(validate_local_model_ref("https://ollama.com/library/gemma4:12b").is_ok());
+        assert!(validate_local_model_ref("https://example.com/model").is_err());
+        assert!(validate_local_model_ref("../../secret").is_err());
+        assert!(validate_local_model_ref("--yes").is_err());
+        assert!(validate_local_model_ref("").is_err());
     }
 
     #[test]

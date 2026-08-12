@@ -5,9 +5,11 @@ import {
   dailySeries,
   exactTokens,
   formatReset,
+  observedModelSpeed,
   sevenDayTokens,
   sourceOptions,
   todayTokens,
+  visibleLocalDownload,
 } from "./model.mjs";
 import { createThinkingOrb } from "./thinking-orb.mjs";
 
@@ -28,6 +30,7 @@ function startPanel() {
     account: null,
     providerUsage: null,
     providerSetup: null,
+    localModels: null,
     modelSettings: null,
     health: null,
     platform: null,
@@ -36,6 +39,10 @@ function startPanel() {
     sourceWasChosen: false,
     busyProvider: null,
     modelSettingsBusy: false,
+    localModelBusy: null,
+    localRemoveArmed: null,
+    localPollTimer: null,
+    lastActivityState: null,
     loginFreeBusy: false,
     keyProvider: null,
     removeProvider: null,
@@ -53,6 +60,9 @@ function startPanel() {
     source: document.getElementById("usage-source"),
     today: document.getElementById("today-tokens"),
     week: document.getElementById("week-tokens"),
+    speedModel: document.getElementById("speed-model"),
+    speedDetail: document.getElementById("speed-detail"),
+    modelSpeed: document.getElementById("model-speed"),
     chartWrap: document.getElementById("chart-wrap"),
     chartLine: document.getElementById("chart-line-path"),
     chartArea: document.getElementById("chart-area-path"),
@@ -67,6 +77,13 @@ function startPanel() {
     subagentAllSwitchLabel: document.getElementById("subagent-all-switch-label"),
     subagentModelList: document.getElementById("subagent-model-list"),
     pickerModelList: document.getElementById("picker-model-list"),
+    localModelSummary: document.getElementById("local-model-summary"),
+    localModelOperation: document.getElementById("local-model-operation"),
+    localDownloadStatus: document.getElementById("local-download-status"),
+    localModelList: document.getElementById("local-model-list"),
+    localModelForm: document.getElementById("local-model-form"),
+    localModelInput: document.getElementById("local-model-input"),
+    localQuickPicks: document.getElementById("local-quick-picks"),
     loginFreeSwitch: document.getElementById("login-free-switch"),
     loginFreeSwitchLabel: document.getElementById("login-free-switch-label"),
     loginFreeNote: document.getElementById("login-free-note"),
@@ -109,6 +126,10 @@ function startPanel() {
   elements.subagentModelList.addEventListener("click", handleModelSettingsClick);
   elements.pickerModelList.addEventListener("change", handleModelSettingsToggle);
   elements.pickerModelList.addEventListener("click", handleModelSettingsClick);
+  elements.localModelList.addEventListener("click", handleLocalModelClick);
+  elements.localModelList.addEventListener("change", handleLocalModelToggle);
+  elements.localQuickPicks.addEventListener("click", handleLocalModelClick);
+  elements.localModelForm.addEventListener("submit", handleLocalModelInstall);
   elements.loginFreeSwitch.addEventListener("change", handleLoginFreeToggle);
   elements.islandSwitch.addEventListener("change", handleIslandToggle);
   elements.keyForm.addEventListener("submit", saveKey);
@@ -156,6 +177,7 @@ function startPanel() {
       ["account", "account_usage"],
       ["providerUsage", "provider_usage"],
       ["providerSetup", "provider_setup"],
+      ["localModels", "local_models"],
       ["health", "router_health"],
       ["platform", "platform_info"],
       ["settings", "desktop_settings"],
@@ -187,6 +209,16 @@ function startPanel() {
       state.health = { ok: false, activity: { state: "offline" } };
       renderStatus();
     }
+    const nextActivityState = state.health?.activity?.state || "offline";
+    if (state.lastActivityState === "generating" && nextActivityState !== "generating") {
+      call("provider_usage")
+        .then((usage) => {
+          state.providerUsage = usage;
+          renderStatus();
+        })
+        .catch(() => {});
+    }
+    state.lastActivityState = nextActivityState;
   }
 
   function renderPanel() {
@@ -198,6 +230,7 @@ function startPanel() {
     renderLoginFreeSetting();
     renderIslandSetting();
     renderModelSettings();
+    renderLocalModels();
   }
 
   function renderStatus() {
@@ -218,6 +251,21 @@ function startPanel() {
     } else {
       elements.routerStatus.textContent = "Router offline · usage remains available";
     }
+    renderModelSpeed(activity);
+  }
+
+  function renderModelSpeed(activity) {
+    const active = activity.active?.at(-1);
+    const model = active?.model || activity.model;
+    const provider = active?.provider || activity.provider;
+    const label = model ? String(model).split("/").at(-1) : "No model observed";
+    const observed = observedModelSpeed(state.providerUsage, provider, model);
+    elements.speedModel.textContent = label;
+    elements.modelSpeed.textContent = observed ? `${observed.speed.toFixed(1)} tok/s` : "— tok/s";
+    elements.modelSpeed.classList.toggle("is-measured", Boolean(observed));
+    elements.speedDetail.textContent = observed
+      ? `Observed output throughput · ${observed.samples} ${observed.samples === 1 ? "reply" : "replies"}`
+      : "Appears after a metered reply";
   }
 
   function renderSourcePicker() {
@@ -444,6 +492,178 @@ function startPanel() {
       : '<div class="empty-state">No enabled models to show.</div>';
     const pickerCount = pickerModels.filter((model) => !hiddenModels.has(model.slug)).length;
     elements.pickerSummary.textContent = `${pickerCount} visible · ${hiddenModels.size} hidden`;
+  }
+
+  function renderLocalModels() {
+    const local = state.localModels || {};
+    const installed = local.models || [];
+    const download = visibleLocalDownload(local);
+    const busy = state.localModelBusy;
+    elements.localModelSummary.textContent = installed.length
+      ? `${installed.length} installed · ${(Number(local.totalGb) || 0).toFixed(1)} GB`
+      : "none installed";
+
+    elements.localModelOperation.hidden = !busy;
+    if (busy) {
+      const label = busy.kind === "uninstall" ? "Uninstalling" : busy.kind === "install" ? "Installing" : "Applying";
+      elements.localModelOperation.innerHTML = `<span class="operation-pulse" aria-hidden="true"></span><span><strong>${label} local model</strong><small>${escapeHtml(busy.tag)}</small></span><span class="operation-spinner" aria-hidden="true"></span>`;
+      elements.localModelOperation.classList.toggle("is-danger", busy.kind === "uninstall");
+    }
+
+    if (download) {
+      const running = download.status === "downloading";
+      const failed = download.status === "error";
+      const percent = Math.max(0, Math.min(100, Number(download.percent) || 0));
+      const title = failed ? "Local model install failed" : running ? "Installing local model" : "Local model ready";
+      elements.localDownloadStatus.innerHTML = `<div class="download-status${failed ? " is-error" : running ? " is-running" : " is-ready"}">
+        <div><span class="operation-pulse" aria-hidden="true"></span><strong>${title}</strong><span>${failed ? "" : `${percent}%`}</span></div>
+        <small>${escapeHtml(download.tag || "Local model")}${download.error || download.detail ? ` · ${escapeHtml(download.error || download.detail)}` : ""}</small>
+        ${running ? `<progress max="100" value="${percent}" aria-label="Installing ${escapeHtml(download.tag || "local model")} ${percent}%"></progress>` : ""}
+      </div>`;
+    } else {
+      elements.localDownloadStatus.innerHTML = "";
+    }
+
+    elements.localModelList.innerHTML = installed.length
+      ? installed.map((model) => localModelRow(model, busy)).join("")
+      : '<div class="empty-state local-empty">Nothing installed. Choose a quick pick or enter an Ollama tag below.</div>';
+
+    const installBusy = Boolean(busy) || download?.status === "downloading";
+    elements.localModelInput.disabled = installBusy;
+    elements.localModelForm.querySelector("button").disabled = installBusy;
+    const picks = (local.available || []).slice(0, 4);
+    elements.localQuickPicks.innerHTML = picks.length
+      ? `<div class="local-section-label"><span>Quick picks</span><small>recommended for this machine</small></div>${picks
+          .map(
+            (model) => `<button type="button" class="quick-pick" data-local-action="install" data-model="${escapeHtml(model.tag)}"${installBusy ? " disabled" : ""}>
+              <span><strong>${escapeHtml(model.tag)}</strong><small>${escapeHtml(model.codex === "verified" ? "verified in Codex" : model.fit || "untested")}</small></span>
+              <span>${Number(model.sizeGb || 0).toFixed(1)} GB</span>
+            </button>`,
+          )
+          .join("")}`
+      : "";
+  }
+
+  function localModelRow(model, busy) {
+    const isBusy = busy?.tag === model.tag;
+    const armed = state.localRemoveArmed === model.tag;
+    const speed = model.tokensPerSecond === null || model.tokensPerSecond === undefined
+      ? Number.NaN
+      : Number(model.tokensPerSecond);
+    const detail = [
+      model.agent === "agent" ? "works in Codex" : model.tools ? "chat untested" : "no tool calling",
+      Number.isFinite(speed) ? `${speed.toFixed(1)} tok/s` : "speed unmeasured",
+    ].join(" · ");
+    return `<article class="local-model-row${isBusy ? " is-busy" : ""}">
+      <label class="provider-check"><input type="checkbox" data-local-toggle="${escapeHtml(model.tag)}" aria-label="Enable ${escapeHtml(model.tag)} in Codex"${model.enabled ? " checked" : ""}${busy || model.tools !== true ? " disabled" : ""}></label>
+      <div><strong>${escapeHtml(model.tag)}</strong><small>${escapeHtml(detail)}</small></div>
+      <span class="local-size">${Number(model.sizeGb || 0).toFixed(1)} GB</span>
+      <button class="mini-button danger" type="button" data-local-action="${armed ? "confirm-remove" : "remove"}" data-model="${escapeHtml(model.tag)}"${busy ? " disabled" : ""}>${armed ? "Confirm" : "Remove"}</button>
+    </article>`;
+  }
+
+  async function handleLocalModelInstall(event) {
+    event.preventDefault();
+    const model = elements.localModelInput.value.trim();
+    if (!model) {
+      showToast("Enter an Ollama model tag or model-page URL.", true);
+      return;
+    }
+    elements.localModelInput.value = "";
+    await startLocalInstall(model);
+  }
+
+  async function handleLocalModelClick(event) {
+    const button = event.target.closest("button[data-local-action]");
+    if (!button) return;
+    const model = button.dataset.model;
+    if (button.dataset.localAction === "install") {
+      await startLocalInstall(model);
+      return;
+    }
+    if (button.dataset.localAction === "remove") {
+      state.localRemoveArmed = model;
+      renderLocalModels();
+      return;
+    }
+    if (button.dataset.localAction !== "confirm-remove") return;
+    const startedAt = Date.now();
+    state.localRemoveArmed = null;
+    state.localModelBusy = { kind: "uninstall", tag: model };
+    renderLocalModels();
+    try {
+      state.localModels = await call("uninstall_local_model", { model });
+      const remaining = 800 - (Date.now() - startedAt);
+      if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining));
+      showToast(`${model} removed from this machine.`);
+      await refreshPanel({ quiet: true });
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      state.localModelBusy = null;
+      renderLocalModels();
+    }
+  }
+
+  async function handleLocalModelToggle(event) {
+    const checkbox = event.target.closest("input[data-local-toggle]");
+    if (!checkbox) return;
+    const model = checkbox.dataset.localToggle;
+    const enabled = checkbox.checked;
+    state.localModelBusy = { kind: "toggle", tag: model };
+    renderLocalModels();
+    try {
+      state.localModels = await call("set_local_model_enabled", { model, enabled });
+      await refreshPanel({ quiet: true });
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      state.localModelBusy = null;
+      renderLocalModels();
+    }
+  }
+
+  async function startLocalInstall(model) {
+    state.localRemoveArmed = null;
+    state.localModelBusy = { kind: "install", tag: model };
+    state.localModels = {
+      ...(state.localModels || {}),
+      download: { tag: model, status: "downloading", detail: "starting", percent: 0 },
+    };
+    renderLocalModels();
+    try {
+      await call("install_local_model", { model });
+      await pollLocalInstall(model);
+    } catch (error) {
+      try {
+        state.localModels = await call("local_models");
+      } catch {}
+      showToast(errorMessage(error), true);
+      state.localModelBusy = null;
+      renderLocalModels();
+    }
+  }
+
+  async function pollLocalInstall(model) {
+    window.clearTimeout(state.localPollTimer);
+    try {
+      state.localModels = await call("local_models");
+      renderLocalModels();
+      const download = state.localModels?.download;
+      if (download?.status === "downloading") {
+        state.localPollTimer = window.setTimeout(() => pollLocalInstall(model), 1_000);
+        return;
+      }
+      state.localModelBusy = null;
+      if (download?.status === "done") {
+        showToast(`${download.tag || model} is ready. Restart Codex to refresh its model picker.`);
+      } else if (download?.status === "error") {
+        showToast(download.error || "The local model install failed.", true);
+      }
+      await refreshPanel({ quiet: true });
+    } catch (error) {
+      state.localPollTimer = window.setTimeout(() => pollLocalInstall(model), 1_500);
+    }
   }
 
   async function handleSubagentAllToggle() {

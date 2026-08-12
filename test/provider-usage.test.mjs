@@ -76,6 +76,7 @@ test("breaks provider usage down by model, heaviest first", () => {
         provider: "deepseek",
         model: "deepseek/deepseek-v4-flash",
         status: 200,
+        durationMs: 2_000,
         inputTokens: 100,
         outputTokens: 40,
         totalTokens: 140,
@@ -86,6 +87,7 @@ test("breaks provider usage down by model, heaviest first", () => {
         provider: "deepseek",
         model: "deepseek/deepseek-v4-pro",
         status: 200,
+        durationMs: 4_000,
         inputTokens: 900,
         outputTokens: 100,
         totalTokens: 1_000,
@@ -96,6 +98,7 @@ test("breaks provider usage down by model, heaviest first", () => {
         provider: "deepseek",
         model: "deepseek/deepseek-v4-flash",
         status: 500,
+        durationMs: 100,
         inputTokens: 10,
         outputTokens: 0,
         totalTokens: 10,
@@ -116,11 +119,38 @@ test("breaks provider usage down by model, heaviest first", () => {
   assert.equal(flash.successfulRequests, 1);
   assert.equal(flash.totalTokens, 150);
   assert.equal(flash.inputTokens, 110);
+  assert.equal(flash.observedTokensPerSecond, 20);
+  assert.equal(flash.speedSampleCount, 1);
   assert.equal(flash.lastUsedAt, "2026-07-21T12:00:00.000Z");
 
   // Per-model totals must reconcile with the provider rollup they came from.
   const summed = deepseek.models.reduce((total, model) => total + model.totalTokens, 0);
   assert.equal(summed, deepseek.totalTokens);
+});
+
+test("reports no observed speed when successful requests have no metered output", () => {
+  const now = Date.parse("2026-07-21T18:00:00Z");
+  const snapshot = aggregateProviderUsage(
+    [
+      {
+        meteringVersion: 1,
+        at: "2026-07-21T12:00:00Z",
+        provider: "deepseek",
+        model: "deepseek/deepseek-v4-flash",
+        status: 200,
+        durationMs: 1_000,
+        inputTokens: 100,
+        totalTokens: 100,
+      },
+    ],
+    { days: 7, now },
+  );
+  const model = snapshot.providers
+    .find((provider) => provider.id === "deepseek")
+    .models[0];
+
+  assert.equal(model.observedTokensPerSecond, null);
+  assert.equal(model.speedSampleCount, 0);
 });
 
 test("keeps unlabeled model traffic visible instead of dropping it", () => {

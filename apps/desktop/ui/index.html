@@ -71,6 +71,15 @@
           <div id="chart-days" class="chart-days" aria-hidden="true"></div>
         </article>
 
+        <article class="speed-strip" aria-live="polite">
+          <div>
+            <span class="metric-label">Model speed</span>
+            <strong id="speed-model">No model observed</strong>
+            <small id="speed-detail">Appears after a metered reply</small>
+          </div>
+          <strong id="model-speed" class="speed-value">— tok/s</strong>
+        </article>
+
         <div class="section-heading">
           <div>
             <p class="eyebrow">Allowance</p>
@@ -145,6 +154,31 @@
               <button class="text-button" type="button" data-model-action="picker" data-action="hide-all">Unselect all</button>
             </div>
             <div id="picker-model-list" class="model-settings-list"></div>
+          </div>
+        </div>
+
+        <div class="accordion">
+          <button class="accordion-header" type="button" data-accordion="local" aria-expanded="true">
+            <span>
+              <strong>Local LLMs</strong>
+              <small id="local-model-summary">Loading…</small>
+            </span>
+            <span class="accordion-chevron" aria-hidden="true"></span>
+          </button>
+          <div class="accordion-body is-open" data-accordion-body="local">
+            <p class="accordion-note">Run models locally through Ollama. Installed models remain on this machine.</p>
+            <div id="local-model-operation" class="operation-banner" role="status" hidden></div>
+            <div id="local-download-status" aria-live="polite"></div>
+            <div id="local-model-list" class="local-model-list"></div>
+            <form id="local-model-form" class="local-install-form">
+              <label for="local-model-input">Install a model</label>
+              <div>
+                <input id="local-model-input" type="text" autocomplete="off" spellcheck="false" placeholder="gemma4:12b or ollama.com/library/gemma4:12b" />
+                <button class="mini-button" type="submit">Install</button>
+              </div>
+              <small>Enter an Ollama tag or model-page URL.</small>
+            </form>
+            <div id="local-quick-picks" class="local-quick-picks"></div>
           </div>
         </div>
       </section>

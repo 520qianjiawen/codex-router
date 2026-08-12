@@ -619,7 +619,7 @@ want, then fully quit and reopen Codex.
 
 ```sh
 ./bin/control local-models list                  # installed, plus what to download
-./bin/control local-models install llama3.2:3b   # download, with progress
+./bin/control local-models install llama3.2:3b --yes # download, with progress
 ./bin/control local-models set llama3.2:3b on    # publish it to Codex
 ./bin/control local-models uninstall llava --yes # delete it from disk
 ```
@@ -640,6 +640,12 @@ For reading images only — cannot code:
   qwen2.5vl:3b         3.2 GB  accurate
   moondream            1.7 GB  captions-only
 ```
+
+The tray's **View more** panel also exposes the full 178-tag snapshot captured
+from the official Ollama pages for Gemma 4, Qwen 3.5/3.6, Nemotron 3 Super,
+Ornith, Nemotron 3, and Muse Glimmer, including quantized and MLX variants.
+Cloud aliases are listed for completeness but marked cloud-only and cannot be
+downloaded as local weights.
 
 A tool template is a floor, not a prediction — it has been wrong in both
 directions here. What settles it is running the real client:
@@ -670,6 +676,12 @@ Checking, installing, and removing are three separate actions on purpose:
 unchecking never deletes a download, and removing needs explicit confirmation.
 The `local` provider turns itself on with the first checked model and off when
 the last one clears, so there is no second switch to find.
+
+Checking or unchecking a model refreshes the picker and gateway routes, then
+restarts the router service so the running process actually serves the new
+`local/...` route. A router running in the foreground (for example during
+development) has no service to restart, so restart that process yourself after
+toggling a model.
 
 **Codex needs tool calling, and most local models do not have it.** Codex drives
 every turn through tool calls, so a model without them fails on its first
@@ -897,9 +909,10 @@ at the top of the list. Download sizes come from Ollama's registry (refreshed
 weekly, cached, falling back to the checked-in figures offline), so they match
 what `ollama list` will show you.
 
-**Any other model.** The curated list is short on purpose, but it is not a
-cage: the tray's Local LLMs section has a field that accepts any Ollama tag —
-including `hf.co/user/repo:Q4_K_M` — and the CLI takes one too.
+**Any other model.** The checked-in tag snapshot is refreshed separately from
+Ollama, but it is not a cage: the tray's Local LLMs section has a field that
+accepts any Ollama tag — including `hf.co/user/repo:Q4_K_M` — and the CLI takes
+one too.
 
 ```sh
 ./bin/control vision-bridge pull minicpm-v
