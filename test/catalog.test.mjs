@@ -18,6 +18,7 @@ import {
   clampModelEfforts,
   codexEffortVocabulary,
   nativeCatalogIsReusable,
+  mergeNativeCatalogs,
   promoteNativeMultiAgent,
   routedCatalogConfigured,
   routedModel,
@@ -553,10 +554,23 @@ test("models stay untouched when the installed build understands their efforts",
 });
 
 test("native catalog cache is reusable only for the codex build that captured it", () => {
-  const captured = { captured_with: "codex-cli 0.142.5", models: [template] };
+  const captured = {
+    captured_with: "codex-cli 0.142.5",
+    native_source_fingerprint: "account-a",
+    models: [template],
+  };
 
   assert.equal(nativeCatalogIsReusable(captured, "codex-cli 0.142.5"), true);
   assert.equal(nativeCatalogIsReusable(captured, "codex-cli 0.146.1"), false);
+  // Account catalogs change independently of the binary version.
+  assert.equal(
+    nativeCatalogIsReusable(captured, "codex-cli 0.142.5", "account-b"),
+    false,
+  );
+  assert.equal(
+    nativeCatalogIsReusable(captured, "codex-cli 0.142.5", "account-a"),
+    true,
+  );
   // Unknown current version: no binary to re-ask, so keep what we have.
   assert.equal(nativeCatalogIsReusable(captured, undefined), true);
   // Un-stamped caches predate version tracking; re-capture when we can ask.
@@ -565,6 +579,67 @@ test("native catalog cache is reusable only for the codex build that captured it
   // Invalid or empty caches are never reusable.
   assert.equal(nativeCatalogIsReusable(undefined, undefined), false);
   assert.equal(nativeCatalogIsReusable({ models: [] }, "codex-cli 0.146.1"), false);
+});
+
+test("native catalog merge preserves account visibility and bundled-only models", () => {
+  const accountMini = {
+    slug: "gpt-mini",
+    visibility: "list",
+    source: "account",
+    model_messages: { instructions_template: "account instructions" },
+  };
+  const merged = mergeNativeCatalogs(
+    {
+      models: [
+        accountMini,
+        {
+          slug: "gpt-spark",
+          visibility: "list",
+          model_messages: { instructions_template: "spark instructions" },
+        },
+      ],
+    },
+    {
+      models: [
+        {
+          slug: "gpt-mini",
+          visibility: "hide",
+          source: "bundled",
+          base_instructions: "bundled instructions",
+        },
+        { slug: "gpt-bundled-only", visibility: "list" },
+      ],
+    },
+  );
+  assert.deepEqual(merged.models, [
+    {
+      ...accountMini,
+      base_instructions: "bundled instructions",
+    },
+    {
+      slug: "gpt-spark",
+      visibility: "list",
+      model_messages: { instructions_template: "spark instructions" },
+      base_instructions: "spark instructions",
+    },
+    { slug: "gpt-bundled-only", visibility: "list" },
+  ]);
+});
+
+test("account-only models satisfy the strict custom-catalog instruction schema", () => {
+  const [spark] = mergeNativeCatalogs(
+    {
+      models: [
+        {
+          slug: "gpt-spark",
+          visibility: "list",
+          model_messages: { instructions_template: "spark instructions" },
+        },
+      ],
+    },
+    { models: [{ slug: "other", base_instructions: "other instructions" }] },
+  ).models;
+  assert.equal(spark.base_instructions, "spark instructions");
 });
 
 test("native listed models follow the local subagent opt-in", () => {
