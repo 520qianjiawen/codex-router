@@ -131,9 +131,10 @@
                 <span class="sr-only">Use all selected models as subagents</span>
               </label>
             </div>
+            <p class="accordion-note">Choices here decide what Codex can spawn as a subagent. They do not hide anything from Codex's model picker — use Model picker below for that.</p>
             <div class="accordion-toolbar">
-              <button class="text-button" type="button" data-model-action="subagents" data-action="select-all">Select all</button>
-              <button class="text-button" type="button" data-model-action="subagents" data-action="unselect-all">Unselect all</button>
+              <button class="text-button" type="button" data-model-action="subagents" data-action="select-all">Subagents on</button>
+              <button class="text-button" type="button" data-model-action="subagents" data-action="unselect-all">Subagents off</button>
             </div>
             <div id="subagent-model-list" class="model-settings-list"></div>
           </div>
@@ -151,7 +152,7 @@
             <p class="accordion-note">Models hidden here stay connected but are not offered by Codex.</p>
             <div class="accordion-toolbar">
               <button class="text-button" type="button" data-model-action="picker" data-action="show-all">Show all</button>
-              <button class="text-button" type="button" data-model-action="picker" data-action="hide-all">Unselect all</button>
+              <button class="text-button" type="button" data-model-action="picker" data-action="hide-all">Hide all</button>
             </div>
             <div id="picker-model-list" class="model-settings-list"></div>
           </div>

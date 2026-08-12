@@ -139,7 +139,7 @@ export function grokCreditsMetrics(payload) {
   if (!config || typeof config !== "object") return [];
 
   const metrics = [];
-  const usagePct = numberValue(config.creditUsagePercent ?? config.credit_usage_percent);
+  const reportedPct = numberValue(config.creditUsagePercent ?? config.credit_usage_percent);
   const period = config.currentPeriod || config.current_period || {};
   const periodType = String(period.type || period.period_type || "");
   const periodEnd = period.end || config.billingPeriodEnd || config.billing_period_end;
@@ -148,6 +148,15 @@ export function grokCreditsMetrics(payload) {
     : periodType.includes("MONTHLY")
       ? "Monthly limit"
       : "Usage limit";
+
+  // The proxy serializes proto3 JSON, which drops zero-valued fields: a
+  // period with no recorded usage arrives without creditUsagePercent at all.
+  // The period itself proves the quota exists, so missing means 0% used.
+  const usagePct = Number.isFinite(reportedPct)
+    ? reportedPct
+    : periodType || periodEnd
+      ? 0
+      : undefined;
 
   if (Number.isFinite(usagePct)) {
     const usedPercent = Math.max(0, Math.min(100, usagePct));
@@ -201,6 +210,103 @@ export function grokCreditsMetrics(payload) {
   }
 
   return metrics;
+}
+
+// MiniMax reports coding-plan windows as remaining percentages per feature;
+// only the "general" entry covers the chat models this router forwards to
+// (other entries track video and image generation allowances).
+export function minimaxQuotaMetrics(payload) {
+  const entries = Array.isArray(payload?.model_remains) ? payload.model_remains : [];
+  const coding = entries.find((entry) => entry?.model_name === "general");
+  if (!coding) return [];
+  const windowMetric = (label, remainingValue, endMs) => {
+    const reported = numberValue(remainingValue);
+    if (!Number.isFinite(reported)) return undefined;
+    const remainingPercent = Math.max(0, Math.min(100, reported));
+    const usedPercent = 100 - remainingPercent;
+    const metric = {
+      kind: "quota",
+      label,
+      usedPercent,
+      remainingPercent,
+      used: usedPercent,
+      limit: 100,
+      remaining: remainingPercent,
+      unit: "percent",
+    };
+    const end = numberValue(endMs);
+    if (Number.isFinite(end) && end > 0) metric.resetAt = end / 1_000;
+    return metric;
+  };
+  const start = numberValue(coding.start_time);
+  const end = numberValue(coding.end_time);
+  const hours =
+    Number.isFinite(start) && Number.isFinite(end) && end > start
+      ? Math.round((end - start) / 3_600_000)
+      : undefined;
+  const intervalLabel = Number.isFinite(hours) && hours >= 1 ? `${hours}-hour limit` : "Current window";
+  return [
+    windowMetric(intervalLabel, coding.current_interval_remaining_percent, coding.end_time),
+    windowMetric("Weekly limit", coding.current_weekly_remaining_percent, coding.weekly_end_time),
+  ].filter(Boolean);
+}
+
+// opencode Zen reports Go-plan windows as used percentages. The rolling
+// window's duration is not part of the payload, so its label stays generic
+// instead of claiming a specific span.
+export function opencodeGoUsageMetrics(payload) {
+  const usage = payload?.usage;
+  if (!usage || typeof usage !== "object") return [];
+  const windowMetric = (label, detail) => {
+    const percent = numberValue(detail?.percent);
+    if (!Number.isFinite(percent)) return undefined;
+    const usedPercent = Math.max(0, Math.min(100, percent));
+    const metric = {
+      kind: "quota",
+      label,
+      usedPercent,
+      remainingPercent: 100 - usedPercent,
+      used: usedPercent,
+      limit: 100,
+      remaining: 100 - usedPercent,
+      unit: "percent",
+    };
+    const resetAt = resetTimestamp(detail?.resetsAt ?? detail?.reset_at);
+    if (resetAt !== undefined) metric.resetAt = resetAt;
+    return metric;
+  };
+  return [
+    windowMetric("Rolling limit", usage.rolling),
+    windowMetric("Weekly limit", usage.weekly),
+    windowMetric("Monthly limit", usage.monthly),
+  ].filter(Boolean);
+}
+
+// Command Code's billing API reports plan windows as used/cap credit
+// counters; resetAt is an epoch that stays 0 until the window first opens.
+export function commandCodeCreditsMetrics(payload) {
+  const windows = payload?.windowLimits;
+  if (!windows || typeof windows !== "object") return [];
+  const windowMetric = (label, detail) => {
+    if (!detail || typeof detail !== "object") return undefined;
+    const resetRaw = numberValue(detail.resetAt);
+    const resetMs = Number.isFinite(resetRaw) && resetRaw > 0
+      ? resetRaw > 1e12 ? resetRaw : resetRaw * 1_000
+      : undefined;
+    return quotaMetric(
+      label,
+      {
+        limit: detail.cap,
+        used: detail.used,
+        ...(resetMs !== undefined ? { resetTime: new Date(resetMs).toISOString() } : {}),
+      },
+      "credits",
+    );
+  };
+  return [
+    windowMetric("5-hour limit", windows.fiveHour),
+    windowMetric("Weekly limit", windows.weekly),
+  ].filter(Boolean);
 }
 
 export function githubCopilotQuotaMetrics(payload) {
@@ -336,6 +442,44 @@ async function chutesAccount(fetchImpl) {
     metrics,
     dashboardUrl: "https://chutes.ai/app",
   };
+}
+
+async function opencodeGoAccount(fetchImpl) {
+  const provider = PROVIDERS.get("opencode-go");
+  const credential = resolveProviderCredential(provider);
+  if (!credential) return { status: "not-configured", source: "official-api", metrics: [] };
+  const baseURL = (process.env[provider.baseUrlEnv] || provider.baseUrl).replace(/\/+$/, "");
+  if (new URL(baseURL).origin !== "https://opencode.ai") {
+    return localOnly("Plan usage is unavailable for a custom opencode endpoint");
+  }
+  const payload = await requestJson(`${baseURL}/usage`, credential.value, {}, fetchImpl);
+  const metrics = opencodeGoUsageMetrics(payload);
+  if (!metrics.length) throw new Error("opencode usage response was incomplete");
+  return { status: "available", source: "official-api", metrics };
+}
+
+const MINIMAX_ACCOUNT_HOSTS = new Set(["api.minimax.io", "api.minimaxi.com"]);
+
+async function minimaxTokenPlanAccount(fetchImpl) {
+  const provider = PROVIDERS.get("minimax-token-plan");
+  const credential = resolveProviderCredential(provider);
+  if (!credential) return { status: "not-configured", source: "official-api", metrics: [] };
+  const baseURL = (process.env[provider.baseUrlEnv] || provider.baseUrl).replace(/\/+$/, "");
+  if (!MINIMAX_ACCOUNT_HOSTS.has(new URL(baseURL).hostname)) {
+    return localOnly("Plan usage is unavailable for a custom MiniMax endpoint");
+  }
+  const payload = await requestJson(`${baseURL}/coding_plan/remains`, credential.value, {}, fetchImpl);
+  const status = payload?.base_resp?.status_code;
+  if (status !== undefined && status !== 0) {
+    throw new Error(
+      typeof payload?.base_resp?.status_msg === "string" && payload.base_resp.status_msg
+        ? payload.base_resp.status_msg
+        : `MiniMax coding plan API returned status ${status}`,
+    );
+  }
+  const metrics = minimaxQuotaMetrics(payload);
+  if (!metrics.length) throw new Error("MiniMax coding plan response was incomplete");
+  return { status: "available", source: "official-api", metrics };
 }
 
 async function kimiOAuthAccount(fetchImpl) {
@@ -524,6 +668,43 @@ async function zaiCodingAccount(fetchImpl) {
   return account;
 }
 
+// The credits route is the one the official Command Code CLI polls; it is
+// not in the public docs, so any failure degrades to the Studio link and
+// observed router traffic instead of an error state.
+async function commandCodeAccount(fetchImpl) {
+  const provider = PROVIDERS.get("commandcode");
+  const credential = resolveProviderCredential(provider);
+  if (!credential) return { status: "not-configured", source: "official-api", metrics: [] };
+  const fallback = (message) => ({
+    ...withHeaderQuota("commandcode", localOnly(message)),
+    dashboardUrl: COMMANDCODE_DASHBOARD_URL,
+  });
+  const baseURL = (process.env[provider.baseUrlEnv] || provider.baseUrl).replace(/\/+$/, "");
+  if (new URL(baseURL).origin !== "https://api.commandcode.ai") {
+    return fallback("Account usage is unavailable for a custom Command Code endpoint");
+  }
+  try {
+    const payload = await requestJson(
+      "https://api.commandcode.ai/alpha/billing/credits",
+      credential.value,
+      {},
+      fetchImpl,
+    );
+    const metrics = commandCodeCreditsMetrics(payload);
+    if (!metrics.length) {
+      return fallback("Command Code reported no plan windows; showing router traffic");
+    }
+    return {
+      status: "available",
+      source: "official-api",
+      metrics,
+      dashboardUrl: COMMANDCODE_DASHBOARD_URL,
+    };
+  } catch {
+    return fallback("Command Code account usage is unavailable; showing router traffic");
+  }
+}
+
 async function githubCopilotAccount(fetchImpl) {
   const credential = resolveProviderCredential("github-copilot");
   if (!credential) return { status: "not-configured", source: "official-api", metrics: [] };
@@ -598,17 +779,9 @@ async function accountUsageFor(providerId, fetchImpl) {
           }
         : { status: "not-configured", source: "official-api", metrics: [] };
     }
-    if (providerId === "commandcode") {
-      return resolveProviderCredential("commandcode")
-        ? {
-            ...withHeaderQuota(
-              providerId,
-              localOnly("Command Code shows credits and usage only in Studio; showing router traffic"),
-            ),
-            dashboardUrl: COMMANDCODE_DASHBOARD_URL,
-          }
-        : { status: "not-configured", source: "official-api", metrics: [] };
-    }
+    if (providerId === "commandcode") return await commandCodeAccount(fetchImpl);
+    if (providerId === "minimax-token-plan") return await minimaxTokenPlanAccount(fetchImpl);
+    if (providerId === "opencode-go") return await opencodeGoAccount(fetchImpl);
     if (providerId === "github-copilot") return await githubCopilotAccount(fetchImpl);
     // Every remaining provider — including the catalog-only ones — reports its
     // window through response headers or shows router traffic alone.

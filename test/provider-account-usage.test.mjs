@@ -4,11 +4,14 @@ import test from "node:test";
 import {
   chutesBalanceMetrics,
   chutesSubscriptionMetrics,
+  commandCodeCreditsMetrics,
   deepSeekBalanceMetrics,
   githubCopilotQuotaMetrics,
   grokCreditsMetrics,
   kimiApiBalanceMetrics,
   kimiQuotaMetrics,
+  minimaxQuotaMetrics,
+  opencodeGoUsageMetrics,
   providerAccountUsageSnapshot,
 } from "../src/provider-account-usage.mjs";
 
@@ -216,21 +219,299 @@ test("does not poll account endpoints for disabled providers", async () => {
   assert.ok(Object.values(snapshot).every((account) => account.status === "disabled"));
 });
 
-test("Command Code usage degrades to the Studio link without an account API", async () => {
+test("Command Code usage reads plan windows from the billing credits API", async () => {
   delete process.env.COMMAND_CODE_API_KEY;
   delete process.env.COMMANDCODE_API_KEY;
   process.env.COMMAND_CODE_API_KEY = "TEST_COMMANDCODE_USAGE_KEY";
   try {
     const snapshot = await providerAccountUsageSnapshot({
       providerIds: ["commandcode"],
-      fetchImpl: async () => {
-        throw new Error("Command Code usage should not reach an undocumented endpoint");
+      fetchImpl: async (url, options) => {
+        assert.equal(url, "https://api.commandcode.ai/alpha/billing/credits");
+        assert.equal(options.headers.Authorization, "Bearer TEST_COMMANDCODE_USAGE_KEY");
+        return new Response(JSON.stringify({
+          credits: { monthlyCredits: 10, purchasedCredits: 0, freeCredits: 0 },
+          windowLimits: {
+            limited: true,
+            fiveHour: { used: 1, cap: 3, exceeded: false, resetAt: 1_786_579_200 },
+            weekly: { used: 2, cap: 6, exceeded: false, resetAt: 0 },
+          },
+        }));
       },
+    });
+    assert.equal(snapshot.commandcode.status, "available");
+    assert.equal(snapshot.commandcode.dashboardUrl, "https://commandcode.ai/studio");
+    assert.deepEqual(snapshot.commandcode.metrics, [
+      {
+        kind: "quota",
+        label: "5-hour limit",
+        usedPercent: (1 / 3) * 100,
+        remainingPercent: 100 - (1 / 3) * 100,
+        used: 1,
+        limit: 3,
+        remaining: 2,
+        unit: "credits",
+        resetAt: 1_786_579_200,
+      },
+      {
+        kind: "quota",
+        label: "Weekly limit",
+        usedPercent: (2 / 6) * 100,
+        remainingPercent: 100 - (2 / 6) * 100,
+        used: 2,
+        limit: 6,
+        remaining: 4,
+        unit: "credits",
+      },
+    ]);
+    assert.doesNotMatch(JSON.stringify(snapshot), /TEST_COMMANDCODE_USAGE_KEY/);
+  } finally {
+    delete process.env.COMMAND_CODE_API_KEY;
+  }
+});
+
+test("Command Code usage degrades to the Studio link when the credits API fails", async () => {
+  delete process.env.COMMAND_CODE_API_KEY;
+  delete process.env.COMMANDCODE_API_KEY;
+  process.env.COMMAND_CODE_API_KEY = "TEST_COMMANDCODE_USAGE_KEY";
+  try {
+    const snapshot = await providerAccountUsageSnapshot({
+      providerIds: ["commandcode"],
+      fetchImpl: async () => new Response("nope", { status: 503 }),
     });
     assert.equal(snapshot.commandcode.status, "local-only");
     assert.equal(snapshot.commandcode.dashboardUrl, "https://commandcode.ai/studio");
   } finally {
     delete process.env.COMMAND_CODE_API_KEY;
+  }
+});
+
+test("Command Code usage avoids the billing API for a custom endpoint", async () => {
+  delete process.env.COMMAND_CODE_API_KEY;
+  delete process.env.COMMANDCODE_API_KEY;
+  process.env.COMMAND_CODE_API_KEY = "TEST_COMMANDCODE_CUSTOM_KEY";
+  process.env.COMMANDCODE_BASE_URL = "https://example.test/provider/v1";
+  try {
+    const snapshot = await providerAccountUsageSnapshot({
+      providerIds: ["commandcode"],
+      fetchImpl: async () => {
+        throw new Error("custom Command Code endpoints must not trigger billing API calls");
+      },
+    });
+    assert.equal(snapshot.commandcode.status, "local-only");
+    assert.match(snapshot.commandcode.message, /custom Command Code endpoint/);
+  } finally {
+    delete process.env.COMMAND_CODE_API_KEY;
+    delete process.env.COMMANDCODE_BASE_URL;
+  }
+});
+
+test("normalizes opencode Go rolling, weekly, and monthly windows", () => {
+  assert.deepEqual(opencodeGoUsageMetrics({
+    usage: {
+      rolling: { status: "ok", percent: 1, resetsAt: "2026-08-13T01:32:51.675Z" },
+      weekly: { status: "ok", percent: 67, resetsAt: "2026-08-17T00:00:00.675Z" },
+      monthly: { status: "ok", percent: 52, resetsAt: "2026-09-04T23:37:45.675Z" },
+    },
+  }), [
+    {
+      kind: "quota",
+      label: "Rolling limit",
+      usedPercent: 1,
+      remainingPercent: 99,
+      used: 1,
+      limit: 100,
+      remaining: 99,
+      unit: "percent",
+      resetAt: 1786584771.675,
+    },
+    {
+      kind: "quota",
+      label: "Weekly limit",
+      usedPercent: 67,
+      remainingPercent: 33,
+      used: 67,
+      limit: 100,
+      remaining: 33,
+      unit: "percent",
+      resetAt: 1786924800.675,
+    },
+    {
+      kind: "quota",
+      label: "Monthly limit",
+      usedPercent: 52,
+      remainingPercent: 48,
+      used: 52,
+      limit: 100,
+      remaining: 48,
+      unit: "percent",
+      resetAt: 1788565065.675,
+    },
+  ]);
+});
+
+test("opencode Go usage reads the Zen usage API", async () => {
+  const saved = process.env.OPENCODE_API_KEY;
+  process.env.OPENCODE_API_KEY = "TEST_OPENCODE_USAGE_KEY";
+  try {
+    const snapshot = await providerAccountUsageSnapshot({
+      providerIds: ["opencode-go"],
+      fetchImpl: async (url, options) => {
+        assert.equal(url, "https://opencode.ai/zen/go/v1/usage");
+        assert.equal(options.headers.Authorization, "Bearer TEST_OPENCODE_USAGE_KEY");
+        return new Response(JSON.stringify({
+          usage: {
+            rolling: { status: "ok", percent: 5, resetsAt: "2026-08-13T01:00:00Z" },
+            weekly: { status: "ok", percent: 60, resetsAt: "2026-08-17T00:00:00Z" },
+          },
+        }));
+      },
+    });
+    assert.equal(snapshot["opencode-go"].status, "available");
+    assert.equal(snapshot["opencode-go"].metrics.length, 2);
+    assert.equal(snapshot["opencode-go"].metrics[1].remainingPercent, 40);
+    assert.doesNotMatch(JSON.stringify(snapshot), /TEST_OPENCODE_USAGE_KEY/);
+  } finally {
+    if (saved === undefined) delete process.env.OPENCODE_API_KEY;
+    else process.env.OPENCODE_API_KEY = saved;
+  }
+});
+
+test("opencode Go usage avoids the Zen API for a custom endpoint", async () => {
+  const savedKey = process.env.OPENCODE_API_KEY;
+  const savedBase = process.env.OPENCODE_GO_BASE_URL;
+  process.env.OPENCODE_API_KEY = "TEST_OPENCODE_CUSTOM_KEY";
+  process.env.OPENCODE_GO_BASE_URL = "https://example.test/zen/go/v1";
+  try {
+    const snapshot = await providerAccountUsageSnapshot({
+      providerIds: ["opencode-go"],
+      fetchImpl: async () => {
+        throw new Error("custom opencode endpoints must not trigger usage API calls");
+      },
+    });
+    assert.equal(snapshot["opencode-go"].status, "local-only");
+    assert.match(snapshot["opencode-go"].message, /custom opencode endpoint/);
+  } finally {
+    if (savedKey === undefined) delete process.env.OPENCODE_API_KEY;
+    else process.env.OPENCODE_API_KEY = savedKey;
+    if (savedBase === undefined) delete process.env.OPENCODE_GO_BASE_URL;
+    else process.env.OPENCODE_GO_BASE_URL = savedBase;
+  }
+});
+
+test("normalizes MiniMax coding plan windows from the general entry only", () => {
+  assert.deepEqual(minimaxQuotaMetrics({
+    model_remains: [
+      {
+        model_name: "general",
+        start_time: 1_786_564_800_000,
+        end_time: 1_786_579_200_000,
+        current_interval_remaining_percent: 98,
+        current_weekly_remaining_percent: 82,
+        weekly_end_time: 1_786_924_800_000,
+      },
+      {
+        model_name: "video",
+        current_interval_remaining_percent: 10,
+        current_weekly_remaining_percent: 10,
+      },
+    ],
+    base_resp: { status_code: 0, status_msg: "success" },
+  }), [
+    {
+      kind: "quota",
+      label: "4-hour limit",
+      usedPercent: 2,
+      remainingPercent: 98,
+      used: 2,
+      limit: 100,
+      remaining: 98,
+      unit: "percent",
+      resetAt: 1_786_579_200,
+    },
+    {
+      kind: "quota",
+      label: "Weekly limit",
+      usedPercent: 18,
+      remainingPercent: 82,
+      used: 18,
+      limit: 100,
+      remaining: 82,
+      unit: "percent",
+      resetAt: 1_786_924_800,
+    },
+  ]);
+});
+
+test("MiniMax token plan usage reads the coding plan remains API", async () => {
+  const saved = process.env.MINIMAX_API_KEY;
+  process.env.MINIMAX_API_KEY = "TEST_MINIMAX_USAGE_KEY";
+  try {
+    const snapshot = await providerAccountUsageSnapshot({
+      providerIds: ["minimax-token-plan"],
+      fetchImpl: async (url, options) => {
+        assert.equal(url, "https://api.minimax.io/v1/coding_plan/remains");
+        assert.equal(options.headers.Authorization, "Bearer TEST_MINIMAX_USAGE_KEY");
+        return new Response(JSON.stringify({
+          model_remains: [{
+            model_name: "general",
+            start_time: 1_786_564_800_000,
+            end_time: 1_786_579_200_000,
+            current_interval_remaining_percent: 55,
+            current_weekly_remaining_percent: 40,
+            weekly_end_time: 1_786_924_800_000,
+          }],
+          base_resp: { status_code: 0, status_msg: "success" },
+        }));
+      },
+    });
+    assert.equal(snapshot["minimax-token-plan"].status, "available");
+    assert.equal(snapshot["minimax-token-plan"].metrics[0].remainingPercent, 55);
+    assert.equal(snapshot["minimax-token-plan"].metrics[1].label, "Weekly limit");
+    assert.doesNotMatch(JSON.stringify(snapshot), /TEST_MINIMAX_USAGE_KEY/);
+  } finally {
+    if (saved === undefined) delete process.env.MINIMAX_API_KEY;
+    else process.env.MINIMAX_API_KEY = saved;
+  }
+});
+
+test("MiniMax token plan usage surfaces an API error status", async () => {
+  const saved = process.env.MINIMAX_API_KEY;
+  process.env.MINIMAX_API_KEY = "TEST_MINIMAX_ERROR_KEY";
+  try {
+    const snapshot = await providerAccountUsageSnapshot({
+      providerIds: ["minimax-token-plan"],
+      fetchImpl: async () => new Response(JSON.stringify({
+        base_resp: { status_code: 1004, status_msg: "invalid api key" },
+      })),
+    });
+    assert.equal(snapshot["minimax-token-plan"].status, "unavailable");
+    assert.match(snapshot["minimax-token-plan"].message, /invalid api key/);
+  } finally {
+    if (saved === undefined) delete process.env.MINIMAX_API_KEY;
+    else process.env.MINIMAX_API_KEY = saved;
+  }
+});
+
+test("MiniMax token plan usage avoids the plan API for a custom endpoint", async () => {
+  const savedKey = process.env.MINIMAX_API_KEY;
+  const savedBase = process.env.MINIMAX_BASE_URL;
+  process.env.MINIMAX_API_KEY = "TEST_MINIMAX_CUSTOM_KEY";
+  process.env.MINIMAX_BASE_URL = "https://example.test/v1";
+  try {
+    const snapshot = await providerAccountUsageSnapshot({
+      providerIds: ["minimax-token-plan"],
+      fetchImpl: async () => {
+        throw new Error("custom MiniMax endpoints must not trigger plan API calls");
+      },
+    });
+    assert.equal(snapshot["minimax-token-plan"].status, "local-only");
+    assert.match(snapshot["minimax-token-plan"].message, /custom MiniMax endpoint/);
+  } finally {
+    if (savedKey === undefined) delete process.env.MINIMAX_API_KEY;
+    else process.env.MINIMAX_API_KEY = savedKey;
+    if (savedBase === undefined) delete process.env.MINIMAX_BASE_URL;
+    else process.env.MINIMAX_BASE_URL = savedBase;
   }
 });
 
@@ -426,6 +707,71 @@ test("normalizes Grok weekly credits usage from billing proxy", () => {
     unit: "percent",
     resetAt: 1784693470.883,
   }]);
+});
+
+test("treats a Grok period without creditUsagePercent as 0% used", () => {
+  // proto3 JSON omits zero-valued fields, so a fresh weekly window arrives
+  // with a currentPeriod but no creditUsagePercent at all.
+  assert.deepEqual(grokCreditsMetrics({
+    config: {
+      currentPeriod: {
+        type: "USAGE_PERIOD_TYPE_WEEKLY",
+        start: "2026-08-12T04:11:10.883403+00:00",
+        end: "2026-08-19T04:11:10.883403+00:00",
+      },
+      onDemandCap: { val: 0 },
+      onDemandUsed: { val: 0 },
+      prepaidBalance: { val: 0 },
+      isUnifiedBillingUser: true,
+    },
+  }), [{
+    kind: "quota",
+    label: "Weekly limit",
+    usedPercent: 0,
+    remainingPercent: 100,
+    used: 0,
+    limit: 100,
+    remaining: 100,
+    unit: "percent",
+    resetAt: 1787112670.883,
+  }]);
+});
+
+test("returns no Grok metrics for a config without any billing period", () => {
+  assert.deepEqual(grokCreditsMetrics({ config: { isUnifiedBillingUser: true } }), []);
+});
+
+test("normalizes Command Code plan windows and skips a zero resetAt", () => {
+  assert.deepEqual(commandCodeCreditsMetrics({
+    credits: { monthlyCredits: 10, purchasedCredits: 0, freeCredits: 0 },
+    windowLimits: {
+      limited: true,
+      fiveHour: { used: 0, cap: 3, exceeded: false, resetAt: 0 },
+      weekly: { used: 0, cap: 6, exceeded: false, resetAt: 1_786_579_200_000 },
+    },
+  }), [
+    {
+      kind: "quota",
+      label: "5-hour limit",
+      usedPercent: 0,
+      remainingPercent: 100,
+      used: 0,
+      limit: 3,
+      remaining: 3,
+      unit: "credits",
+    },
+    {
+      kind: "quota",
+      label: "Weekly limit",
+      usedPercent: 0,
+      remainingPercent: 100,
+      used: 0,
+      limit: 6,
+      remaining: 6,
+      unit: "credits",
+      resetAt: 1_786_579_200,
+    },
+  ]);
 });
 
 test("normalizes Grok prepaid credits and pay-as-you-go balance", () => {
