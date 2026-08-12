@@ -144,20 +144,71 @@ test("one companion location: the Node and shell sides name the same directory",
   assert.doesNotMatch(script, /\$repo_dir\/dist\/Model Router\.app"\}/);
 });
 
-test("the macOS tray never executes control from a text-selected checkout", () => {
+test("the macOS tray is signed only after its resources are assembled", () => {
+  const script = readFileSync(path.join(root, "scripts", "build-macos-tray-app.sh"), "utf8");
+  const resource = script.indexOf('Add :ModelRouterSourceRoot string $repo_dir');
+  const sign = script.indexOf('/usr/bin/codesign --force --deep --sign - "$bundle_dir"');
+  const verify = script.indexOf('/usr/bin/codesign --verify --deep --strict "$bundle_dir"');
+  assert.ok(resource >= 0, "the checkout link must be placed in the bundle");
+  assert.ok(sign > resource, "signing must happen after the final resource write");
+  assert.ok(verify > sign, "the completed signature must be verified");
+  assert.doesNotMatch(
+    script,
+    /cp -R .*ModelRouterTray_ModelRouterTray\.bundle" "\$bundle_dir\/"/,
+    "the SwiftPM resource bundle belongs only under Contents/Resources",
+  );
+});
+
+test("the macOS tray fingerprint stays outside the signed app bundle", () => {
+  const home = scratch();
+  try {
+    installTrayAt(home);
+    const stamp = recordTrayBuild({ root, platform: "darwin", home });
+    assert.equal(stamp, path.join(home, ".codex", "codex-router", "tray-build.json"));
+    assert.doesNotMatch(stamp, /Model Router\.app/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("tray updates stage a signed bundle before stopping and replacing the live app", () => {
+  const script = readFileSync(path.join(root, "bin", "model-router-tray"), "utf8");
+  const build = script.indexOf('build-macos-tray-app.sh" "$staged_bundle"');
+  const stop = script.indexOf("pgrep -x ModelRouterTray");
+  const replace = script.indexOf('mv "$staged_bundle" "$bundle_dir"');
+  assert.match(script, /mktemp -d "\$bundle_parent\/\.model-router-tray\.XXXXXX"/);
+  assert.ok(build >= 0, "the replacement must be built in staging");
+  assert.ok(stop > build, "the old tray stays alive until staging succeeds");
+  assert.ok(replace > stop, "the live bundle is replaced only after its process stops");
+});
+
+test("the macOS tray executes control only from the checkout sealed into Info.plist", () => {
   const source = readFileSync(
     path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "ModelRouterTrayApp.swift"),
     "utf8",
   );
   assert.doesNotMatch(source, /MODEL_ROUTER_SOURCE_ROOT/);
-  assert.match(source, /appendingPathComponent\("router-root"/);
+  assert.match(source, /object\(forInfoDictionaryKey: "ModelRouterSourceRoot"\)/);
   assert.doesNotMatch(source, /String\(contentsOf:/);
   assert.doesNotMatch(source, /currentDirectoryPath/);
   assert.match(source, /isExecutableFile\(atPath: control\.path\)/);
 
   const script = readFileSync(path.join(root, "scripts", "build-macos-tray-app.sh"), "utf8");
-  assert.match(script, /ln -sfn "\$repo_dir" "\$bundle_dir\/Contents\/Resources\/router-root"/);
-  assert.doesNotMatch(script, /> "\$bundle_dir\/Contents\/Resources\/router-root"/);
+  assert.match(script, /Add :ModelRouterSourceRoot string \$repo_dir/);
+  assert.doesNotMatch(script, /Contents\/Resources\/router-root/);
+});
+
+test("follow mode rechecks host presence and drains requests before stopping", () => {
+  const source = readFileSync(
+    path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "ModelRouterTrayApp.swift"),
+    "utf8",
+  );
+  assert.match(source, /hostAppAbsenceGrace = Duration\.seconds\(30\)/);
+  assert.match(source, /hostAppRecheckInterval = Duration\.seconds\(5\)/);
+  assert.match(source, /guard pendingServiceStop == nil else \{ return \}/);
+  assert.match(source, /activeRequestCount == 0 && activityState == \.idle/);
+  assert.match(source, /self\.refreshHostAppRunning\(\)/);
+  assert.match(source, /runServiceCommand\("stop"\)/);
 });
 
 // Every case names its platform explicitly. Letting it default to

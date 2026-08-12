@@ -154,11 +154,14 @@ final class RouterStore: ObservableObject {
   private let hostAppBundleIDs = ["com.openai.codex", "com.openai.chat"]
   private var workspaceObservers: [NSObjectProtocol] = []
   private var pendingServiceStop: Task<Void, Never>?
+  private var hostAppRecheck: Task<Void, Never>?
   private var serviceWork: Task<Void, Never>?
   private var serviceIntent: ServiceIntent = .unknown
   // Codex relaunches itself to apply updates, so a momentary disappearance must
-  // not bounce the router. Wait the absence out and re-check before stopping.
+  // not bounce the router. Wait the absence out and re-check the process list
+  // directly before stopping; workspace notifications are only hints.
   private let hostAppAbsenceGrace = Duration.seconds(30)
+  private let hostAppRecheckInterval = Duration.seconds(5)
   // A request in flight outlives the window that started it; retry rather than
   // cutting a generation off mid-stream.
   private let activeRequestRecheck = Duration.seconds(15)
@@ -262,9 +265,11 @@ final class RouterStore: ObservableObject {
     try? service.unregister()
   }
 
-  // In follow mode every tray surface tracks the Codex/ChatGPT desktop apps.
-  // The process itself stays resident as the watcher — quitting on app exit
-  // would leave nothing around to notice the next launch.
+  // In follow mode every tray surface and the endpoint track the Codex/ChatGPT
+  // desktop apps. The process itself stays resident as the watcher — quitting
+  // on app exit would leave nothing around to notice the next launch. Workspace
+  // notifications are backed by polling because missing one must never strand
+  // Codex without its endpoint.
   func startHostAppObservation() {
     // The mode lives in two places: UserDefaults for the tray and presence.json
     // for doctor. Only a toggle used to write the second one, so a reinstall or
@@ -283,6 +288,14 @@ final class RouterStore: ObservableObject {
       )
     }
     refreshHostAppRunning()
+    hostAppRecheck?.cancel()
+    hostAppRecheck = Task { [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(for: self?.hostAppRecheckInterval ?? .seconds(5))
+        guard !Task.isCancelled else { return }
+        self?.refreshHostAppRunning()
+      }
+    }
   }
 
   func setPresenceMode(_ mode: TrayPresenceMode) {
@@ -297,10 +310,11 @@ final class RouterStore: ObservableObject {
   }
 
   private func refreshHostAppRunning() {
-    hostAppRunning = hostAppBundleIDs.contains { identifier in
+    let detected = hostAppBundleIDs.contains { identifier in
       NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
         .contains { !$0.isTerminated }
     }
+    if hostAppRunning != detected { hostAppRunning = detected }
     refreshSurfacesVisible()
     reconcileService()
   }
@@ -320,9 +334,9 @@ final class RouterStore: ObservableObject {
   // Stops are deferred: Codex restarts itself, and a request can outlive the
   // window that issued it.
   private func reconcileService() {
-    pendingServiceStop?.cancel()
-    pendingServiceStop = nil
     guard presenceMode == .followCodex else {
+      pendingServiceStop?.cancel()
+      pendingServiceStop = nil
       // Leaving follow mode hands the router back to launchd's always-on
       // contract, so anything the tray stopped has to come back up.
       if serviceIntent == .stopped { startService() }
@@ -330,13 +344,21 @@ final class RouterStore: ObservableObject {
       return
     }
     if hostAppRunning {
+      pendingServiceStop?.cancel()
+      pendingServiceStop = nil
       startService()
       return
     }
+    // Periodic process rechecks must not restart this grace period forever.
+    guard pendingServiceStop == nil else { return }
     pendingServiceStop = Task { [weak self] in
       guard let self else { return }
       try? await Task.sleep(for: self.hostAppAbsenceGrace)
       guard !Task.isCancelled else { return }
+      // Do not trust a possibly missed launch notification. Query the process
+      // list again at the decision point before unloading the endpoint.
+      self.refreshHostAppRunning()
+      guard !Task.isCancelled, !self.hostAppRunning else { return }
       await self.stopServiceWhenIdle()
     }
   }
@@ -344,14 +366,16 @@ final class RouterStore: ObservableObject {
   private func stopServiceWhenIdle() async {
     while !Task.isCancelled {
       guard presenceMode == .followCodex, !hostAppRunning else { return }
-      if activityState == .idle { break }
+      if activeRequestCount == 0 && activityState == .idle { break }
       try? await Task.sleep(for: activeRequestRecheck)
+      refreshHostAppRunning()
     }
     guard !Task.isCancelled, presenceMode == .followCodex, !hostAppRunning else { return }
     guard serviceIntent != .stopped else { return }
     serviceIntent = .stopped
     enqueueServiceWork { [weak self] in
-      await self?.runServiceCommand("stop")
+      guard let self, self.presenceMode == .followCodex, !self.hostAppRunning else { return }
+      await self.runServiceCommand("stop")
     }
   }
 
@@ -365,7 +389,7 @@ final class RouterStore: ObservableObject {
 
   // launchctl rejects overlapping bootstrap/bootout for the same label, so every
   // service call queues behind the previous one.
-  private func enqueueServiceWork(_ work: @escaping @Sendable () async -> Void) {
+  private func enqueueServiceWork(_ work: @escaping @MainActor @Sendable () async -> Void) {
     let previous = serviceWork
     serviceWork = Task { [weak self] in
       _ = await previous?.value
@@ -381,6 +405,7 @@ final class RouterStore: ObservableObject {
       // A failed stop is harmless; a failed start is not, so surface it and let
       // the next Codex launch retry from a known-unknown intent.
       serviceIntent = .unknown
+      if action == "stop" { pendingServiceStop = nil }
       message = "Router \(action): \(error.localizedDescription)"
     }
     await refresh()
@@ -392,6 +417,7 @@ final class RouterStore: ObservableObject {
   // gateway's health wait.
   func restoreServiceOnQuit() {
     pendingServiceStop?.cancel()
+    hostAppRecheck?.cancel()
     guard presenceMode == .followCodex, serviceIntent == .stopped else { return }
     guard let root = try? sourceRoot() else { return }
     let task = Process()
@@ -1643,12 +1669,12 @@ final class RouterStore: ObservableObject {
   }
 
   private func sourceRoot() throws -> URL {
-    guard let resourceURL = Bundle.main.resourceURL else {
+    guard let configured = Bundle.main.object(forInfoDictionaryKey: "ModelRouterSourceRoot") as? String,
+      !configured.isEmpty
+    else {
       throw RouterError("Cannot find this Model Router checkout. Rebuild the tray app from the router repository.")
     }
-    return try validatedSourceRoot(
-      resourceURL.appendingPathComponent("router-root", isDirectory: true)
-    )
+    return try validatedSourceRoot(URL(fileURLWithPath: configured, isDirectory: true))
   }
 
   private func validatedSourceRoot(_ root: URL) throws -> URL {

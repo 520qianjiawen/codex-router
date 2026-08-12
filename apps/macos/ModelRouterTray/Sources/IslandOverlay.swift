@@ -927,11 +927,17 @@ private struct ProviderIcon: View {
 
   private var providerImage: NSImage? {
     guard let assetName else { return nil }
-    let url = Bundle.module.url(
+    // Installed apps keep SwiftPM resources in the standard sealed resources
+    // directory. Bundle.module remains the development fallback for swift run.
+    let installedBundle = Bundle.main.resourceURL
+      .map { $0.appendingPathComponent("ModelRouterTray_ModelRouterTray.bundle") }
+      .flatMap(Bundle.init(url:))
+    let resources = installedBundle ?? Bundle.module
+    let url = resources.url(
       forResource: assetName,
       withExtension: assetExtension,
       subdirectory: "ProviderIcons"
-    ) ?? Bundle.module.url(forResource: assetName, withExtension: assetExtension)
+    ) ?? resources.url(forResource: assetName, withExtension: assetExtension)
     return url.flatMap(NSImage.init(contentsOf:))
   }
 
