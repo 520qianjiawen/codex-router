@@ -1085,7 +1085,7 @@ final class RouterStore: ObservableObject {
       await refreshProviderUsage()
       await refreshProviderSetup()
       maintenanceSucceeded = true
-      maintenanceMessage = "Verified. Restart Codex to load updated models and agents."
+      maintenanceMessage = "Update installed. Fully quit and reopen Codex to load updated models and agents."
     } catch {
       maintenanceMessage = error.localizedDescription
       await refresh()
@@ -1105,7 +1105,7 @@ final class RouterStore: ObservableObject {
       await refreshProviderUsage()
       await refreshProviderSetup()
       maintenanceSucceeded = true
-      maintenanceMessage = "Fixed. Restart Codex if models changed."
+      maintenanceMessage = "Repair verified. Fully quit and reopen Codex if models changed."
     } catch {
       maintenanceMessage = error.localizedDescription
       await refresh()

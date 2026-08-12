@@ -139,3 +139,63 @@ wire_api = "responses"
     }
   },
 );
+
+test(
+  "a routed catalog waiting for Codex restart is a warning, not a failed repair",
+  { timeout: 30_000 },
+  () => {
+    const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-doctor-restart-"));
+    const stateDir = path.join(codexHome, "router-state");
+    const configPath = path.join(codexHome, "config.toml");
+    mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    writeFileSync(configPath, 'model = "gpt-5.6-sol"\n', { mode: 0o600 });
+    writeFileSync(
+      path.join(stateDir, "enabled-providers.json"),
+      `${JSON.stringify({ version: 1, providers: ["deepseek"] })}\n`,
+      { mode: 0o600 },
+    );
+    writeFileSync(path.join(stateDir, "deepseek-api-key.secret"), "test-key\n", {
+      mode: 0o600,
+    });
+    writeFileSync(path.join(stateDir, "caller-secret"), `${callerSecret}\n`, {
+      mode: 0o600,
+    });
+    writeFileSync(
+      path.join(stateDir, "internal-secret"),
+      "doctor-internal-service-key-with-sufficient-length\n",
+      { mode: 0o600 },
+    );
+    const env = {
+      ...process.env,
+      CODEX_BIN: writeCodexStub(codexHome),
+      CODEX_HOME: codexHome,
+      CODEX_ROUTER_PORT: "46193",
+      CODEX_ROUTER_STATE_DIR: stateDir,
+      MODEL_ROUTER_STATE_DIR: stateDir,
+      MODEL_ROUTER_TARGET: "codex",
+    };
+
+    try {
+      const catalog = child("catalog.mjs", ["--refresh-native", "--bundled-native"], env);
+      assert.equal(catalog.status, 0, catalog.stderr);
+      assert.equal(JSON.parse(catalog.stdout).routed_catalog_active, true);
+
+      const routes = child("litellm-config.mjs", [], env);
+      assert.equal(routes.status, 0, routes.stderr);
+      const enabled = child("config-manager.mjs", ["enable"], env);
+      assert.equal(enabled.status, 0, enabled.stderr);
+
+      const doctor = child("doctor.mjs", ["--json"], env);
+      const report = JSON.parse(doctor.stdout);
+      const byName = new Map(report.checks.map((check) => [check.name, check]));
+      assert.deepEqual(byName.get("Codex model catalog"), {
+        status: "warn",
+        name: "Codex model catalog",
+        detail: "startup catalog is stale",
+        fix: "Fully quit Codex, reopen it, and create a new task.",
+      });
+    } finally {
+      rmSync(codexHome, { recursive: true, force: true });
+    }
+  },
+);

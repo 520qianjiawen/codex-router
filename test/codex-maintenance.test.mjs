@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { maintenanceSourceRoot, runCodexMaintenance } from "../src/codex-maintenance.mjs";
+import {
+  doctorRestartRequired,
+  maintenanceSourceRoot,
+  runCodexMaintenance,
+} from "../src/codex-maintenance.mjs";
 
 test("maintenance targets the checkout that owns the installed router", () => {
   const owner = mkdtempSync(path.join(os.tmpdir(), "codex-router-owner-"));
@@ -67,7 +71,68 @@ test("tray maintenance runs update before doctor", () => {
       target: "codex",
     },
   ]);
-  assert.deepEqual(result, { updated: true, verified: true, checks: 1 });
+  assert.deepEqual(result, {
+    updated: true,
+    verified: true,
+    restartRequired: false,
+    checks: 1,
+  });
+});
+
+test("a stale in-memory Codex catalog completes maintenance and requests a restart", () => {
+  let call = 0;
+  const runner = () => {
+    call += 1;
+    if (call === 1) return { status: 0, stdout: "{}", stderr: "" };
+    return {
+      status: 0,
+      stdout: JSON.stringify({
+        ok: true,
+        checks: [
+          {
+            status: "warn",
+            name: "Codex model catalog",
+            detail: "startup catalog is stale",
+          },
+        ],
+      }),
+      stderr: "",
+    };
+  };
+
+  assert.deepEqual(runCodexMaintenance({ sourceRoot: "/router", runner }), {
+    updated: true,
+    verified: true,
+    restartRequired: true,
+    checks: 1,
+  });
+});
+
+test("only the stale startup catalog is classified as restart-required", () => {
+  assert.equal(
+    doctorRestartRequired({
+      checks: [
+        {
+          status: "warn",
+          name: "Codex model catalog",
+          detail: "Codex debug models timed out",
+        },
+      ],
+    }),
+    false,
+  );
+  assert.equal(
+    doctorRestartRequired({
+      checks: [
+        {
+          status: "fail",
+          name: "Codex model catalog",
+          detail: "startup catalog is stale",
+        },
+      ],
+    }),
+    false,
+  );
 });
 
 test("tray maintenance summarizes failed doctor checks", () => {

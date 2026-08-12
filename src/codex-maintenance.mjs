@@ -21,6 +21,17 @@ function parseDoctorReport(output) {
   }
 }
 
+export function doctorRestartRequired(report) {
+  return Boolean(
+    report?.checks?.some(
+      (check) =>
+        check.status === "warn" &&
+        check.name === "Codex model catalog" &&
+        check.detail === "startup catalog is stale",
+    ),
+  );
+}
+
 // The tray can be built from a different checkout than the one that owns the
 // installed router (for example a login item left behind by an old bundle on a
 // removable volume). Maintenance must update the recorded owner, otherwise
@@ -72,6 +83,7 @@ export function runCodexMaintenance({
   return {
     updated: true,
     verified: true,
+    restartRequired: doctorRestartRequired(report),
     checks: Array.isArray(report?.checks) ? report.checks.length : 0,
   };
 }

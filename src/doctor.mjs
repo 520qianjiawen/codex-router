@@ -841,7 +841,13 @@ if (codex && catalogOk && routedTransportActive) {
     const slugs = new Set((parsed.models || []).map((model) => model.slug));
     const visible = [...requiredModels].every((slug) => slugs.has(slug));
     add(
-      visible ? "ok" : "fail",
+      // The catalog on disk is already verified above. Codex reads that file
+      // only at startup, so an otherwise healthy update made while Codex is
+      // open necessarily sees the previous in-memory catalog here. That is a
+      // restart requirement, not an installation failure: treating it as a
+      // failure makes the tray report that Update and Fix both failed after
+      // they successfully installed the new revision.
+      visible ? "ok" : "warn",
       "Codex model catalog",
       visible ? `${requiredModels.size} routed entries visible` : "startup catalog is stale",
       "Fully quit Codex, reopen it, and create a new task.",
