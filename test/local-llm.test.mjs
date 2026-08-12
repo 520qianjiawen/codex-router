@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, mkdtempSync } from "node:fs";
+import { existsSync, readFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -21,11 +21,13 @@ const {
 const {
   ensureOllamaHeadless,
   localOllamaRuntimeSnapshot,
+  ollamaRuntimeStateOwnsProcess,
   ollamaHostForUrl,
   ollamaInstallPlan,
   ollamaUpdatePlan,
   parseOllamaVersion,
   probeOllama,
+  stopManagedOllama,
 } = await import("../src/ollama-runtime.mjs");
 const { benchmarkLocalModel, readLocalBenchmarks } = await import("../src/local-benchmark.mjs");
 const {
@@ -317,6 +319,128 @@ test("runtime probe and headless reuse never open the Ollama GUI", async () => {
   assert.equal(result.managed, false);
   assert.equal(result.version, "0.32.6");
   assert.deepEqual(requests, ["http://127.0.0.1:11434/api/tags", "http://127.0.0.1:11434/api/tags"]);
+});
+
+test("a router-started Ollama daemon is detached, headless, and identity-owned", async () => {
+  const runtimePath = process.env.MODEL_ROUTER_OLLAMA_RUNTIME_STATE;
+  const calls = [];
+  let probe = 0;
+  const result = await ensureOllamaHeadless({
+    fetchImpl: async () => {
+      probe += 1;
+      if (probe === 1) throw new Error("connection refused");
+      return new Response(JSON.stringify({ models: [] }), { status: 200 });
+    },
+    spawnSyncImpl: (command, args) => {
+      assert.equal(command, "ollama");
+      assert.deepEqual(args, ["--version"]);
+      return { status: 0, stdout: "ollama version is 0.32.6", stderr: "" };
+    },
+    spawn: (command, args, options) => {
+      calls.push({ command, args, options });
+      return { pid: 84, unref() {}, kill() {} };
+    },
+    processIdentity: (pid) => {
+      assert.equal(pid, 84);
+      return "verified-process-start|ollama";
+    },
+    timeoutMs: 100,
+  });
+  assert.equal(result.managed, true);
+  assert.equal(result.pid, 84);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "ollama");
+  assert.deepEqual(calls[0].args, ["serve"]);
+  assert.equal(calls[0].options.detached, true);
+  assert.equal(calls[0].options.stdio[0], "ignore");
+  assert.equal(calls[0].options.env.OLLAMA_HOST, "127.0.0.1:11434");
+  const state = JSON.parse(readFileSync(runtimePath, "utf8"));
+  assert.equal(state.managed, true);
+  assert.equal(state.pid, 84);
+  assert.equal(state.processIdentity, "verified-process-start|ollama");
+});
+
+test("a reachable external Ollama server is never adopted from stale managed state", async () => {
+  writeFileSync(
+    process.env.MODEL_ROUTER_OLLAMA_RUNTIME_STATE,
+    `${JSON.stringify({
+      version: 1,
+      managed: true,
+      pid: 42,
+      processIdentity: "router-owned-process",
+    })}\n`,
+    { mode: 0o600 },
+  );
+  const result = await ensureOllamaHeadless({
+    fetchImpl: async () => new Response(JSON.stringify({ models: [] }), { status: 200 }),
+    spawnSyncImpl: (command, args) => {
+      assert.equal(command, "ollama");
+      assert.deepEqual(args, ["--version"]);
+      return { status: 0, stdout: "ollama version is 0.32.6", stderr: "" };
+    },
+    processIdentity: () => "different-process",
+  });
+  assert.equal(result.running, true);
+  assert.equal(result.managed, false);
+  assert.equal(existsSync(process.env.MODEL_ROUTER_OLLAMA_RUNTIME_STATE), false);
+});
+
+test("managed Ollama ownership requires both the recorded PID and process identity", () => {
+  const state = {
+    version: 1,
+    managed: true,
+    pid: 42,
+    processIdentity: "same-process",
+  };
+  assert.equal(
+    ollamaRuntimeStateOwnsProcess(state, { identity: () => "same-process" }),
+    true,
+  );
+  assert.equal(
+    ollamaRuntimeStateOwnsProcess(state, { identity: () => "replacement-process" }),
+    false,
+  );
+  assert.equal(
+    ollamaRuntimeStateOwnsProcess({ ...state, processIdentity: undefined }, {
+      identity: () => "same-process",
+    }),
+    false,
+  );
+});
+
+test("router shutdown stops only its verified headless Ollama process", async () => {
+  const runtimePath = process.env.MODEL_ROUTER_OLLAMA_RUNTIME_STATE;
+  const state = {
+    version: 1,
+    managed: true,
+    pid: 42,
+    processIdentity: "same-process",
+  };
+  writeFileSync(runtimePath, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+  const signals = [];
+  let alive = true;
+  const result = await stopManagedOllama({
+    identity: () => (alive ? "same-process" : undefined),
+    kill: (pid, signal) => {
+      signals.push([pid, signal]);
+      alive = false;
+    },
+    timeoutMs: 100,
+    intervalMs: 1,
+  });
+  assert.deepEqual(result, { stopped: true, pid: 42 });
+  assert.deepEqual(signals, [[42, "SIGTERM"]]);
+  assert.equal(existsSync(runtimePath), false);
+
+  writeFileSync(runtimePath, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+  const externalSignals = [];
+  const external = await stopManagedOllama({
+    identity: () => "replacement-process",
+    kill: (...args) => externalSignals.push(args),
+  });
+  assert.deepEqual(external, { stopped: false, reason: "ownership-lost" });
+  assert.deepEqual(externalSignals, []);
+  assert.equal(existsSync(runtimePath), false);
 });
 
 test("local speed benchmark records Ollama eval tokens per second", async () => {

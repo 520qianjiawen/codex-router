@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { withServiceOperationLock } from "../src/service-operation-lock.mjs";
+
+const root = path.resolve(".");
+
+test("only a final service shutdown stops router-managed Ollama", () => {
+  const source = readFileSync(path.join(root, "src", "service.mjs"), "utf8");
+  assert.match(source, /shutdownCommands = new Set\(\["stop", "uninstall"\]\)/);
+  assert.match(source, /shutdownCommands\.has\(command\).*stopManagedOllama\(\)/s);
+  const declaration = source.match(/shutdownCommands = new Set\((\[[^\n]+\])\)/)?.[1];
+  assert.equal(declaration, '["stop", "uninstall"]');
+});
 
 test("service operation lock rejects overlap and releases afterward", { timeout: 5_000 }, async () => {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "codex-router-service-lock-"));

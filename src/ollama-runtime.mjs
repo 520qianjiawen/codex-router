@@ -7,6 +7,7 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -143,6 +144,98 @@ export function readOllamaRuntimeState() {
   } catch {
     return null;
   }
+}
+
+function clearOllamaRuntimeState() {
+  try {
+    unlinkSync(OLLAMA_RUNTIME_STATE_PATH);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
+
+// A PID alone is not ownership: after the process exits the operating system
+// may reuse it for an unrelated Ollama server (or an entirely different
+// process). Persist the process start identity beside the PID and require both
+// to match before the router ever calls kill().
+export function ollamaProcessIdentity(
+  pid,
+  { spawn = spawnSync, platform = process.platform } = {},
+) {
+  if (!Number.isSafeInteger(pid) || pid < 1) return undefined;
+  try {
+    if (platform === "win32") {
+      const script =
+        `$p = Get-Process -Id ${pid} -ErrorAction Stop; ` +
+        `[Console]::Out.Write($p.StartTime.ToUniversalTime().Ticks.ToString() + '|' + $p.Path)`;
+      const result = spawn(
+        "powershell.exe",
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        { encoding: "utf8", windowsHide: true },
+      );
+      return result.status === 0 ? String(result.stdout || "").trim() || undefined : undefined;
+    }
+    const result = spawn("ps", ["-p", String(pid), "-o", "lstart=", "-o", "comm="], {
+      encoding: "utf8",
+    });
+    return result.status === 0 ? String(result.stdout || "").trim() || undefined : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function ollamaRuntimeStateOwnsProcess(
+  state = readOllamaRuntimeState(),
+  { identity = ollamaProcessIdentity } = {},
+) {
+  return Boolean(
+    state?.managed &&
+      Number.isSafeInteger(state.pid) &&
+      state.pid > 0 &&
+      typeof state.processIdentity === "string" &&
+      state.processIdentity.length > 0 &&
+      identity(state.pid) === state.processIdentity,
+  );
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+// Stop only the exact daemon this router started. A reachable server with no
+// matching identity belongs to somebody else and is deliberately untouched.
+export async function stopManagedOllama({
+  identity = ollamaProcessIdentity,
+  kill = process.kill,
+  timeoutMs = 5_000,
+  intervalMs = 100,
+} = {}) {
+  const state = readOllamaRuntimeState();
+  if (!state?.managed) return { stopped: false, reason: "external-or-unmanaged" };
+  if (!ollamaRuntimeStateOwnsProcess(state, { identity })) {
+    clearOllamaRuntimeState();
+    return { stopped: false, reason: "ownership-lost" };
+  }
+
+  try {
+    kill(state.pid, "SIGTERM");
+  } catch (error) {
+    if (error?.code === "ESRCH") {
+      clearOllamaRuntimeState();
+      return { stopped: false, reason: "already-stopped" };
+    }
+    throw error;
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && ollamaRuntimeStateOwnsProcess(state, { identity })) {
+    await wait(intervalMs);
+  }
+  if (ollamaRuntimeStateOwnsProcess(state, { identity })) {
+    kill(state.pid, "SIGKILL");
+  }
+  clearOllamaRuntimeState();
+  return { stopped: true, pid: state.pid };
 }
 
 function commandExists(command, spawn = spawnSync) {
@@ -392,16 +485,20 @@ export async function ensureOllamaHeadless({
   spawn = spawnChild,
   spawnSyncImpl = spawnSync,
   platform = process.platform,
+  processIdentity = (pid) => ollamaProcessIdentity(pid, { spawn: spawnSyncImpl, platform }),
   timeoutMs = 15_000,
 } = {}) {
   const host = ollamaHostForUrl(baseUrl);
   if (!host) throw new Error(`The configured local model endpoint is not loopback: ${baseUrl}`);
   const existingProbe = await probeOllama({ baseUrl, fetchImpl });
   if (existingProbe.reachable) {
+    const state = readOllamaRuntimeState();
+    const managed = ollamaRuntimeStateOwnsProcess(state, { identity: processIdentity });
+    if (state?.managed && !managed) clearOllamaRuntimeState();
     return {
       installed: Boolean(ollamaCommand({ spawn: spawnSyncImpl, platform })),
       running: true,
-      managed: Boolean(readOllamaRuntimeState()?.managed),
+      managed,
       version: ollamaVersion({ spawn: spawnSyncImpl, command: ollamaCommand({ spawn: spawnSyncImpl, platform }) }),
       ...existingProbe,
     };
@@ -436,15 +533,29 @@ export async function ensureOllamaHeadless({
       `Ollama was started headlessly but did not become ready${ready.error ? `: ${ready.error}` : "."}`,
     );
   }
-  writePrivateJson(OLLAMA_RUNTIME_STATE_PATH, {
-    version: 1,
-    managed: true,
-    pid: child?.pid || null,
-    command,
-    baseUrl: ollamaRootUrl(baseUrl),
-    startedAt: Date.now(),
-    logPath: OLLAMA_LOG_PATH,
-  });
+  const identity = processIdentity(child?.pid);
+  if (!identity) {
+    child?.kill?.("SIGTERM");
+    throw new Error("Ollama started, but Codex Router could not verify ownership of its process.");
+  }
+  try {
+    writePrivateJson(OLLAMA_RUNTIME_STATE_PATH, {
+      version: 1,
+      managed: true,
+      pid: child?.pid || null,
+      processIdentity: identity,
+      command,
+      baseUrl: ollamaRootUrl(baseUrl),
+      startedAt: Date.now(),
+      logPath: OLLAMA_LOG_PATH,
+    });
+  } catch (error) {
+    // A daemon whose ownership record could not be persisted would be
+    // indistinguishable from an external server on shutdown. Do not leave it
+    // behind after reporting startup failure.
+    child?.kill?.("SIGTERM");
+    throw error;
+  }
   return {
     installed: true,
     running: true,
@@ -481,7 +592,7 @@ export function localOllamaRuntimeSnapshot({
     command: command || null,
     version: command ? ollamaVersion({ command, spawn }) || null : null,
     running,
-    managed: running && Boolean(state?.managed),
+    managed: running && ollamaRuntimeStateOwnsProcess(state),
     modelsPath: ollamaModelsPath({ platform }),
     logPath: OLLAMA_LOG_PATH,
   };
