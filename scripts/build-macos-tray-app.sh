@@ -28,6 +28,9 @@ if [ -d "$binary_dir/ModelRouterTray_ModelRouterTray.bundle" ]; then
   # survives, and dies with a fatalError once that is cleaned.
   cp -R "$binary_dir/ModelRouterTray_ModelRouterTray.bundle" "$bundle_dir/"
 fi
-printf '%s\n' "$repo_dir" > "$bundle_dir/Contents/Resources/router-root"
+# Keep the checkout relationship as a bundle-owned filesystem link. The tray
+# resolves this link directly instead of parsing a path from file contents and
+# then treating that text as an executable location.
+ln -sfn "$repo_dir" "$bundle_dir/Contents/Resources/router-root"
 
 printf '%s\n' "$bundle_dir"

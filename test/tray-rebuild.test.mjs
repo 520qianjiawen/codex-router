@@ -144,14 +144,20 @@ test("one companion location: the Node and shell sides name the same directory",
   assert.doesNotMatch(script, /\$repo_dir\/dist\/Model Router\.app"\}/);
 });
 
-test("the macOS tray never executes control from an environment-selected checkout", () => {
+test("the macOS tray never executes control from a text-selected checkout", () => {
   const source = readFileSync(
     path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "ModelRouterTrayApp.swift"),
     "utf8",
   );
   assert.doesNotMatch(source, /MODEL_ROUTER_SOURCE_ROOT/);
-  assert.match(source, /appendingPathComponent\("router-root"\)/);
+  assert.match(source, /appendingPathComponent\("router-root"/);
+  assert.doesNotMatch(source, /String\(contentsOf:/);
+  assert.doesNotMatch(source, /currentDirectoryPath/);
   assert.match(source, /isExecutableFile\(atPath: control\.path\)/);
+
+  const script = readFileSync(path.join(root, "scripts", "build-macos-tray-app.sh"), "utf8");
+  assert.match(script, /ln -sfn "\$repo_dir" "\$bundle_dir\/Contents\/Resources\/router-root"/);
+  assert.doesNotMatch(script, /> "\$bundle_dir\/Contents\/Resources\/router-root"/);
 });
 
 // Every case names its platform explicitly. Letting it default to

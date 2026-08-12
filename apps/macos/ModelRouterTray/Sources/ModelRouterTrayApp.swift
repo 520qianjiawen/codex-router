@@ -1643,21 +1643,12 @@ final class RouterStore: ObservableObject {
   }
 
   private func sourceRoot() throws -> URL {
-    if let resourceURL = Bundle.main.resourceURL {
-      let savedRoot = resourceURL.appendingPathComponent("router-root")
-      if let contents = try? String(contentsOf: savedRoot, encoding: .utf8) {
-        let root = contents.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !root.isEmpty {
-          return try validatedSourceRoot(URL(fileURLWithPath: root, isDirectory: true))
-        }
-      }
+    guard let resourceURL = Bundle.main.resourceURL else {
+      throw RouterError("Cannot find this Model Router checkout. Rebuild the tray app from the router repository.")
     }
-#if DEBUG
-    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
-    return try validatedSourceRoot(root)
-#else
-    throw RouterError("Cannot find this Model Router checkout. Rebuild the tray app from the router repository.")
-#endif
+    return try validatedSourceRoot(
+      resourceURL.appendingPathComponent("router-root", isDirectory: true)
+    )
   }
 
   private func validatedSourceRoot(_ root: URL) throws -> URL {
