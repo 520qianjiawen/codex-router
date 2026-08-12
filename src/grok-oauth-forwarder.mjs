@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   applyKeepAliveTimeouts,
+  formatErrorChain,
   httpErrorStatus,
   readRequestBody,
   requireInternalAuth,
@@ -485,7 +486,11 @@ if (isMain) {
   const server = http.createServer((request, response) => {
     handleRequest(request, response).catch((error) => {
       const status = httpErrorStatus(error);
-      console.error("[grok-oauth] request failed");
+      // Names and codes only: a refresh failure can wrap upstream response
+      // text in its message, and bodies never belong in the log (#171).
+      console.error(
+        `[grok-oauth] request failed: ${formatErrorChain(error, { messages: false })}`,
+      );
       if (!response.headersSent) {
         writeJson(response, status, {
           error: {
