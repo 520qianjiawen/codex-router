@@ -19,6 +19,9 @@ import { writeLiteLlmConfig } from "./litellm-config.mjs";
 import { readLocalModelSelection } from "./local-models.mjs";
 import { ensureOllamaHeadless } from "./ollama-runtime.mjs";
 import { venvRuntimeProblem } from "./venv-runtime.mjs";
+import { dependencyRepairHint } from "./dependency-repair.mjs";
+
+const dependencyFix = dependencyRepairHint();
 
 const litellm =
   process.env.MODEL_ROUTER_LITELLM_BIN ||
@@ -32,7 +35,7 @@ const litellm =
     process.platform === "win32" ? "litellm.exe" : "litellm",
   );
 if (!existsSync(litellm)) {
-  throw new Error(`LiteLLM is not installed at ${litellm}; run ./bin/install.`);
+  throw new Error(`LiteLLM is not installed at ${litellm}. ${dependencyFix}.`);
 }
 
 // A launcher file that exists on disk is not proof the venv works: an
@@ -61,8 +64,7 @@ if (usesBundledVenv) {
   if (venvProblem) {
     throw new Error(
       `The LiteLLM virtual environment is broken at ${venvPython} (${venvProblem}). ` +
-        `Run ./bin/doctor --fix to rebuild the virtual environment, ` +
-        `or ./bin/install --force-deps.`,
+        `${dependencyFix}.`,
     );
   }
 }

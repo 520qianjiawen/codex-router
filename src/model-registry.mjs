@@ -326,16 +326,18 @@ function modelProblem(model, providers, slugs, gatewayModels) {
     return `model ${model.slug} may only set visionBridge to false`;
   }
   // "hosted" means the provider's own backend executes web searches
-  // server-side (xAI's Responses proxy today). No other mode may be declared
-  // yet: an unimplemented mode would make the catalog advertise a search
-  // toggle the request path cannot serve, so the router-side "emulated"
-  // executor must ship before this enum grows.
+  // server-side (xAI's Responses proxy today). "standalone" means Codex
+  // executes the search client-side and returns the result in the routed
+  // conversation; it is still opt-in per model because not every upstream
+  // accepts the resulting web-search items. Keep the enum closed so an
+  // unimplemented mode cannot make the catalog advertise an unsupported
+  // search path.
   if (
     model.searchTool !== undefined &&
     (!model.searchTool ||
       typeof model.searchTool !== "object" ||
       Array.isArray(model.searchTool) ||
-      model.searchTool.mode !== "hosted")
+      !["hosted", "standalone"].includes(model.searchTool.mode))
   ) {
     return `model ${model.slug} has an invalid searchTool`;
   }

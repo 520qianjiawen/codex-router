@@ -22,10 +22,10 @@ Four pieces make the integration work:
 ```mermaid
 sequenceDiagram
   participant C as Codex
-  participant R as Router :4102
-  participant L as LiteLLM :4100
-  participant O as Kimi OAuth :4101
-  participant A as API forwarder :4103
+  participant R as Router :4202
+  participant L as LiteLLM :4200
+  participant O as Kimi OAuth :4201
+  participant A as API forwarder :4203
   participant G as ChatGPT Codex
   participant P as External provider
 
@@ -165,6 +165,24 @@ removed. Both current V4 models use the same shared forwarder and credential.
 The retired DeepSeek alias routes remain hidden registry entries. This keeps
 old CLI commands working only as long as DeepSeek continues serving those
 upstream aliases without advertising them to new users.
+
+### Standalone web search
+
+Codex 0.146 and newer can execute web search itself for a custom model
+provider. A routed model may opt in with `"searchTool": { "mode":
+"standalone" }`; the merged catalog then advertises the search capability and
+Codex sends the search result back through the normal routed Responses turn.
+This is a per-model compatibility declaration, not a claim that the upstream
+provider hosts search. Only enable it after verifying that the provider's
+model accepts Codex's web-search result items and preserves tool/function-call
+history. The managed Codex provider table must also set
+`supports_standalone_web_search = true` (on Codex versions that support that
+field); older clients ignore the field and continue without standalone search.
+
+The checked-in registry currently enables this mode for DeepSeek V4 Flash on
+its direct API and opencode Go routes. Other provider/model pairs stay off
+until verified. User-model curation can opt in locally without changing the
+shared registry.
 
 ## Transport and compaction
 

@@ -173,7 +173,7 @@ model_catalog_json = "/Users/rohitsabu/.codex/codex-router/merged-models.json"
 
 [model_providers.custom]
 name = "OpenAI"
-base_url = "http://127.0.0.1:4102/_codex-router/<local-capability>/v1"
+base_url = "http://127.0.0.1:4202/_codex-router/<local-capability>/v1"
 wire_api = "responses"
 requires_openai_auth = true
 supports_websockets = false

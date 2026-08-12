@@ -360,6 +360,20 @@ function routedHeaders() {
   };
 }
 
+// LiteLLM translates Codex Responses requests into Chat Completions only after
+// this router hands the turn to the gateway. A profile that rejects forced
+// tool choices therefore has to be normalized here, before that translation
+// can cause the upstream model to emit an invalid forced call.
+function normalizeAutoToolChoice(payload, route) {
+  if (
+    ["auto-tool-choice", "ollama-cloud-auto-tool-choice"].includes(route.requestProfile) &&
+    payload.tool_choice !== undefined &&
+    payload.tool_choice !== "none"
+  ) {
+    payload.tool_choice = "auto";
+  }
+}
+
 function nativeTarget(pathname, search = "") {
   const withoutV1 = pathname.replace(/^\/v1(?=\/|$)/, "");
   return `${NATIVE_BASE}${withoutV1}${search}`;
@@ -1397,6 +1411,7 @@ async function summarize(request, payload, route, signal) {
     tools: [],
     input: [...bridged, messageItem(COMPACT_PROMPT)],
   };
+  normalizeAutoToolChoice(body, route);
   delete body.previous_response_id;
   delete body.client_metadata;
   // Compaction re-enters the same provider as the routed turn; Fireworks
@@ -1695,6 +1710,7 @@ async function handleResponses(request, response, requestUrl) {
         model: route.gatewayModel,
         input: routedInput,
       };
+      normalizeAutoToolChoice(routed, route);
       // Native OpenAI traffic keeps client_metadata; routed providers do not
       // consume it and the strict ones reject the unknown field.
       delete routed.client_metadata;

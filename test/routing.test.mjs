@@ -2418,6 +2418,46 @@ test("API forwarder routes Ollama Cloud models without unsupported parameters", 
       }),
     });
     assert.equal(upstreamRequests.at(-1).body.reasoning_effort, undefined);
+
+    async function forwardMiniMax(toolChoice) {
+      const response = await fetch(
+        `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${INTERNAL_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "ollama-cloud-minimax-m3",
+            reasoning_effort: "high",
+            messages: [{ role: "user", content: "test" }],
+            ...(toolChoice === undefined ? {} : { tool_choice: toolChoice }),
+          }),
+        },
+      );
+      assert.equal(response.status, 200);
+      return upstreamRequests.at(-1).body;
+    }
+
+    // The combined profile keeps Ollama's effort normalization while applying
+    // the MiniMax-specific compatibility exception on direct traffic.
+    const required = await forwardMiniMax("required");
+    assert.equal(required.model, "minimax-m3");
+    assert.equal(required.reasoning_effort, "high");
+    assert.equal(required.tool_choice, "auto");
+
+    const forcedFunction = await forwardMiniMax({
+      type: "function",
+      function: { name: "relay_external_agent_payload" },
+    });
+    assert.equal(forcedFunction.tool_choice, "auto");
+
+    const suppressed = await forwardMiniMax("none");
+    assert.equal(suppressed.tool_choice, "none");
+
+    const absentToolChoice = await forwardMiniMax();
+    assert.equal("tool_choice" in absentToolChoice, false);
   } finally {
     await stopChild(forwarder);
     await closeServer(upstream.server);
@@ -3361,6 +3401,68 @@ test("router strips Fireworks web_search_options on routed and compaction reques
     await stopChild(router);
     await closeServer(gateway.server);
     rmSync(curated.dir, { recursive: true, force: true });
+  }
+});
+
+test("router normalizes forced tool choices before LiteLLM for auto-tool-choice models", async () => {
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayRequests.push(await bodyJson(request));
+    json(response, 200, { id: "resp_test", object: "response", output: [] });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+  const headers = {
+    Authorization: `Bearer ${CALLER_KEY}`,
+    "Content-Type": "application/json",
+  };
+
+  async function route(model, toolChoice) {
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model, input: "test", tool_choice: toolChoice }),
+    });
+    assert.equal(response.status, 200, router.testErrors());
+    return gatewayRequests.at(-1);
+  }
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+
+    // LiteLLM does its Responses -> Chat Completions translation after the
+    // router, so this must already be auto when it reaches the gateway.
+    const required = await route("ollama-cloud/minimax-m3", "required");
+    assert.equal(required.model, "ollama-cloud-minimax-m3");
+    assert.equal(required.tool_choice, "auto");
+
+    // The collaboration relay uses an object form; it has the same upstream
+    // restriction and therefore must not survive the Responses hop either.
+    const forcedFunction = await route("ollama-cloud/minimax-m3", {
+      type: "function",
+      name: "relay_external_agent_payload",
+    });
+    assert.equal(forcedFunction.tool_choice, "auto");
+
+    // Suppressing tools is not forcing one, and remains necessary for turns
+    // such as compaction that deliberately disable tools.
+    const suppressed = await route("ollama-cloud/minimax-m3", "none");
+    assert.equal(suppressed.tool_choice, "none");
+
+    const absent = await route("ollama-cloud/minimax-m3");
+    assert.equal("tool_choice" in absent, false);
+
+    // The profile remains model-scoped: other Ollama Cloud models preserve a
+    // forced choice so their capability probe and collaboration relay work.
+    const sibling = await route("ollama-cloud/glm-5.2", "required");
+    assert.equal(sibling.tool_choice, "required");
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
   }
 });
 

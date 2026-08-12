@@ -198,7 +198,7 @@ If config or service installation fails, the new service and marked config block
 are removed. If a legacy migration was part of the transaction, its exact config
 and service definition are restored as well.
 
-The installer does not kill an unknown process on ports 4100–4103 and does not
+The installer does not kill an unknown process on ports 4200–4203 and does not
 replace an unmarked user-owned `openai_base_url`, `model_catalog_json`, or agent
 concurrency value. Disabling the router removes only its marked concurrency
 default; a user-owned value remains intact.
@@ -313,11 +313,15 @@ Any other non-zero exit still restores the previous revision. Re-run setup to
 continue, or `./bin/rollback` (`./codex-router.ps1 rollback` on Windows) to
 return to the retained revision deliberately.
 
-The reinstall skips dependency work whose inputs are unchanged, so an update
-that carries no `package-lock.json` or LiteLLM pin change costs a service
-restart rather than a full `npm ci` and PyPI resolution. `./bin/doctor --fix`
-rebuilds them regardless, as does `./bin/install --force-deps`
-(`./install.ps1 -CheckoutInstall -ForceDeps` on Windows).
+For checkout installs, the reinstall skips dependency work whose inputs are
+unchanged, so an update that carries no `package-lock.json` or LiteLLM pin
+change costs a service restart rather than a full `npm ci` and PyPI resolution.
+`./bin/doctor --fix` rebuilds checkout-owned dependencies regardless, as does
+`./bin/install --force-deps` (`./install.ps1 -CheckoutInstall -ForceDeps` on
+Windows). Homebrew owns the dependency tree in its formula prefix: its normal
+doctor repair regenerates config and services without mutating that tree, and a
+missing or broken package file must be repaired with `brew reinstall
+codex-router`.
 
 When upgrading from a release without caller capabilities, the installer
 generates one, replaces only the marked managed URL, tightens config permissions,
@@ -350,3 +354,10 @@ Uninstall removes the marked integration config and current background service.
 It intentionally retains the checkout, native catalog cache, logs, backups,
 migration snapshots, internal key, and provider credentials. This prevents a
 routine uninstall from silently destroying authentication or recovery data.
+Existing Codex Router installs that used the former 4100–4103/4108 defaults are
+migrated on the next install or update: the managed Codex URL and generated
+systemd/launchd/task service are rewritten as one install transaction, and the
+old service is stopped before the new unit is started. Explicit
+`MODEL_ROUTER_*_PORT` (or legacy `CODEX_ROUTER_*_PORT`) environment settings
+remain authoritative for operators who intentionally keep a custom or legacy
+block.

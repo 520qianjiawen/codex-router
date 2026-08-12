@@ -260,14 +260,17 @@ test("provider registry exposes configured API and OAuth model families", () => 
     assert.equal(k3.defaultEffort, "max", slug);
     assert.equal(k3.requestProfile, "kimi-k3", slug);
   }
-  // Hosted search is an xAI-backend behavior, so only the Grok OAuth slug may
-  // declare it; every other search-capable path waits on the router-side
-  // emulated executor.
+  // Hosted search is an xAI-backend behavior. Standalone search is limited to
+  // provider/model pairs verified against Codex's client-side replay path.
   assert.deepEqual(MODEL_BY_SLUG.get("grok-oauth/grok-4.5").searchTool, {
     mode: "hosted",
   });
+  const standaloneSearchSlugs = new Set([
+    "deepseek/deepseek-v4-flash",
+    "opencode-go/deepseek-v4-flash",
+  ]);
   for (const model of MODELS) {
-    if (model.slug === "grok-oauth/grok-4.5") continue;
+    if (model.slug === "grok-oauth/grok-4.5" || standaloneSearchSlugs.has(model.slug)) continue;
     assert.equal(model.searchTool, undefined, model.slug);
   }
   // Original-detail images are declared per slug on canonical vision
@@ -330,6 +333,15 @@ test("provider registry exposes configured API and OAuth model families", () => 
     assert.equal(model.contextWindow, 1_048_576);
     assert.match(model.description, /DeepSeek V4/);
     assert.deepEqual(model.inputModalities, ["text"]);
+  }
+});
+
+test("DeepSeek V4 Flash routes opt in to Codex standalone web search", () => {
+  for (const slug of [
+    "deepseek/deepseek-v4-flash",
+    "opencode-go/deepseek-v4-flash",
+  ]) {
+    assert.deepEqual(MODEL_BY_SLUG.get(slug)?.searchTool, { mode: "standalone" }, slug);
   }
 });
 

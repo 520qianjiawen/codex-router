@@ -91,7 +91,7 @@ agent definitions are stored under `$CODEX_HOME/agents/` (normally
 `~/.codex/agents/`).
 
 The config root should contain exactly one `codex-router-managed` block with the
-loopback base URL on port 4102, a generated `/_codex-router/.../v1` path, and a catalog under
+loopback base URL on port 4202, a generated `/_codex-router/.../v1` path, and a catalog under
 `$CODEX_HOME/codex-router/merged-models.json`.
 
 The generated path is a local caller capability. Use `./bin/status`, which
@@ -266,18 +266,18 @@ This removes only the marked block and current service; it preserves the
 selected model, profiles, provider credentials, and ChatGPT login. If native
 models work again, inspect router health and create a support bundle.
 
-## Another process owns ports 4100–4103
+## Another process owns ports 4200–4203
 
 macOS/Linux:
 
 ```sh
-lsof -nP -iTCP:4100 -iTCP:4101 -iTCP:4102 -iTCP:4103 -sTCP:LISTEN
+lsof -nP -iTCP:4200 -iTCP:4201 -iTCP:4202 -iTCP:4203 -sTCP:LISTEN
 ```
 
 Windows PowerShell:
 
 ```powershell
-Get-NetTCPConnection -LocalPort 4100,4101,4102,4103 -State Listen |
+Get-NetTCPConnection -LocalPort 4200,4201,4202,4203 -State Listen |
   Select-Object LocalAddress,LocalPort,OwningProcess
 ```
 

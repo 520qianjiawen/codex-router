@@ -136,11 +136,17 @@ test("registry merges valid user models and skips collisions", async () => {
       ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-blank-nux", priority: 103 }),
       availabilityNux: "   ",
     },
-    // Only the implemented "hosted" search mode may be declared; anything
-    // else would advertise a search the request path cannot serve.
+    // Search modes are a closed set. Unknown modes must not advertise a
+    // search path the request path cannot serve.
     {
       ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-bad-search", priority: 106 }),
       searchTool: { mode: "emulated" },
+    },
+    // Standalone search is Codex-side execution; it remains an explicit
+    // per-model opt-in rather than a provider-wide default.
+    {
+      ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-standalone-search", priority: 110 }),
+      searchTool: { mode: "standalone" },
     },
     // Capability toggles are booleans; a truthy string must not slip through.
     {
@@ -179,6 +185,7 @@ test("registry merges valid user models and skips collisions", async () => {
   assert.ok(!slugs.includes("no-such-provider/x-model"));
   assert.ok(!slugs.includes("deepseek/deepseek-blank-nux"));
   assert.ok(!slugs.includes("deepseek/deepseek-bad-search"));
+  assert.ok(slugs.includes("deepseek/deepseek-standalone-search"));
   assert.ok(!slugs.includes("deepseek/deepseek-bad-detail"));
   assert.ok(!slugs.includes("deepseek/deepseek-summary-without-support"));
   assert.ok(!slugs.includes("deepseek/deepseek-invalid-summary-support"));
@@ -192,4 +199,8 @@ test("registry merges valid user models and skips collisions", async () => {
   const merged = registry.MODEL_BY_SLUG.get("deepseek/deepseek-user-test");
   assert.equal(merged.listed, true);
   assert.equal(merged.availabilityNux, "Now available through your DeepSeek key.");
+  assert.deepEqual(
+    registry.MODEL_BY_SLUG.get("deepseek/deepseek-standalone-search").searchTool,
+    { mode: "standalone" },
+  );
 });

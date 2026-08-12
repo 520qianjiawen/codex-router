@@ -41,6 +41,10 @@ if [ "$migrate_known" = true ] && [ "$adopt_native_catalog" = true ]; then
   echo "--adopt-native-catalog cannot be combined with --migrate-known." >&2
   exit 2
 fi
+if [ "${CODEX_ROUTER_PACKAGE_MANAGER:-}" = homebrew ] && [ "$force_deps" = true ]; then
+  echo "--force-deps cannot rebuild Homebrew-managed dependencies; run brew reinstall codex-router instead." >&2
+  exit 2
+fi
 platform=$(uname -s)
 case "$platform" in
   Darwin|Linux) ;;
@@ -81,62 +85,78 @@ fi
 if [ "$prepare_only" != true ]; then
   node src/provider-selection.mjs ensure-configured >/dev/null
 fi
-# Every update re-runs this installer, so the dependency steps are skipped when
-# their inputs are unchanged; --force-deps (used by doctor --fix) rebuilds them.
+# Every update re-runs this installer, so checkout-owned dependency steps are
+# skipped when their inputs are unchanged; --force-deps (used by doctor --fix)
+# rebuilds them. Homebrew assembles its dependency tree before this script runs.
 install_step() {
-  if [ "$force_deps" = true ]; then
+  # A package-manager checkout already contains the dependency tree assembled
+  # by that package manager. Re-running npm/pip here would mutate its managed
+  # prefix and can fail when packages intentionally have no pip RECORD (as
+  # Homebrew-installed Python resources do). The explicit --force-deps case is
+  # rejected above with its package-manager repair command.
+  if [ "${CODEX_ROUTER_PACKAGE_MANAGER:-}" = homebrew ]; then
+    echo managed
+  elif [ "$force_deps" = true ]; then
     echo run
   else
     node src/install-plan.mjs status "$1" 2>/dev/null || echo run
   fi
 }
 
-if [ "$(install_step node-deps)" = skip ]; then
-  echo "Node dependencies already match package-lock.json; skipping npm ci."
-else
-  npm ci --omit=dev
-  node src/install-plan.mjs record node-deps
-fi
+case "$(install_step node-deps)" in
+  managed) echo "Homebrew manages Node dependencies; skipping npm ci." ;;
+  skip) echo "Node dependencies already match package-lock.json; skipping npm ci." ;;
+  *)
+    npm ci --omit=dev
+    node src/install-plan.mjs record node-deps
+    ;;
+esac
 
-if [ "$(install_step python-deps)" = skip ]; then
-  echo "LiteLLM already matches the pinned versions; skipping the Python install."
-elif command -v uv >/dev/null 2>&1; then
-  if [ ! -x .venv/bin/python ]; then
-    uv venv --python 3.12 .venv
-  elif ! node src/install-plan.mjs venv-home-ok >/dev/null 2>&1; then
-    # A venv whose interpreter home was cleared (macOS wipes /private/tmp, and
-    # installers that recorded a temporary Python as the venv home end up with
-    # a dangling interpreter) must be recreated, not pip-installed into: the
-    # launcher may still exist while pyvenv.cfg points at a vanished home.
-    echo "The virtual environment's interpreter home is missing; recreating the venv."
-    uv venv --clear --python 3.12 .venv
-  fi
-  # requirements/python.txt is the hash-verified transitive closure of the pins
-  # in src/install-plan.mjs. Hash checking makes every wheel and sdist in that
-  # tree verify against the lock before it is executed; without it only the two
-  # top-level packages were pinned and the rest was whatever PyPI resolved that
-  # day. Regenerate the lock with bin/lock-python, never by hand.
-  uv pip install --python .venv/bin/python --require-hashes -r requirements/python.txt
-  node src/install-plan.mjs record python-deps
-else
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "Python 3.10+ or uv is required to install LiteLLM." >&2
-    exit 1
-  fi
-  python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else "Python 3.10 or newer is required.")'
-  # Same clearing logic as the uv branch: a venv with a vanished interpreter
-  # home must be recreated from scratch instead of installed over.
-  if node src/install-plan.mjs venv-home-ok >/dev/null 2>&1; then
-    python3 -m venv .venv
-  else
-    echo "The virtual environment's interpreter home is missing; recreating the venv."
-    python3 -m venv --clear .venv
-  fi
-  .venv/bin/python -m pip install --upgrade pip
-  # Same hash-verified lock as the uv branch above; both branches stay checked.
-  .venv/bin/python -m pip install --require-hashes -r requirements/python.txt
-  node src/install-plan.mjs record python-deps
-fi
+case "$(install_step python-deps)" in
+  managed) echo "Homebrew manages LiteLLM; skipping Python dependency installation." ;;
+  skip) echo "LiteLLM already matches the pinned versions; skipping the Python install." ;;
+  *)
+    if command -v uv >/dev/null 2>&1; then
+      if [ ! -x .venv/bin/python ]; then
+        uv venv --python 3.12 .venv
+      elif ! node src/install-plan.mjs venv-home-ok >/dev/null 2>&1; then
+        # A venv whose interpreter home was cleared (macOS wipes /private/tmp,
+        # and installers that recorded a temporary Python as the venv home end
+        # up with a dangling interpreter) must be recreated, not pip-installed
+        # into: the launcher may still exist while pyvenv.cfg points at a
+        # vanished home.
+        echo "The virtual environment's interpreter home is missing; recreating the venv."
+        uv venv --clear --python 3.12 .venv
+      fi
+      # requirements/python.txt is the hash-verified transitive closure of the
+      # pins in src/install-plan.mjs. Hash checking makes every wheel and sdist
+      # in that tree verify against the lock before it is executed; without it
+      # only the two top-level packages were pinned and the rest was whatever
+      # PyPI resolved that day. Regenerate the lock with bin/lock-python, never
+      # by hand.
+      uv pip install --python .venv/bin/python --require-hashes -r requirements/python.txt
+      node src/install-plan.mjs record python-deps
+    else
+      if ! command -v python3 >/dev/null 2>&1; then
+        echo "Python 3.10+ or uv is required to install LiteLLM." >&2
+        exit 1
+      fi
+      python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else "Python 3.10 or newer is required.")'
+      # Same clearing logic as the uv branch: a venv with a vanished interpreter
+      # home must be recreated from scratch instead of installed over.
+      if node src/install-plan.mjs venv-home-ok >/dev/null 2>&1; then
+        python3 -m venv .venv
+      else
+        echo "The virtual environment's interpreter home is missing; recreating the venv."
+        python3 -m venv --clear .venv
+      fi
+      .venv/bin/python -m pip install --upgrade pip
+      # Same hash-verified lock as the uv branch above; both branches stay checked.
+      .venv/bin/python -m pip install --require-hashes -r requirements/python.txt
+      node src/install-plan.mjs record python-deps
+    fi
+    ;;
+esac
 
 node src/secret.mjs ensure
 config_enabled=false

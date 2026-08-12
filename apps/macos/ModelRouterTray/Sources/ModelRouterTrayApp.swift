@@ -1430,7 +1430,7 @@ final class RouterStore: ObservableObject {
   }
 
   private func refreshActivity() async {
-    let configuredPort = ProcessInfo.processInfo.environment["MODEL_ROUTER_PORT"] ?? "4102"
+    let configuredPort = ProcessInfo.processInfo.environment["MODEL_ROUTER_PORT"] ?? "4202"
     guard let url = URL(string: "http://127.0.0.1:\(configuredPort)/health") else {
       recordActivityHealthFailure()
       return

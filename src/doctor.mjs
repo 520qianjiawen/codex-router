@@ -50,10 +50,40 @@ import {
   visionBridgeConfigured,
 } from "./vision-bridge-state.mjs";
 import { venvRuntimeProblem } from "./venv-runtime.mjs";
+import {
+  dependencyRepairHint,
+  isHomebrewManaged,
+} from "./dependency-repair.mjs";
 
 const checks = [];
 const add = (status, name, detail, fix) => checks.push({ status, name, detail, fix });
 const jsonOutput = process.argv.includes("--json");
+const homebrewManaged = isHomebrewManaged();
+const usesBundledVenv = !process.env.MODEL_ROUTER_LITELLM_BIN &&
+  !(TARGET === "codex" &&
+    (process.env.CODEX_ROUTER_LITELLM_BIN || process.env.KIMI_LITELLM_BIN));
+const bundledVenvBin = path.join(
+  SOURCE_ROOT,
+  ".venv",
+  process.platform === "win32" ? "Scripts" : "bin",
+);
+const bundledVenvPython = path.join(
+  bundledVenvBin,
+  process.platform === "win32" ? "python.exe" : "python",
+);
+const bundledLiteLlm = path.join(
+  bundledVenvBin,
+  process.platform === "win32" ? "litellm.exe" : "litellm",
+);
+const dependencyFix = dependencyRepairHint();
+
+function bundledVenvProblem() {
+  if (!existsSync(bundledLiteLlm)) return `${bundledLiteLlm} is missing`;
+  const pythonProblem = venvRuntimeProblem(bundledVenvPython);
+  return pythonProblem
+    ? `${bundledVenvPython} cannot run (${pythonProblem})`
+    : undefined;
+}
 
 // Asks Codex to load its own configuration and returns its complaint, if any.
 // `login status` exits non-zero merely for being signed out, so the exit code
@@ -150,6 +180,18 @@ function repair() {
     process.exit(result.status ?? 1);
   }
 
+  // Homebrew owns every file under the formula prefix. Re-running npm or pip
+  // from here would mutate that prefix and fails for resources intentionally
+  // installed without pip RECORD metadata. A healthy package can still use
+  // doctor --fix to regenerate config and services, but damaged package files
+  // must be rebuilt by Homebrew itself before the service transaction starts.
+  if (homebrewManaged && usesBundledVenv) {
+    const problem = bundledVenvProblem();
+    if (problem) {
+      throw new Error(`Homebrew-managed LiteLLM is damaged (${problem}). ${dependencyFix}.`);
+    }
+  }
+
   const legacy = detectLegacyInstallations();
   if (legacy.unknownConflict) {
     throw new Error(
@@ -165,8 +207,11 @@ function repair() {
     childJson("legacy-migration.mjs", ["apply", "--yes"]);
   }
   const repairStdio = jsonOutput ? ["inherit", "ignore", "inherit"] : "inherit";
-  // Repair rebuilds dependencies unconditionally: the fingerprints an ordinary
-  // install trusts cannot see a corrupted node_modules or virtual environment.
+  // Checkout repair rebuilds dependencies unconditionally: the fingerprints
+  // an ordinary install trusts cannot see a corrupted node_modules or virtual
+  // environment. Homebrew has already validated its package-owned tree above,
+  // so its repair only regenerates configuration and services.
+  const posixArguments = homebrewManaged ? [] : ["--force-deps"];
   const result = process.platform === "win32"
     ? spawnSync(
         "powershell.exe",
@@ -182,7 +227,7 @@ function repair() {
         ],
         { cwd: SOURCE_ROOT, env: process.env, stdio: repairStdio },
       )
-    : spawnSync(path.join(SOURCE_ROOT, "bin", "install"), ["--force-deps"], {
+    : spawnSync(path.join(SOURCE_ROOT, "bin", "install"), posixArguments, {
         cwd: SOURCE_ROOT,
         env: process.env,
         stdio: repairStdio,
@@ -474,24 +519,15 @@ add(
 // (MODEL_ROUTER_LITELLM_BIN or a codex-target alias) may deliberately ship
 // without the bundled `.venv`, and a fresh checkout has no venv until the
 // installer runs.
-const usesBundledVenv = !process.env.MODEL_ROUTER_LITELLM_BIN &&
-  !(TARGET === "codex" &&
-    (process.env.CODEX_ROUTER_LITELLM_BIN || process.env.KIMI_LITELLM_BIN));
 let venvCheck;
 if (usesBundledVenv) {
-  const venvPython = path.join(
-    SOURCE_ROOT,
-    ".venv",
-    process.platform === "win32" ? "Scripts" : "bin",
-    process.platform === "win32" ? "python.exe" : "python",
-  );
-  const venvProblem = venvRuntimeProblem(venvPython);
+  const venvProblem = bundledVenvProblem();
   venvCheck = venvProblem
     ? {
         status: "fail",
-        detail: `${venvPython} cannot run (${venvProblem})`,
+        detail: venvProblem,
       }
-    : { status: "ok", detail: `${venvPython} runs` };
+    : { status: "ok", detail: `${bundledVenvPython} runs and ${bundledLiteLlm} exists` };
 } else {
   venvCheck = {
     status: "ok",
@@ -502,7 +538,7 @@ add(
   venvCheck.status,
   "LiteLLM venv runtime",
   venvCheck.detail,
-  "Run ./bin/doctor --fix; it rebuilds the virtual environment from the pinned lock.",
+  `${dependencyFix}.`,
 );
 
 const secretMode = existsSync(INTERNAL_SECRET_PATH)

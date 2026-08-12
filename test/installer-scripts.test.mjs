@@ -116,6 +116,32 @@ test("install.sh is valid POSIX shell", () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("Homebrew setup never reconciles package-manager-owned dependencies", () => {
+  const installer = readScript("bin", "install");
+  const policy = installer.slice(
+    installer.indexOf("install_step() {"),
+    installer.indexOf("node src/secret.mjs ensure"),
+  );
+  assert.match(policy, /CODEX_ROUTER_PACKAGE_MANAGER:-.*= homebrew/);
+  assert.match(policy, /echo managed/);
+  assert.match(policy, /case "\$\(install_step node-deps\)" in\n\s*managed\)/);
+  assert.match(policy, /case "\$\(install_step python-deps\)" in\n\s*managed\)/);
+  assert.ok(
+    policy.indexOf("CODEX_ROUTER_PACKAGE_MANAGER") < policy.indexOf('"$force_deps" = true'),
+    "--force-deps must not mutate Homebrew's managed dependency tree",
+  );
+});
+
+test("Homebrew force-deps fails early with the package-manager repair command", () => {
+  const result = spawnSync("sh", [path.join(root, "bin", "install"), "--force-deps"], {
+    encoding: "utf8",
+    env: { ...process.env, CODEX_ROUTER_PACKAGE_MANAGER: "homebrew" },
+  });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /brew reinstall codex-router/);
+  assert.doesNotMatch(result.stdout, /npm ci|LiteLLM|service|catalog/i);
+});
+
 test(
   "POSIX install and enable preserve the PATH-selected Node wrapper",
   { skip: process.platform === "win32" },

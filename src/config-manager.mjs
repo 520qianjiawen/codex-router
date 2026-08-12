@@ -38,6 +38,7 @@ import {
   CODEX_PROVIDER_MODE_PATH,
   CONFIG_PATH,
   LEGACY_STATE_DIRS,
+  LEGACY_PORTS,
   MERGED_CATALOG_PATH,
   PORTS,
   SIGNED_PROVIDER_MODE_PATH,
@@ -45,7 +46,10 @@ import {
 } from "./paths.mjs";
 import { scanTomlDocument } from "./toml-structure.mjs";
 
-const legacyRouterBaseUrl = loopback(PORTS.router, "/v1");
+const managedRouterBaseUrls = new Set([
+  loopback(PORTS.router, "/v1"),
+  loopback(LEGACY_PORTS.router, "/v1"),
+]);
 const startMarker = "# BEGIN codex-router-managed";
 const endMarker = "# END codex-router-managed";
 const providerStartMarker = "# BEGIN codex-router-provider-managed";
@@ -96,8 +100,9 @@ function configuredRouterBaseUrl() {
 
 function isManagedRouterBaseUrl(value) {
   return (
-    value === legacyRouterBaseUrl ||
-    isManagedCallerBaseUrl(value, PORTS.router)
+    managedRouterBaseUrls.has(value) ||
+    isManagedCallerBaseUrl(value, PORTS.router) ||
+    isManagedCallerBaseUrl(value, LEGACY_PORTS.router)
   );
 }
 
@@ -474,9 +479,40 @@ function managedSignedProviderBlock(providerId, baseUrl) {
     `base_url = ${JSON.stringify(baseUrl)}`,
     'wire_api = "responses"',
     "requires_openai_auth = true",
+    // Codex 0.146+ performs standalone web search on the client and sends
+    // the resulting items back through the selected custom provider. Keep
+    // this opt-in on the managed provider table; older Codex versions ignore
+    // the unknown field and retain their existing behavior.
+    "supports_standalone_web_search = true",
     "supports_websockets = false",
     signedProviderEndMarker,
   ].join("\n");
+}
+
+// Keep accepting the pre-standalone-search managed block while upgrading it
+// in place. Existing signed state must not become "user-owned" merely because
+// this optional Codex capability was added.
+function managedSignedProviderBlockLegacy(providerId, baseUrl) {
+  const headerId = /^[A-Za-z0-9_-]+$/.test(providerId)
+    ? providerId
+    : JSON.stringify(providerId);
+  return [
+    signedProviderStartMarker,
+    `[model_providers.${headerId}]`,
+    'name = "Codex Router (with ChatGPT)"',
+    `base_url = ${JSON.stringify(baseUrl)}`,
+    'wire_api = "responses"',
+    "requires_openai_auth = true",
+    "supports_websockets = false",
+    signedProviderEndMarker,
+  ].join("\n");
+}
+
+function managedSignedProviderBlockMatches(actual, providerId, baseUrl) {
+  return [
+    managedSignedProviderBlock(providerId, baseUrl),
+    managedSignedProviderBlockLegacy(providerId, baseUrl),
+  ].includes(actual);
 }
 
 function signedProviderSlot(state, index) {
@@ -546,7 +582,7 @@ function signedProviderBlockIsOwned(contents, state) {
     const range = signedManagedRange(contents);
     if (!range) return false;
     const actual = range.lines.slice(range.start, range.end).join("\n");
-    return actual === managedSignedProviderBlock(state.managedProvider, state.managedBaseUrl);
+    return managedSignedProviderBlockMatches(actual, state.managedProvider, state.managedBaseUrl);
   }
   if (state.version !== 3) return false;
   const sections = state.previousProviderSections;
@@ -567,7 +603,7 @@ function signedProviderBlockIsOwned(contents, state) {
   const actual = range.lines.slice(range.start, range.end).join("\n");
   const slotIndex = lines.indexOf(signedProviderSlot(state, 0));
   return (
-    actual === managedSignedProviderBlock(state.managedProvider, state.managedBaseUrl) &&
+    managedSignedProviderBlockMatches(actual, state.managedProvider, state.managedBaseUrl) &&
     slotIndex + 1 === range.start &&
     providerRanges.length === 1 &&
     providerRanges[0].start === range.start + 1
@@ -790,10 +826,12 @@ function legacyManagedRouterProvider(contents) {
     isManagedRouterBaseUrl(rootBaseUrl) &&
     fields.get("wire_api") === "responses";
   const currentShape =
-    fields.size === 3 &&
+    (fields.size === 3 ||
+      (fields.size === 4 && fields.get("supports_standalone_web_search") === "true")) &&
     fields.get("name") === "Codex Router (external models)";
   const prototypeShape =
-    fields.size === 4 &&
+    (fields.size === 4 ||
+      (fields.size === 5 && fields.get("supports_standalone_web_search") === "true")) &&
     fields.get("name") === "Codex Router (extra providers)" &&
     fields.get("requires_openai_auth") === "true";
   return commonFieldsMatch && (currentShape || prototypeShape)
@@ -948,6 +986,7 @@ function enabledContents(contents) {
     'name = "Codex Router (external models)"',
     `base_url = ${JSON.stringify(routerBaseUrl)}`,
     'wire_api = "responses"',
+    "supports_standalone_web_search = true",
     providerEndMarker,
   ];
   return withManagedAgentConcurrency(

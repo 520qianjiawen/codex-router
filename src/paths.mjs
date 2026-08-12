@@ -100,26 +100,48 @@ function port(name, fallback) {
   return value;
 }
 
-// gateway/oauth/router/api are the original four; grokOauth is a fifth
-// forwarder port for the Grok OAuth provider.
+// Keep the defaults in an unassigned IANA range. 4101-4104 are the registered
+// BrlAPI ports on Linux; binding an HTTP service there makes xbrlapi wait for a
+// protocol response during GNOME login. gateway/oauth/router/api are the
+// original four; grokOauth is a fifth forwarder port for the Grok OAuth
+// provider.
+export const DEFAULT_PORTS = Object.freeze({
+  gateway: 4200,
+  oauth: 4201,
+  router: 4202,
+  api: 4203,
+  grokOauth: 4208,
+});
+
+// Ports used before the BrlAPI-safe defaults shipped. They remain recognized
+// by config migration, but are never selected unless an operator explicitly
+// sets one of the environment variables below.
+export const LEGACY_PORTS = Object.freeze({
+  gateway: 4100,
+  oauth: 4101,
+  router: 4102,
+  api: 4103,
+  grokOauth: 4108,
+});
+
 export const PORTS = {
   gateway: port(
     "MODEL_ROUTER_GATEWAY_PORT",
-    process.env.CODEX_ROUTER_GATEWAY_PORT || process.env.KIMI_GATEWAY_PORT || 4100,
+    process.env.CODEX_ROUTER_GATEWAY_PORT || process.env.KIMI_GATEWAY_PORT || DEFAULT_PORTS.gateway,
   ),
   oauth: port(
     "MODEL_ROUTER_OAUTH_PORT",
-    process.env.CODEX_ROUTER_OAUTH_PORT || process.env.KIMI_OAUTH_FORWARD_PORT || 4101,
+    process.env.CODEX_ROUTER_OAUTH_PORT || process.env.KIMI_OAUTH_FORWARD_PORT || DEFAULT_PORTS.oauth,
   ),
   router: port(
     "MODEL_ROUTER_PORT",
-    process.env.CODEX_ROUTER_PORT || process.env.KIMI_ROUTER_PORT || 4102,
+    process.env.CODEX_ROUTER_PORT || process.env.KIMI_ROUTER_PORT || DEFAULT_PORTS.router,
   ),
   api: port(
     "MODEL_ROUTER_API_PORT",
-    process.env.CODEX_ROUTER_API_PORT || process.env.KIMI_API_FORWARD_PORT || 4103,
+    process.env.CODEX_ROUTER_API_PORT || process.env.KIMI_API_FORWARD_PORT || DEFAULT_PORTS.api,
   ),
-  grokOauth: port("MODEL_ROUTER_GROK_OAUTH_PORT", 4108),
+  grokOauth: port("MODEL_ROUTER_GROK_OAUTH_PORT", DEFAULT_PORTS.grokOauth),
 };
 
 export function loopback(portNumber, suffix = "") {

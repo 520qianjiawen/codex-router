@@ -170,6 +170,15 @@ surface Grok Build uses. xAI's backend chooses when to search and how to filter
 results; the router does not take search env knobs or request-side filter
 config. Install the official CLI and authenticate before enabling the route:
 
+Other routed providers can use Codex's client-side (standalone) web search when
+the selected model has been verified for it. DeepSeek V4 Flash is enabled on
+its direct API and opencode Go routes. A compatible model declares
+`"searchTool": { "mode": "standalone" }` in its registry or user-model
+metadata, and the managed Codex provider table advertises
+`supports_standalone_web_search = true`. This is intentionally opt-in per
+model; the router does not infer search compatibility from an OpenAI-compatible
+endpoint.
+
 ```sh
 npm install -g @xai-official/grok
 grok login --oauth
@@ -510,15 +519,16 @@ Codex config:
 
 ```toml
 # BEGIN codex-router-managed
-openai_base_url = "http://127.0.0.1:4102/_codex-router/<generated-capability>/v1"
+openai_base_url = "http://127.0.0.1:4202/_codex-router/<generated-capability>/v1"
 model_catalog_json = "/absolute/path/to/.codex/codex-router/merged-models.json"
 # END codex-router-managed
 
 # BEGIN codex-router-provider-managed
 [model_providers.codex-router]
 name = "Codex Router (external models)"
-base_url = "http://127.0.0.1:4102/_codex-router/<generated-capability>/v1"
+base_url = "http://127.0.0.1:4202/_codex-router/<generated-capability>/v1"
 wire_api = "responses"
+supports_standalone_web_search = true
 # END codex-router-provider-managed
 ```
 
@@ -1087,9 +1097,9 @@ and GitHub build-provenance attestations.
 
 ```mermaid
 flowchart LR
-  C["Codex Responses :4102"] --> L1["LiteLLM :4100"]
-  L1 --> K1["Kimi OAuth :4101"]
-  L1 --> A1["API keys :4103"]
+  C["Codex Responses :4202"] --> L1["LiteLLM :4200"]
+  L1 --> K1["Kimi OAuth :4201"]
+  L1 --> A1["API keys :4203"]
   K1 --> P["External providers"]
   A1 --> P
 ```

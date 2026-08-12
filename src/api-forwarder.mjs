@@ -405,7 +405,9 @@ function normalizeBody(buffer, contentType, route) {
   } else if (model.requestProfile === "deepseek-nonthinking") {
     payload.thinking = { type: "disabled" };
     delete payload.reasoning_effort;
-  } else if (model.requestProfile === "ollama-cloud") {
+  } else if (
+    ["ollama-cloud", "ollama-cloud-auto-tool-choice"].includes(model.requestProfile)
+  ) {
     // Absent means the model's own default; Ollama enables thinking on capable
     // models when the parameter is omitted.
     if (payload.reasoning_effort !== undefined) {
@@ -413,6 +415,16 @@ function normalizeBody(buffer, contentType, route) {
     }
     // The native think parameter is ignored on this endpoint.
     delete payload.think;
+    // MiniMax M3 on Ollama Cloud accepts tool calls under auto but can emit
+    // malformed arguments when Codex forces a particular tool. Preserve the
+    // model-scoped exception on direct Chat Completions traffic too.
+    if (
+      model.requestProfile === "ollama-cloud-auto-tool-choice" &&
+      payload.tool_choice !== undefined &&
+      payload.tool_choice !== "none"
+    ) {
+      payload.tool_choice = "auto";
+    }
   } else if (model.requestProfile === "qwen-plan") {
     // DashScope documents reasoning_effort only for the cross-vendor
     // DeepSeek/GLM models it resells (high/max; low/medium collapse to high,

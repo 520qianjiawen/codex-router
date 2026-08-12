@@ -92,6 +92,10 @@ test("background service definitions render for macOS, Linux, and Windows", () =
     assert.match(systemd, /ExecStart=/);
     assert.match(systemd, /Environment="PATH=/);
     assert.match(systemd, /Environment="CODEX_ROUTER_STATE_DIR=/);
+    assert.match(systemd, /MODEL_ROUTER_GATEWAY_PORT=4200/);
+    assert.match(systemd, /MODEL_ROUTER_OAUTH_PORT=4201/);
+    assert.match(systemd, /MODEL_ROUTER_PORT=4202/);
+    assert.match(systemd, /MODEL_ROUTER_API_PORT=4203/);
 
     const windows = render("service-windows.mjs", "win32", testRoot);
     assert.match(windows, /@echo off\r?\n/);

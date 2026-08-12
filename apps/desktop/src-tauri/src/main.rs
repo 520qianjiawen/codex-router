@@ -689,7 +689,7 @@ fn read_router_health() -> Value {
     let port = env::var("MODEL_ROUTER_PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
-        .unwrap_or(4102);
+        .unwrap_or(4202);
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream = match TcpStream::connect_timeout(&address, Duration::from_millis(500)) {
         Ok(stream) => stream,

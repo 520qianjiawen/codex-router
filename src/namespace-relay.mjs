@@ -99,13 +99,31 @@ export function flattenNamespaceTools(tools) {
   const spawnAgentModels = new Set();
   let changed = false;
   for (const tool of tools) {
+    // Codex adds this control tool when one or more namespace tools use
+    // deferred loading. By this boundary every namespace is expanded below,
+    // so the search control is redundant; chat-completions providers accept
+    // only ordinary function tools and reject `type: "tool_search"` before
+    // the model can call any MCP function.
+    if (tool?.type === "tool_search") {
+      changed = true;
+      continue;
+    }
     if (tool?.type === "namespace" && Array.isArray(tool.tools)) {
       const names = new Set();
       for (const fn of tool.tools) {
         if (!fn?.name) continue;
+        // Codex names function schemas `inputSchema`, while LiteLLM's
+        // Responses -> Chat Completions adapter reads only `parameters`.
+        // Without this alias every flattened namespace child reaches the
+        // provider as an empty object schema, so MCP calls cannot receive the
+        // arguments their server requires. Keep inputSchema too: it is the
+        // client's native representation and responses-native routes retain
+        // it untouched.
+        const parameters = fn.parameters ?? fn.inputSchema;
         flattened.push({
           ...fn,
           name: `${tool.name}${NAMESPACE_DELIMITER}${fn.name}`,
+          ...(parameters === undefined ? {} : { parameters }),
         });
         names.add(fn.name);
         if (tool.name === "collaboration" && fn.name === "spawn_agent") {

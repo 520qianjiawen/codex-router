@@ -126,7 +126,35 @@ test("flattenNamespaceTools keeps the full tool schema on flattened entries", ()
   assert.equal(flat.name, "codex_app__create_thread");
   assert.equal(flat.description, "Create a thread");
   assert.deepEqual(flat.inputSchema, schema);
+  assert.deepEqual(flat.parameters, schema);
   assert.equal(flat.strict, true);
+});
+
+test("flattenNamespaceTools preserves a supplied provider parameter schema", () => {
+  const inputSchema = { type: "object", properties: { stale: { type: "string" } } };
+  const parameters = { type: "object", properties: { current: { type: "integer" } } };
+  const { tools } = flattenNamespaceTools([
+    {
+      type: "namespace",
+      name: "mcp__example",
+      tools: [{ type: "function", name: "read", inputSchema, parameters }],
+    },
+  ]);
+  assert.deepEqual(tools[0].parameters, parameters);
+  assert.deepEqual(tools[0].inputSchema, inputSchema);
+});
+
+test("flattenNamespaceTools drops the deferred-loading control after expanding namespaces", () => {
+  const { tools, flattened } = flattenNamespaceTools([
+    { type: "tool_search" },
+    {
+      type: "namespace",
+      name: "mcp__example",
+      tools: [{ type: "function", name: "read" }],
+    },
+  ]);
+  assert.equal(flattened, true);
+  assert.deepEqual(tools, [{ type: "function", name: "mcp__example__read" }]);
 });
 
 test("flattenNamespaceTools handles non-array and empty input", () => {

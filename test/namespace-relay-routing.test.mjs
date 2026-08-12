@@ -139,6 +139,7 @@ function routedRequestPayload(stream = true, model = "opencode-go/deepseek-v4-fl
       { type: "function_call_output", call_id: "call_hist", output: "{}" },
     ],
     tools: [
+      { type: "tool_search" },
       { type: "function", name: "exec_command" },
       { type: "function", name: "view_image" },
       {
@@ -169,7 +170,22 @@ function routedRequestPayload(stream = true, model = "opencode-go/deepseek-v4-fl
       {
         type: "namespace",
         name: "mcp__codex_apps__github",
-        tools: [{ type: "function", name: "fetch_issue" }],
+        tools: [
+          {
+            type: "function",
+            name: "fetch_issue",
+            inputSchema: {
+              type: "object",
+              properties: {
+                owner: { type: "string" },
+                repo: { type: "string" },
+                issue_number: { type: "integer", minimum: 1 },
+              },
+              required: ["owner", "repo", "issue_number"],
+              additionalProperties: false,
+            },
+          },
+        ],
       },
     ],
   };
@@ -441,10 +457,27 @@ test("routed request flattens every namespace to the gateway and restores calls 
     outgoing.tools.every((tool) => tool?.type !== "namespace"),
     "no namespace entries reach the gateway",
   );
+  assert.ok(
+    outgoing.tools.every((tool) => tool?.type !== "tool_search"),
+    "deferred tool search does not reach a function-only provider",
+  );
   // The merged codex_app tool definitions keep their schema.
   const createThread = outgoing.tools.find((tool) => tool.name === "codex_app__create_thread");
   assert.ok(createThread?.inputSchema, "create_thread schema survives the relay");
   assert.equal(createThread.inputSchema.type, "object");
+  const fetchIssue = outgoing.tools.find(
+    (tool) => tool.name === "mcp__codex_apps__github__fetch_issue",
+  );
+  assert.deepEqual(fetchIssue?.parameters, {
+    type: "object",
+    properties: {
+      owner: { type: "string" },
+      repo: { type: "string" },
+      issue_number: { type: "integer", minimum: 1 },
+    },
+    required: ["owner", "repo", "issue_number"],
+    additionalProperties: false,
+  });
 
   // Stored namespaced calls in the input history are renamed to match the
   // flattened tool list the model sees.

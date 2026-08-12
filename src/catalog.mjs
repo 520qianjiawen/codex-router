@@ -375,10 +375,11 @@ export function routedModel(template, model) {
     // Capability toggles come from the registry entry, never from the native
     // template: an absent flag keeps the conservative default so a routed
     // model only advertises what its slug's gateway path actually verified.
-    // "hosted" is the only search mode the request path can serve today (the
-    // provider backend runs the search server-side, as the Grok OAuth
-    // forwarder does); the registry loader rejects anything else.
-    supports_search_tool: model.searchTool?.mode === "hosted",
+    // Both search paths are explicit registry capabilities. Hosted search is
+    // executed by the provider backend; standalone search is executed by
+    // Codex and its result is replayed through the routed conversation. An
+    // absent declaration remains the conservative default.
+    supports_search_tool: ["hosted", "standalone"].includes(model.searchTool?.mode),
     supports_image_detail_original: model.supportsImageDetailOriginal === true,
     use_responses_lite: false,
     // Codex only knows one ApplyPatchToolType variant. The native template

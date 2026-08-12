@@ -193,6 +193,11 @@ test("routed models advertise search and image detail only when the registry opt
   });
   assert.equal(capable.supports_search_tool, true);
   assert.equal(capable.supports_image_detail_original, true);
+  const standalone = routedModel(template, {
+    ...grok,
+    searchTool: { mode: "standalone" },
+  });
+  assert.equal(standalone.supports_search_tool, true);
 });
 
 test("routed service tiers are explicit and never inherit a paid default", () => {

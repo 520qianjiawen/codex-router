@@ -23,8 +23,8 @@
         "text",
         "image"
       ],
-      "requestProfile": "ollama-cloud",
-      "compHash": "ollama-cloud-minimax-m3-v2"
+      "requestProfile": "ollama-cloud-auto-tool-choice",
+      "compHash": "ollama-cloud-minimax-m3-v3"
     }
   ]
 }

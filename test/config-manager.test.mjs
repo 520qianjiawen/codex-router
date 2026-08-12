@@ -127,6 +127,7 @@ approval_policy = "never"
     assert.doesNotMatch(configured, /\[agents\]/);
     assert.match(configured, /\[model_providers\.codex-router\]/);
     assert.match(configured, /wire_api = "responses"/);
+    assert.match(configured, /supports_standalone_web_search = true/);
     assert.ok(
       configured.includes(
         `openai_base_url = "http://127.0.0.1:46192/_codex-router/${CALLER_KEY}/v1"`,
@@ -700,6 +701,26 @@ model = "gpt-5.6-terra"
   }
 });
 
+test("config manager recognizes the pre-BrlAPI-safe default and rewrites it", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-legacy-port-"));
+  const stateDir = path.join(codexHome, "router-state");
+  const configPath = path.join(codexHome, "config.toml");
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  writeFileSync(path.join(stateDir, "caller-secret"), `${CALLER_KEY}\n`, { mode: 0o600 });
+  writeFileSync(
+    configPath,
+    `# BEGIN codex-router-managed\nopenai_base_url = "http://127.0.0.1:4102/_codex-router/${CALLER_KEY}/v1"\nmodel_catalog_json = ${JSON.stringify(path.join(stateDir, "merged-models.json"))}\n`,
+    { mode: 0o600 },
+  );
+  try {
+    assert.equal(run("enable", codexHome, stateDir).mode, "router");
+    assert.match(readFileSync(configPath, "utf8"), /127\.0\.0\.1:46192/);
+    assert.doesNotMatch(readFileSync(configPath, "utf8"), /127\.0\.0\.1:4102/);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
 test("model_catalog_json round-trips through TOML escaping", () => {
   const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-config-catalog-"));
   const configPath = path.join(codexHome, "config.toml");
@@ -834,6 +855,7 @@ Authorization = "Bearer PROVIDER_HEADER_SECRET"
     assert.match(configured, new RegExp(`base_url = "http://127\\.0\\.0\\.1:46192/_codex-router/${CALLER_KEY}/v1"`));
     assert.match(configured, /requires_openai_auth = true/);
     assert.match(configured, /supports_websockets = false/);
+    assert.match(configured, /supports_standalone_web_search = true/);
     assert.doesNotMatch(configured, /PROVIDER_(?:QUERY|AUTH|HEADER)_SECRET/);
     assert.doesNotMatch(
       configured,
