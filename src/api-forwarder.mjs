@@ -1,6 +1,7 @@
 import http from "node:http";
 
 import {
+  applyKeepAliveTimeouts,
   HOP_BY_HOP_HEADERS,
   httpErrorStatus,
   pipeResponse,
@@ -702,6 +703,7 @@ const server = http.createServer((request, response) => {
   });
 });
 
+applyKeepAliveTimeouts(server);
 server.listen(LISTEN_PORT, LISTEN_HOST, () => {
   console.error("[api-forwarder] listening");
 });

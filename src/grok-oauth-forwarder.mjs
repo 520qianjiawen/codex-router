@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import {
+  applyKeepAliveTimeouts,
   httpErrorStatus,
   readRequestBody,
   requireInternalAuth,
@@ -497,6 +498,7 @@ if (isMain) {
     });
   });
 
+  applyKeepAliveTimeouts(server);
   server.listen(LISTEN_PORT, LISTEN_HOST, () => {
     console.error("[grok-oauth] listening");
   });

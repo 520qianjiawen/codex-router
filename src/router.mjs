@@ -15,6 +15,7 @@ import {
   authenticatedRoute,
 } from "./caller-auth.mjs";
 import {
+  applyKeepAliveTimeouts,
   endStreamedResponse,
   finishResponse,
   HOP_BY_HOP_HEADERS,
@@ -2290,7 +2291,7 @@ server.on("error", (error) => {
   process.exit(96);
 });
 server.requestTimeout = 0;
-server.headersTimeout = 65_000;
+applyKeepAliveTimeouts(server);
 server.listen(LISTEN_PORT, LISTEN_HOST, () => {
   console.error("[codex-router] listening");
 });

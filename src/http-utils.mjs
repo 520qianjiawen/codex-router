@@ -27,6 +27,29 @@ export const HOP_BY_HOP_HEADERS = new Set([
   "upgrade",
 ]);
 
+// Node closes an idle keep-alive connection after 5 seconds and advertises
+// that as `Keep-Alive: timeout=5`. Codex's HTTP client (hyper) never reads
+// that header and pools idle sockets for 90 seconds, so every gap longer than
+// five seconds — a tool call, a turn boundary, roughly a third of this
+// router's traffic — leaves the client holding a socket the server has
+// already closed. A request written into that window is answered with a FIN
+// instead of a response, which surfaces to the user as
+// `stream disconnected before completion: error sending request for url`.
+// The server has to be the side that outlasts the pool, so hold idle
+// connections past any plausible client idle timeout instead.
+export const KEEPALIVE_TIMEOUT_MS = 120_000;
+
+// Node runs the headers timer over keep-alive idle time as well, so a
+// `headersTimeout` below `keepAliveTimeout` destroys connections the server
+// otherwise intends to keep. Derive it rather than letting the two drift.
+export const HEADERS_TIMEOUT_MS = KEEPALIVE_TIMEOUT_MS + 5_000;
+
+export function applyKeepAliveTimeouts(server) {
+  server.keepAliveTimeout = KEEPALIVE_TIMEOUT_MS;
+  server.headersTimeout = HEADERS_TIMEOUT_MS;
+  return server;
+}
+
 export async function readRequestBody(request) {
   const chunks = [];
   let total = 0;
