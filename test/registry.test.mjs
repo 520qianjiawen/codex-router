@@ -67,6 +67,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "deepseek/deepseek-v4-pro",
       "grok-api/grok-4.5",
       "grok-oauth/grok-4.5",
+      "grok-oauth/grok-4.6",
       "kimi-api/kimi-k3",
       "kimi-oauth/k3",
       "kimi-oauth/kimi-for-coding-highspeed",
@@ -231,11 +232,12 @@ test("provider registry exposes configured API and OAuth model families", () => 
     "DASHSCOPE_API_KEY",
   ]);
   assert.equal(PROVIDERS.get("anthropic-api").protocol, "anthropic");
-  for (const model of LISTED_MODELS.filter(({ provider }) =>
-    /^(?:kimi|grok)-/.test(provider),
+  for (const model of LISTED_MODELS.filter(({ provider, slug }) =>
+    /^(?:kimi|grok)-/.test(provider) && slug !== "grok-oauth/grok-4.6",
   )) {
     assert.equal(model.multiAgentVersion, "v2", model.slug);
   }
+  assert.equal(MODEL_BY_SLUG.get("grok-oauth/grok-4.6").multiAgentVersion, undefined);
   assert.equal(MODEL_BY_SLUG.get("deepseek/deepseek-v4-pro").multiAgentVersion, undefined);
   for (const slug of [
     "kimi-oauth/kimi-for-coding-highspeed",
@@ -262,15 +264,15 @@ test("provider registry exposes configured API and OAuth model families", () => 
   }
   // Hosted search is an xAI-backend behavior. Standalone search is limited to
   // provider/model pairs verified against Codex's client-side replay path.
-  assert.deepEqual(MODEL_BY_SLUG.get("grok-oauth/grok-4.5").searchTool, {
-    mode: "hosted",
-  });
+  for (const slug of ["grok-oauth/grok-4.5", "grok-oauth/grok-4.6"]) {
+    assert.deepEqual(MODEL_BY_SLUG.get(slug).searchTool, { mode: "hosted" });
+  }
   const standaloneSearchSlugs = new Set([
     "deepseek/deepseek-v4-flash",
     "opencode-go/deepseek-v4-flash",
   ]);
   for (const model of MODELS) {
-    if (model.slug === "grok-oauth/grok-4.5" || standaloneSearchSlugs.has(model.slug)) continue;
+    if (["grok-oauth/grok-4.5", "grok-oauth/grok-4.6"].includes(model.slug) || standaloneSearchSlugs.has(model.slug)) continue;
     assert.equal(model.searchTool, undefined, model.slug);
   }
   // Original-detail images are declared per slug on canonical vision
@@ -283,6 +285,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
     "anthropic-api/claude-opus-4.8",
     "grok-api/grok-4.5",
     "grok-oauth/grok-4.5",
+    "grok-oauth/grok-4.6",
     "kimi-api/kimi-k3",
     "kimi-oauth/k3",
     "kimi-oauth/kimi-for-coding",
@@ -325,6 +328,14 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(grok.contextWindow, 500_000);
   assert.deepEqual(grok.reasoningLevels.map((level) => level.effort), ["low", "medium", "high"]);
   assert.deepEqual(grok.inputModalities, ["text", "image"]);
+  const grok46 = MODEL_BY_SLUG.get("grok-oauth/grok-4.6");
+  assert.equal(grok46.contextWindow, 500_000);
+  assert.deepEqual(
+    grok46.reasoningLevels.map((level) => level.effort),
+    ["low", "medium", "high", "xhigh"],
+  );
+  assert.equal(grok46.defaultEffort, "high");
+  assert.deepEqual(grok46.inputModalities, ["text", "image"]);
   for (const slug of [
     "deepseek/deepseek-v4-flash",
     "deepseek/deepseek-v4-pro",

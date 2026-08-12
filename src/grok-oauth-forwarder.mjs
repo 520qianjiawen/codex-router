@@ -106,10 +106,11 @@ function messageContentParts(content, textType) {
   return parts.length ? parts : [{ type: textType, text: "" }];
 }
 
-function mapEffort(effort) {
+function mapEffort(effort, model) {
   if (effort === "minimal") return "low";
   if (["none", "low"].includes(effort)) return "low";
-  if (["xhigh", "max"].includes(effort)) return "high";
+  if (effort === "xhigh") return model === "grok-4.6" ? "xhigh" : "high";
+  if (effort === "max") return "high";
   return ["medium", "high"].includes(effort) ? effort : undefined;
 }
 
@@ -175,7 +176,7 @@ export function toResponsesRequest(chat, options = {}) {
 
   const request = { model: chat.model, input, stream: true, store: false };
   if (instructions) request.instructions = instructions;
-  const effort = mapEffort(chat.reasoning_effort);
+  const effort = mapEffort(chat.reasoning_effort, chat.model);
   if (effort) request.reasoning = { effort };
   const clientTools = Array.isArray(chat.tools)
     ? chat.tools
