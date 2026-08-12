@@ -1,6 +1,46 @@
 # Changelog
 
-## Unreleased
+## 0.4.0-beta.3
+
+- **The usage panel shows what is left of your plan for xAI OAuth, MiniMax,
+  Command Code, and opencode Go.** MiniMax reads its coding-plan remains
+  endpoint (interval and weekly windows), Command Code reads the same billing
+  credits route its official CLI polls (5-hour and weekly windows), and
+  opencode Go reads its usage endpoint (rolling, weekly, and monthly windows,
+  shared across the protocol variants). A fresh xAI weekly window arrives with
+  its zero usage omitted from the wire format, which used to read as
+  "unavailable" instead of everything left — a billing period with no percent
+  now reads as 0% used. Every fetcher refuses to send the credential anywhere
+  but the provider's own host, and any failure degrades to the previous
+  router-traffic view.
+
+- **The subagent list shows only models you can actually pick.** Hidden models
+  rendered as permanently locked rows; they are filtered out, with a note
+  giving the hidden count and pointing at the picker section that brings them
+  back. Toolbar labels name the setting they change, both surfaces note that
+  subagent choices never hide models from Codex's picker, and the tray's two
+  look-alike provider panels no longer expand in lockstep.
+
+- **A failed request names its cause all the way down.** The transport reports
+  every connection-level failure as a bare `TypeError: fetch failed` with the
+  code that says why buried on the cause chain, which left repeated native
+  failures unexplainable from the retained log. The router and every forwarder
+  now log the whole chain — names and codes only where a failure can wrap
+  upstream response text. Name-resolution and local-resource failures
+  (`ENOTFOUND`, `EADDRNOTAVAIL`, `ENOBUFS`) joined the retryable set, since
+  all three fail before a connection exists. Every native failure now records
+  a usage event, so a 502 without one can no longer hide inside the router,
+  and an uncaught crash exits with its own code (95/94) and full chain in the
+  log, so a supervisor's exit line alone distinguishes an in-process crash
+  from an external kill.
+
+- **One union-rooted tool schema no longer kills every xAI OAuth turn.** xAI
+  rejects the whole request when any tool's parameter schema roots in an
+  `anyOf`/`oneOf`/`allOf` union, and Codex's own automation tool ships one —
+  so a Grok session that never touched automations still died on its first
+  message. Union roots are flattened into a single object schema (branch
+  properties merged, `required` narrowed to what every branch demands) and
+  object-rooted schemas pass through untouched.
 
 - **GitHub Copilot is available as a catalog-only provider.** A
   fine-grained PAT with the Copilot Requests permission is validated through
