@@ -2672,9 +2672,13 @@ private struct TrayView: View {
     private var settings: ModelSettingsSnapshot? { target.modelSettings }
     private var busy: Bool { store.providerOperation == "models" }
 
+    // Hidden models stay listed here. A model hidden from the picker cannot be
+    // a subagent either, but dropping its row made it look deleted and left no
+    // way back to it from this panel -- the tray must always show every model
+    // it can still change.
     private var enabledExternalModels: [RouterModel] {
       target.models
-        .filter { $0.enabled && $0.provider != "openai" && $0.visible != false }
+        .filter { $0.enabled && $0.provider != "openai" }
         .sorted {
           if $0.provider != $1.provider { return $0.provider < $1.provider }
           return $0.slug < $1.slug
@@ -2701,17 +2705,33 @@ private struct TrayView: View {
       return target.providers?.first(where: { $0.id == id })?.displayName ?? id
     }
 
-    private func providerBinding(_ provider: String) -> Binding<Bool> {
-      Binding(
-        get: { !collapsedProviders.contains(provider) },
+    // Keyed by section as well as provider: "Subagent models" and "Model
+    // picker" list the same providers for different settings, so a shared key
+    // made expanding one open the other and turned the two panels into
+    // look-alikes -- which is how a subagent toggle gets mistaken for a picker
+    // toggle.
+    private func providerBinding(_ section: String, _ provider: String) -> Binding<Bool> {
+      let key = "\(section):\(provider)"
+      return Binding(
+        get: { !collapsedProviders.contains(key) },
         set: { expanded in
           if expanded {
-            collapsedProviders.remove(provider)
+            collapsedProviders.remove(key)
           } else {
-            collapsedProviders.insert(provider)
+            collapsedProviders.insert(key)
           }
         }
       )
+    }
+
+    // Per-provider counts, so a click that lands on the wrong panel is visible
+    // in the header it did not change instead of only in Codex's picker.
+    private func subagentGroupSummary(_ group: ProviderModels) -> String {
+      "\(group.models.filter { isSubagent($0) }.count) of \(group.models.count) on"
+    }
+
+    private func pickerGroupSummary(_ group: ProviderModels) -> String {
+      "\(group.models.filter { !hiddenModels.contains($0.slug) }.count) of \(group.models.count) visible"
     }
 
     var body: some View {
@@ -2739,25 +2759,28 @@ private struct TrayView: View {
               ),
               disabled: busy
             )
+            Text("Subagent choices do not hide models from Codex's picker — use Model picker below for that.")
+              .font(.system(size: 9))
+              .foregroundStyle(routerMuted)
             toolbar(
               buttons: [
-                ("Select all", { Task { await store.selectAllSubagents() } }),
-                ("Unselect all", { Task { await store.unselectAllSubagents() } }),
+                ("Subagents on", { Task { await store.selectAllSubagents() } }),
+                ("Subagents off", { Task { await store.unselectAllSubagents() } }),
               ]
             )
             ForEach(providerGroups(enabledExternalModels)) { group in
               AccordionPanel(
                 title: providerName(group.provider),
-                summary: "\(group.models.count) models",
-                expanded: providerBinding(group.provider)
+                summary: subagentGroupSummary(group),
+                expanded: providerBinding("subagents", group.provider)
               ) {
                 VStack(alignment: .leading, spacing: 6) {
                   toolbar(
                     buttons: [
-                      ("Select all", {
+                      ("Subagents on", {
                         Task { await store.setSubagentProvider(group.provider, enabled: true) }
                       }),
-                      ("Unselect all", {
+                      ("Subagents off", {
                         Task { await store.setSubagentProvider(group.provider, enabled: false) }
                       }),
                     ]
@@ -2772,7 +2795,7 @@ private struct TrayView: View {
                           Task { await store.setSubagentModel(model.slug, enabled: enabled) }
                         }
                       ),
-                      disabled: busy
+                      disabled: busy || model.visible == false
                     )
                   }
                 }
@@ -2799,8 +2822,8 @@ private struct TrayView: View {
             ForEach(providerGroups(enabledModels)) { group in
               AccordionPanel(
                 title: providerName(group.provider),
-                summary: "\(group.models.count) models",
-                expanded: providerBinding(group.provider)
+                summary: pickerGroupSummary(group),
+                expanded: providerBinding("picker", group.provider)
               ) {
                 VStack(alignment: .leading, spacing: 6) {
                   toolbar(
@@ -2808,7 +2831,7 @@ private struct TrayView: View {
                       ("Show all", {
                         Task { await store.setPickerProvider(group.provider, visible: true) }
                       }),
-                      ("Unselect all", {
+                      ("Hide all", {
                         Task { await store.setPickerProvider(group.provider, visible: false) }
                       }),
                     ]
@@ -3960,7 +3983,11 @@ private struct TrayView: View {
       Set(settings?.subagents.disabled ?? [])
     }
 
+    // Matches the catalog rule (`applyMultiAgentSettings`): a model hidden from
+    // the picker is never promoted to a subagent, whatever the subagent mode
+    // says.
     private func isSubagent(_ model: RouterModel) -> Bool {
+      if model.visible == false { return false }
       if disabledSubagentSet.contains(model.slug) { return false }
       switch settings?.subagents.mode ?? "proven" {
       case "all":
@@ -3973,6 +4000,7 @@ private struct TrayView: View {
     }
 
     private func subagentDetail(for model: RouterModel) -> String {
+      if model.visible == false { return "Hidden from picker — show it below to use it here" }
       if isSubagent(model) {
         return model.multiAgentVersion == "v2" ? "Proven v2" : "Subagent"
       }

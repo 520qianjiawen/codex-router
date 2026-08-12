@@ -428,14 +428,22 @@ function startPanel() {
         }));
     }
 
-    function providerGroupsMarkup(groups, rowMarkup, setting) {
+    // `groupSummary` counts what this section actually controls. The two
+    // sections list the same providers, so a click that lands in the wrong one
+    // has to be visible here rather than only in Codex's picker after a
+    // restart. Button labels name the setting for the same reason: two
+    // identical "Unselect all" buttons is how a subagent toggle gets mistaken
+    // for a picker toggle.
+    function providerGroupsMarkup(groups, rowMarkup, setting, groupSummary) {
+      const [onLabel, offLabel] =
+        setting === "picker" ? ["Show all", "Hide all"] : ["Subagents on", "Subagents off"];
       return groups
         .map(
           (group) => `<details class="model-provider-group" open>
-            <summary><span>${escapeHtml(providerLabel(group.provider))}</span><span class="model-provider-count">${group.items.length}</span></summary>
+            <summary><span>${escapeHtml(providerLabel(group.provider))}</span><span class="model-provider-count">${escapeHtml(groupSummary(group))}</span></summary>
             <div class="model-provider-toolbar">
-              <button class="text-button" type="button" data-provider-setting="${setting}" data-provider="${escapeHtml(group.provider)}" data-enabled="true">${setting === "picker" ? "Show all" : "Select all"}</button>
-              <button class="text-button" type="button" data-provider-setting="${setting}" data-provider="${escapeHtml(group.provider)}" data-enabled="false">Unselect all</button>
+              <button class="text-button" type="button" data-provider-setting="${setting}" data-provider="${escapeHtml(group.provider)}" data-enabled="true">${onLabel}</button>
+              <button class="text-button" type="button" data-provider-setting="${setting}" data-provider="${escapeHtml(group.provider)}" data-enabled="false">${offLabel}</button>
             </div>
             <div class="model-settings-list">${group.items.map(rowMarkup).join("")}</div>
           </details>`,
@@ -451,14 +459,26 @@ function startPanel() {
         ? "Only selected models are exposed as Codex subagents."
         : "Only registry-proven v2 models are exposed as Codex subagents.";
 
-    const subagentModels = enabledModels
-      .filter((model) => !model.native && model.visible !== false)
+    // Models hidden from the picker are forced off as subagents, so their
+    // rows here were permanently locked noise. They are filtered out; the
+    // note under the list keeps the count visible and points at the picker
+    // section, which is where unhiding brings a model back.
+    const subagentModels = enabledModels.filter(
+      (model) => !model.native && model.visible !== false,
+    );
+    const hiddenSubagentCount = enabledModels.filter(
+      (model) => !model.native && model.visible === false,
+    ).length;
     const subagentGroups = groupModels(subagentModels);
+    const isSubagentOn = (model) =>
+      model.visible === false
+        ? false
+        : subagent.mode === "all"
+        ? !disabledSubagents.has(model.slug)
+        : (model.multiAgentVersion === "v2" || enabledSubagents.has(model.slug)) &&
+          !disabledSubagents.has(model.slug);
     const subagentRow = (model) => {
-        const checked = subagent.mode === "all"
-          ? !disabledSubagents.has(model.slug)
-          : (model.multiAgentVersion === "v2" || enabledSubagents.has(model.slug)) &&
-            !disabledSubagents.has(model.slug);
+        const checked = isSubagentOn(model);
         const badge = model.multiAgentVersion === "v2" ? " · proven v2" : "";
         return `<label class="model-setting-row">
           <span><strong>${escapeHtml(model.displayName)}</strong><small>${escapeHtml(badge)}</small></span>
@@ -466,9 +486,23 @@ function startPanel() {
         </label>`;
       };
 
+    const hiddenSubagentNote = hiddenSubagentCount
+      ? `<div class="model-settings-note">${hiddenSubagentCount} model${
+          hiddenSubagentCount === 1 ? " is" : "s are"
+        } hidden from the picker and not listed here. Show ${
+          hiddenSubagentCount === 1 ? "it" : "them"
+        } in the picker section below to use ${
+          hiddenSubagentCount === 1 ? "it" : "them"
+        } as ${hiddenSubagentCount === 1 ? "a subagent" : "subagents"}.</div>`
+      : "";
     elements.subagentModelList.innerHTML = subagentGroups.length
-      ? providerGroupsMarkup(subagentGroups, subagentRow, "subagents")
-      : '<div class="empty-state">Enable a provider to choose subagent models here.</div>';
+      ? providerGroupsMarkup(
+          subagentGroups,
+          subagentRow,
+          "subagents",
+          (group) => `${group.items.filter(isSubagentOn).length} of ${group.items.length} on`,
+        ) + hiddenSubagentNote
+      : `<div class="empty-state">Enable a provider to choose subagent models here.</div>${hiddenSubagentNote}`;
     const subagentCount = subagent.mode === "all"
       ? enabledModels.filter(
           (model) => !model.native && model.visible !== false && !disabledSubagents.has(model.slug),
@@ -492,7 +526,15 @@ function startPanel() {
       };
 
     elements.pickerModelList.innerHTML = pickerGroups.length
-      ? providerGroupsMarkup(pickerGroups, pickerRow, "picker")
+      ? providerGroupsMarkup(
+          pickerGroups,
+          pickerRow,
+          "picker",
+          (group) =>
+            `${group.items.filter((model) => !hiddenModels.has(model.slug)).length} of ${
+              group.items.length
+            } visible`,
+        )
       : '<div class="empty-state">No enabled models to show.</div>';
     const pickerCount = pickerModels.filter((model) => !hiddenModels.has(model.slug)).length;
     elements.pickerSummary.textContent = `${pickerCount} visible · ${hiddenModels.size} hidden`;
@@ -716,7 +758,9 @@ function startPanel() {
           state.snapshot = await call("set_picker_provider", { provider, visible: enabled });
         }
         showToast(
-          `${provider} models ${enabled ? "selected" : "unselected"}. Restart Codex to refresh its picker.`,
+          setting === "subagents"
+            ? `${provider} models ${enabled ? "on" : "off"} as subagents. They stay in Codex's picker. Restart Codex to refresh its subagents.`
+            : `${provider} models ${enabled ? "shown in" : "hidden from"} the picker. Restart Codex to refresh it.`,
         );
         await refreshPanel({ quiet: true });
       } catch (error) {
@@ -738,13 +782,13 @@ function startPanel() {
         const selectAll = action === "select-all";
         state.snapshot = await call("set_subagent_selection", { selectAll });
         showToast(
-          `${selectAll ? "Every picker-visible model can now run as a subagent." : "Subagent selection cleared."} Restart Codex to refresh its picker.`,
+          `${selectAll ? "Every picker-visible model can now run as a subagent." : "Subagent selection cleared. Models stay in Codex's picker."} Restart Codex to refresh its subagents.`,
         );
       } else {
         const showAll = action === "show-all";
         state.snapshot = await call("set_picker_models", { showAll });
         showToast(
-          `${showAll ? "Every model is visible in the picker." : "All models hidden from the picker."} Restart Codex to refresh its picker.`,
+          `${showAll ? "Every model is visible in the picker." : "All models hidden from the picker."} Restart Codex to refresh it.`,
         );
       }
       await refreshPanel({ quiet: true });
@@ -768,7 +812,9 @@ function startPanel() {
           slug: subagent.dataset.subagent,
           enabled: subagent.checked,
         });
-        showToast("Subagent selection updated. Restart Codex to refresh its picker.");
+        showToast(
+          "Subagent selection updated. The model stays in Codex's picker. Restart Codex to refresh its subagents.",
+        );
       } else {
         state.snapshot = await call("set_picker_model", {
           slug: picker.dataset.picker,
