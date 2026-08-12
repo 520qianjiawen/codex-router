@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,8 +14,10 @@ process.env.CODEX_ROUTER_STATE_DIR = stateDir;
 const {
   CODEX_PROMPT_TOKENS,
   EXPLORE_LOCAL_MODELS,
+  LOCAL_MODELS_STATE_PATH,
   describeMachine,
   fitAdvisory,
+  isLocalModelEnabled,
   localModelsSnapshot,
   machineCapacity,
   parseGgufContextLength,
@@ -29,6 +31,13 @@ const {
   suggestedExploreModels,
   suggestedVisionModels,
 } = await import("../src/local-models.mjs");
+
+// Writes the selection file directly, which is the only way to reproduce state
+// left by an older build that stored whatever spelling was typed.
+function writeSelectionFile(selection) {
+  mkdirSync(path.dirname(LOCAL_MODELS_STATE_PATH), { recursive: true, mode: 0o700 });
+  writeFileSync(LOCAL_MODELS_STATE_PATH, `${JSON.stringify(selection)}\n`, "utf8");
+}
 
 const LIST = `NAME                ID              SIZE      MODIFIED
 gemma3:4b           a2af6cc3eb7f    3.3 GB    19 minutes ago
@@ -287,6 +296,110 @@ test("a machine too small for everything still gets an honest empty list", () =>
   assert.deepEqual(suggestedLocalModels({ capacity: tiny }), []);
   // Asking for the unusable ones is explicit, never the default.
   assert.ok(suggestedLocalModels({ capacity: tiny, includeUnusable: true }).length > 0);
+});
+
+test("every catalog model stays reachable on a machine that cannot run it", () => {
+  // The shortlists are recommendations and drop what will not fit. That must
+  // not make a model disappear entirely: an 8 GB laptop previously had no list
+  // containing qwen2.5-coder:14b, gpt-oss:20b or devstral, so there was no way
+  // to install one even on purpose.
+  const laptop = machineCapacity({ totalMemoryBytes: 8e9, platform: "linux" });
+  const shortlisted = suggestedLocalModels({ capacity: laptop, includeUnusable: true });
+  const recommended = new Set(suggestedLocalModels({ capacity: laptop }).map((e) => e.tag));
+  const dropped = shortlisted.filter((entry) => !recommended.has(entry.tag));
+  assert.ok(dropped.length > 0, "expected this machine to be too small for something");
+
+  const explore = suggestedExploreModels({ capacity: laptop });
+  const exploreTags = new Set(explore.map((entry) => entry.tag));
+  for (const entry of dropped) {
+    assert.ok(exploreTags.has(entry.tag), `${entry.tag} is unreachable`);
+  }
+  // Reachable, but still honestly labelled, so the caller can warn.
+  assert.equal(explore.find((entry) => entry.tag === "gpt-oss:20b").fit, "too-large");
+  // Image readers the vision shortlist hid are reachable for the same reason.
+  const visionShown = new Set(suggestedVisionModels({ capacity: laptop }).map((e) => e.tag));
+  assert.ok(!visionShown.has("qwen2.5vl:7b"));
+  assert.ok(exploreTags.has("qwen2.5vl:7b"));
+
+  // One row per model. `devstral` and `devstral:latest` are the same weights
+  // spelled two ways across the shortlist and the explore catalog.
+  assert.equal(explore.length, exploreTags.size);
+  assert.deepEqual(
+    explore.filter((entry) => entry.family === "devstral").map((entry) => entry.tag),
+    ["devstral"],
+  );
+  // An already-installed model is still never re-offered.
+  const withInstalled = suggestedExploreModels({
+    capacity: laptop,
+    installed: [{ tag: "gpt-oss:20b" }],
+  });
+  assert.ok(!withInstalled.some((entry) => entry.tag === "gpt-oss:20b"));
+});
+
+test("every catalog entry carries the fields the tray decoder requires", () => {
+  // `AvailableLocalModel` in the macOS tray declares these non-optional. Swift
+  // fails the whole array on one bad element, so a single catalog entry missing
+  // `note` would empty the catalog in the UI without any visible error. The
+  // explore list merges three catalogs with different shapes, which is exactly
+  // where such a gap would appear.
+  const required = { tag: "string", sizeGb: "number", tools: "boolean", note: "string", fit: "string" };
+  const machines = [
+    machineCapacity({ totalMemoryBytes: 8e9, platform: "linux" }),
+    machineCapacity({ totalMemoryBytes: 128e9, unifiedMemory: true, freeDiskBytes: 2e12 }),
+  ];
+  for (const capacity of machines) {
+    for (const entry of suggestedExploreModels({ capacity })) {
+      for (const [key, type] of Object.entries(required)) {
+        assert.equal(typeof entry[key], type, `${entry.tag} has no usable ${key}`);
+      }
+    }
+  }
+});
+
+test("one model checked under two spellings stays one entry", () => {
+  // The downloader stores the normalized `devstral:latest`; a hand-typed
+  // `devstral` is the same model. Keying the selection on the raw string let
+  // both land in the file, and `set devstral off` then cleared neither.
+  // The whole file shares one state directory, so put back what was there.
+  const restore = readLocalModelSelection();
+  try {
+    writeSelectionFile({ version: 1, enabled: [] });
+    setLocalModelEnabled("devstral:latest", true, NO_OLLAMA);
+    setLocalModelEnabled("devstral", true, NO_OLLAMA);
+    assert.deepEqual(readLocalModelSelection().enabled, ["devstral:latest"]);
+    assert.equal(isLocalModelEnabled("devstral"), true);
+    assert.equal(isLocalModelEnabled("devstral:latest"), true);
+
+    // Unchecking through the other spelling has to clear it.
+    setLocalModelEnabled("devstral", false, NO_OLLAMA);
+    assert.deepEqual(readLocalModelSelection().enabled, []);
+    assert.equal(isLocalModelEnabled("devstral:latest"), false);
+  } finally {
+    writeSelectionFile(restore);
+  }
+});
+
+test("a legacy bare tag in the selection file is matched and migrated", () => {
+  const restore = readLocalModelSelection();
+  try {
+    // State written before tags were canonicalized holds the bare spelling.
+    writeSelectionFile({ version: 1, enabled: ["mistral"] });
+    assert.equal(isLocalModelEnabled("mistral:latest"), true);
+    // `ollama list` reports the tagged spelling, so the row must read as checked.
+    const snapshot = localModelsSnapshot({
+      inventory: parseOllamaList(
+        "NAME  ID  SIZE  MODIFIED\nmistral:latest  aaa  4.4 GB  1 hour ago\n",
+      ),
+      running: [],
+      capabilities: { "mistral:latest": ["completion", "tools"] },
+    });
+    assert.equal(snapshot.models[0].enabled, true);
+    // The next write leaves one canonical entry behind, not two.
+    setLocalModelEnabled("mistral:latest", true, NO_OLLAMA);
+    assert.deepEqual(readLocalModelSelection().enabled, ["mistral:latest"]);
+  } finally {
+    writeSelectionFile(restore);
+  }
 });
 
 test("the listing renders for a person, not only for the tray", () => {

@@ -1292,7 +1292,10 @@ final class RouterStore: ObservableObject {
   /// needed, and checks the model on for Codex after the pull completes. The
   /// control command returns immediately; the state file is polled so the
   /// tray remains responsive during multi-gigabyte downloads.
-  func downloadLocalModel(_ tag: String) async {
+  /// `force` carries the operator's deliberate override for a model this
+  /// machine is rated too small for. Every catalog entry is offered, so the
+  /// only way to attempt an oversized one is to say so explicitly here.
+  func downloadLocalModel(_ tag: String, force: Bool = false) async {
     guard localDownload?.isRunning != true else { return }
     let startedAt = Date().timeIntervalSince1970 * 1_000
     localDownload = VisionDownloadState(
@@ -1305,7 +1308,11 @@ final class RouterStore: ObservableObject {
       updatedAt: startedAt
     )
     do {
-      _ = try await runControl(arguments: ["local-models", "install", tag, "--yes"])
+      // `--yes` consents to installing and starting Ollama headlessly when it
+      // is missing, so one click covers both the runtime and the model.
+      var arguments = ["local-models", "install", tag, "--yes"]
+      if force { arguments.append("--force") }
+      _ = try await runControl(arguments: arguments)
     } catch {
       message = error.localizedDescription
       localDownload = VisionDownloadState(
@@ -2602,6 +2609,9 @@ private struct TrayView: View {
     @State private var localCatalogFilter = ""
     @State private var installTag = ""
     @State private var armedRemoval: String?
+    // Set to the tag awaiting an "it will not fit here" confirmation. Held as
+    // the tag rather than a Bool so the alert can name the model.
+    @State private var pendingOversizedInstall: String?
     @State private var quickPicksExpanded = false
     @State private var collapsedProviders = Set<String>()
 
@@ -2781,6 +2791,25 @@ private struct TrayView: View {
         ) {
           visionPanel
         }
+      }
+      .alert(
+        "Download anyway?",
+        isPresented: Binding(
+          get: { pendingOversizedInstall != nil },
+          set: { presented in if !presented { pendingOversizedInstall = nil } }
+        ),
+        presenting: pendingOversizedInstall
+      ) { tag in
+        Button("Download \(tag)", role: .destructive) {
+          pendingOversizedInstall = nil
+          Task { await store.downloadLocalModel(tag, force: true) }
+        }
+        Button("Cancel", role: .cancel) { pendingOversizedInstall = nil }
+      } message: { tag in
+        Text(
+          "\(tag) is rated too large for this machine's memory or free disk. "
+            + "It will download, but it may fail to load or run very slowly."
+        )
       }
     }
 
@@ -3170,11 +3199,23 @@ private struct TrayView: View {
           .font(.system(size: 8))
           .foregroundStyle(!downloadable ? routerMuted : (tooLarge ? routerRed : routerMutedStrong))
         if downloadable {
-          Button("Download") { Task { await store.downloadLocalModel(model.tag) } }
-            .buttonStyle(.borderless)
-            .font(.system(size: 8, weight: .medium))
-            .foregroundStyle(canDownloadLocalSuggestion && !tooLarge ? routerMint : routerMutedStrong)
-            .disabled(!canDownloadLocalSuggestion || tooLarge)
+          // A model rated too large is still offered, because refusing to show
+          // the button left those tags with no install path at all. The label
+          // changes to name the risk and the tap asks once before spending the
+          // gigabytes; confirming sends --force.
+          Button(tooLarge ? "Anyway" : "Download") {
+            if tooLarge {
+              pendingOversizedInstall = model.tag
+            } else {
+              Task { await store.downloadLocalModel(model.tag) }
+            }
+          }
+          .buttonStyle(.borderless)
+          .font(.system(size: 8, weight: .medium))
+          .foregroundStyle(
+            !canDownloadLocalSuggestion ? routerMutedStrong : (tooLarge ? routerRed : routerMint)
+          )
+          .disabled(!canDownloadLocalSuggestion)
         } else {
           Text("cloud only")
             .font(.system(size: 8, weight: .medium))

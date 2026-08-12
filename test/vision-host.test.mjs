@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  ollamaInstallMessage,
   annotateLocalModels,
   detectLocalRuntimes,
   hostVisionProfile,
@@ -15,6 +17,27 @@ import {
 } from "../src/vision-host.mjs";
 
 const GIB = 1024 ** 3;
+
+test("the Ollama install hint is built on demand, not on import", () => {
+  // Building it asks which package manager is present, which is a synchronous
+  // `brew --version` (~200 ms). As a top-level constant that ran on every
+  // import of this module, and start.mjs reaches it through a chain of static
+  // imports -- so every router start paid for a string almost nobody reads.
+  const source = readFileSync(new URL("../src/vision-host.mjs", import.meta.url), "utf8");
+  const topLevel = source
+    .split("\n")
+    .filter((line) => /^(export\s+)?(const|let|var)\s/.test(line));
+  assert.equal(
+    topLevel.some((line) => line.includes("ollamaInstallHint(")),
+    false,
+    "install hint must not be computed at module scope",
+  );
+
+  const message = ollamaInstallMessage();
+  assert.match(message, /^Install Ollama \(/);
+  // Memoized: the plan lookup is the expensive part and cannot repeat per call.
+  assert.equal(ollamaInstallMessage(), message);
+});
 
 test("hardware recommendation scales with memory", () => {
   assert.equal(hostVisionProfile({ totalMemBytes: 4 * GIB }).recommended, "moondream");

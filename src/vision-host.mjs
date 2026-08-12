@@ -13,7 +13,16 @@ import {
   DEFAULT_LOCAL_VISION_MODEL,
 } from "./vision-bridge.mjs";
 
-export const OLLAMA_INSTALL_HINT = `Install Ollama (${ollamaInstallHint()}), then retry.`;
+// Deliberately a function, not a top-level constant. Building the hint asks
+// `ollamaInstallPlan` which package manager is present, and that is a
+// synchronous `brew --version` (~200 ms here). As a constant it ran on every
+// import of this module -- including the static start.mjs -> local-models.mjs
+// chain -- so every router start paid for a string almost nobody reads.
+let cachedInstallHint;
+export function ollamaInstallMessage() {
+  cachedInstallHint ??= `Install Ollama (${ollamaInstallHint()}), then retry.`;
+  return cachedInstallHint;
+}
 
 // A runtime is the operator's own software. This helper only reports whether
 // the CLI is present; the local-model install flow may install it after the

@@ -12,8 +12,12 @@ process.env.MODEL_ROUTER_LOCAL_BENCHMARKS = path.join(stateDir, "benchmarks.json
 process.env.MODEL_ROUTER_OLLAMA_RUNTIME_STATE = path.join(stateDir, "runtime.json");
 process.env.MODEL_ROUTER_OLLAMA_LOG = path.join(stateDir, "ollama.log");
 
-const { localModelDisplayName, normalizeLocalModelTag, splitLocalModelTag } =
-  await import("../src/local-model-ref.mjs");
+const {
+  canonicalLocalModelTag,
+  localModelDisplayName,
+  normalizeLocalModelTag,
+  splitLocalModelTag,
+} = await import("../src/local-model-ref.mjs");
 const {
   ensureOllamaHeadless,
   localOllamaRuntimeSnapshot,
@@ -52,6 +56,31 @@ test("Ollama model URLs normalize to explicit family and variant tags", () => {
   });
   assert.equal(localModelDisplayName("gemma4:12b"), "Gemma4 · 12b");
   assert.throws(() => normalizeLocalModelTag("https://example.com/model"), /Ollama model-page/);
+  // A family overview page carries no tag, so it must be rejected rather than
+  // guessed at. The namespace form is the only two-segment shape that is one.
+  assert.throws(
+    () => normalizeLocalModelTag("https://ollama.com/library"),
+    /does not contain an Ollama model tag/,
+  );
+  assert.throws(
+    () => normalizeLocalModelTag("https://ollama.com/search/gemma"),
+    /does not contain an Ollama model tag/,
+  );
+});
+
+test("tag spellings canonicalize so one model is never two entries", () => {
+  assert.equal(canonicalLocalModelTag("devstral"), "devstral:latest");
+  assert.equal(canonicalLocalModelTag("devstral:latest"), "devstral:latest");
+  assert.equal(canonicalLocalModelTag(" gemma4:12b "), "gemma4:12b");
+  assert.equal(
+    canonicalLocalModelTag("https://ollama.com/library/muse-glimmer"),
+    "muse-glimmer:latest",
+  );
+  // Unparseable input is inert rather than fatal: this runs over stored state,
+  // and one corrupt entry must not break reading the rest of the file.
+  assert.equal(canonicalLocalModelTag("--force"), "--force");
+  assert.equal(canonicalLocalModelTag(""), "");
+  assert.equal(canonicalLocalModelTag(undefined), "");
 });
 
 test("runtime helpers keep Ollama headless and expose safe install plans", () => {
@@ -92,6 +121,21 @@ test("runtime helpers keep Ollama headless and expose safe install plans", () =>
     ollamaInstallPlan({ platform: "darwin", spawn: noPackageManager, interactive: false }).command,
     "/usr/bin/osascript",
   );
+  // Every macOS path that runs the official installer must keep it headless.
+  // Without OLLAMA_NO_START the installer launches the Ollama desktop app, and
+  // the router would end up talking to a GUI process it does not own.
+  for (const interactive of [true, false]) {
+    const plan = ollamaInstallPlan({ platform: "darwin", spawn: noPackageManager, interactive });
+    assert.ok(
+      plan.args.some((argument) => argument.includes("OLLAMA_NO_START=1")),
+      `darwin interactive=${interactive} must not start the Ollama app`,
+    );
+  }
+  // Homebrew installs the headless CLI formula, never the desktop cask.
+  assert.deepEqual(ollamaInstallPlan({ platform: "darwin", spawn: fakeSpawn }).args, [
+    "install",
+    "ollama",
+  ]);
 });
 
 test("runtime updates use Homebrew only when it owns the Ollama formula", () => {
@@ -350,6 +394,60 @@ test("control persists a visible terminal error when install preflight fails", (
   assert.equal(state.status, "error");
   assert.equal(state.detail, "failed");
   assert.match(state.error, /not loopback/);
+});
+
+// Runs `control local-models ...` against a throwaway state directory whose
+// local endpoint is deliberately not loopback, so the command fails at a known
+// point after argument parsing.
+function runLocalModels(...args) {
+  const childState = mkdtempSync(path.join(os.tmpdir(), "local-llm-args-"));
+  const result = spawnSync(process.execPath, [path.resolve("src/control.mjs"), "local-models", ...args], {
+    cwd: path.resolve("."),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CODEX_ROUTER_STATE_DIR: childState,
+      MODEL_ROUTER_LOCAL_DOWNLOAD_STATE: path.join(childState, "download.json"),
+      MODEL_ROUTER_OLLAMA_RUNTIME_STATE: path.join(childState, "runtime.json"),
+      MODEL_ROUTER_OLLAMA_LOG: path.join(childState, "ollama.log"),
+      MODEL_ROUTER_LOCAL_BASE_URL: "https://example.com",
+      MODEL_ROUTER_OLLAMA_REGISTRY: "http://127.0.0.1:9",
+    },
+  });
+  return { ...result, childState, output: `${result.stdout || ""}${result.stderr || ""}` };
+}
+
+test("install accepts --yes and --force together, in either order", () => {
+  // A single flag slot made these mutually exclusive, yet they answer different
+  // questions: --yes consents to installing Ollama itself, --force to a model
+  // this machine is rated too small for. Installing an oversized model on a
+  // machine without Ollama needs both at once.
+  for (const flags of [["--yes", "--force"], ["--force", "--yes"]]) {
+    const result = runLocalModels("install", "flag-probe:latest", ...flags);
+    assert.notEqual(result.status, 0);
+    const state = JSON.parse(readFileSync(path.join(result.childState, "download.json"), "utf8"));
+    // Reaching the loopback check proves both were read as flags rather than
+    // mistaken for the tag, and that --yes was still honored beside --force.
+    assert.match(state.error, /not loopback/, flags.join(" "));
+  }
+});
+
+test("a missing Ollama is named as installable rather than reported as absent", () => {
+  // Without --yes the command must say what to do next, not just that Ollama is
+  // missing: one flag installs the runtime headlessly and then the model.
+  const result = runLocalModels("install", "flag-probe:latest");
+  assert.notEqual(result.status, 0);
+  // On a machine that already has Ollama this reaches the loopback guard
+  // instead; either way it must never claim the model started downloading.
+  assert.match(result.output, /Re-run with --yes|not loopback/);
+});
+
+test("the usage text names both consent flags", () => {
+  const result = runLocalModels("no-such-action");
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /--force/);
+  assert.match(result.output, /--yes/);
+  assert.match(result.output, /install <tag-or-url>/);
 });
 
 test("a configured-off vision bridge is never re-enabled by a local pull", async () => {

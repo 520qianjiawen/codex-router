@@ -20,6 +20,7 @@ import {
 import { STATE_DIR } from "./paths.mjs";
 import { readUserModels, userModelEntry, writeUserModels } from "./user-models.mjs";
 import {
+  canonicalLocalModelTag,
   localModelDisplayName,
   splitLocalModelTag,
 } from "./local-model-ref.mjs";
@@ -117,9 +118,15 @@ const LOCAL_AUTO_COMPACT = 28000;
 export function setLocalModelEnabled(tag, enabled, { capabilitiesFor } = {}) {
   const value = String(tag || "").trim();
   if (!value) throw new Error("A model tag is required.");
-  const current = new Set(readLocalModelSelection().enabled);
-  if (enabled) current.add(value);
-  else current.delete(value);
+  // Store one spelling per model. The downloader normalizes to `gemma3:latest`
+  // while the CLI used to store whatever was typed, so a set keyed on the raw
+  // string could hold both and `set gemma3 off` would clear neither. Dropping
+  // every spelling first also migrates those older entries on the next write.
+  const canonical = canonicalLocalModelTag(value);
+  const remaining = readLocalModelSelection().enabled.filter(
+    (entry) => canonicalLocalModelTag(entry) !== canonical,
+  );
+  const current = new Set(enabled ? [...remaining, canonical] : remaining);
   const selection = writeSelection({ version: 1, enabled: [...current].sort() });
   syncLocalUserModels({ enabled: selection.enabled, ...(capabilitiesFor ? { capabilitiesFor } : {}) });
   // Checking a model is the operator saying they want it available, so the
@@ -415,6 +422,13 @@ export function runningLocalModels({ spawn = spawnSync } = {}) {
   }
 }
 
+// Answers "is this model checked?" across spellings, so a caller holding
+// `gemma3` and a state file holding `gemma3:latest` agree.
+export function isLocalModelEnabled(tag, selection = readLocalModelSelection()) {
+  const canonical = canonicalLocalModelTag(tag);
+  return selection.enabled.some((entry) => canonicalLocalModelTag(entry) === canonical);
+}
+
 // Deleting reclaims gigabytes and cannot be undone without downloading again,
 // so the caller must pass explicit consent rather than this inferring it.
 export function removeLocalModel(tag, { spawn = spawnSync, confirmed = false, capabilitiesFor } = {}) {
@@ -444,7 +458,10 @@ export function localModelsSnapshot({
   capabilities,
   agentChecks = readAgentChecks(),
 } = {}) {
-  const enabled = new Set(selection.enabled);
+  // Compared canonically: `ollama list` always prints `gemma3:latest`, while an
+  // older state file may hold the bare `gemma3` the CLI once stored. Matching
+  // on the raw string showed such a model as unchecked even though it routed.
+  const enabled = new Set(selection.enabled.map((tag) => canonicalLocalModelTag(tag)));
   const runningSet = new Set(running);
   const cache = capabilities;
   const models = inventory.map((entry) => {
@@ -463,7 +480,7 @@ export function localModelsSnapshot({
       family: identity.family,
       variant: identity.variant,
       capabilities: caps,
-      enabled: enabled.has(entry.tag),
+      enabled: enabled.has(canonicalLocalModelTag(entry.tag)),
       running: runningSet.has(entry.tag),
       // Reported by Ollama, not guessed from the name.
       vision: caps.includes("vision"),
@@ -866,28 +883,51 @@ export function suggestedVisionModels({
     );
 }
 
+// Every model the router knows about, in one browsable list.
+//
+// The two shortlists above are recommendations, and they deliberately drop
+// anything this machine cannot run. That also made those entries unreachable:
+// on an 8 GB laptop `qwen2.5-coder:14b`, `gpt-oss:20b` and `devstral` appeared
+// in no list at all, so there was no way to install one even deliberately.
+// This list hides nothing. It carries the fit rating instead, so the caller can
+// warn about a model that will not fit rather than pretend it does not exist.
 export function suggestedExploreModels({
   capacity = detectMachine(),
   installed = [],
 } = {}) {
   const fresh = notInstalled(installed);
-  return EXPLORE_LOCAL_MODELS
-    .filter((entry) => fresh(entry.tag))
-    .map((entry) => {
-      const identity = splitLocalModelTag(entry.tag);
-      const research = LOCAL_FAMILY_RESEARCH[identity.family];
-      return {
-        ...entry,
-        family: identity.family,
-        variant: identity.variant,
-        displayName: entry.displayName || localModelDisplayName(entry.tag),
-        fit: entry.downloadable === false ? "cloud-only" : rateModelFit(entry.sizeGb, capacity),
-        diskFit: entry.downloadable === false ? "cloud-only" : rateDiskFit(entry.sizeGb, capacity),
-        researchStatus: research?.status || "Cataloged · compatibility unverified",
-        researchCapabilities: research?.capabilities || [],
-        researchNote: research?.note || "Verify capabilities after pull.",
-      };
+  const seen = new Set();
+  const entries = [];
+  for (const entry of [...EXPLORE_LOCAL_MODELS, ...SUGGESTED_LOCAL_MODELS, ...VISION_CATALOG]) {
+    // `devstral` and `devstral:latest` are one model; the shortlists spell the
+    // bare form and the explore catalog spells the tagged one.
+    const canonical = canonicalLocalModelTag(entry.tag);
+    if (seen.has(canonical) || !fresh(entry.tag)) continue;
+    seen.add(canonical);
+    let identity;
+    try {
+      identity = splitLocalModelTag(entry.tag);
+    } catch {
+      identity = { family: entry.tag, variant: "latest" };
+    }
+    const research = LOCAL_FAMILY_RESEARCH[identity.family];
+    const cloudOnly = entry.downloadable === false;
+    entries.push({
+      // Defaults first so a catalog that states either one still wins.
+      tools: false,
+      downloadable: true,
+      ...entry,
+      family: identity.family,
+      variant: identity.variant,
+      displayName: entry.displayName || localModelDisplayName(entry.tag),
+      fit: cloudOnly ? "cloud-only" : rateModelFit(entry.sizeGb, capacity),
+      diskFit: cloudOnly ? "cloud-only" : rateDiskFit(entry.sizeGb, capacity),
+      researchStatus: research?.status || "Cataloged · compatibility unverified",
+      researchCapabilities: research?.capabilities || [],
+      researchNote: research?.note || "Verify capabilities after pull.",
     });
+  }
+  return entries;
 }
 
 // Mirrors the vision catalog's own ranking: measured-accurate, then partial,

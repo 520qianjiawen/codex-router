@@ -22,7 +22,9 @@ export function normalizeLocalModelTag(input) {
       throw new Error("Use an Ollama model-page URL or enter the model tag directly.");
     }
     const parts = parsed.pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
-    if (parts.length < 2 || parts[0] === "search" || parts[0] === "library" && parts.length < 2) {
+    // `/library/<model>` and `/<namespace>/<model>` are the two model-page
+    // shapes; anything shorter is a family or search page with no tag in it.
+    if (parts.length < 2 || parts[0] === "search") {
       throw new Error("That URL does not contain an Ollama model tag.");
     }
     candidate = parts[0] === "library" ? parts.slice(1).join("/") : parts.join("/");
@@ -35,6 +37,20 @@ export function normalizeLocalModelTag(input) {
     throw new Error(`Invalid Ollama model tag: ${candidate}`);
   }
   return candidate;
+}
+
+// `gemma3` and `gemma3:latest` are the same model, but only the second is what
+// `ollama list` prints. State written from either spelling has to compare
+// equal, or `set gemma3 off` silently fails to clear an entry the downloader
+// stored as `gemma3:latest`. Unparseable input falls back to its trimmed self
+// instead of throwing: callers use this to match stored entries, and a corrupt
+// entry should be inert rather than fatal.
+export function canonicalLocalModelTag(input) {
+  try {
+    return normalizeLocalModelTag(input);
+  } catch {
+    return String(input || "").trim();
+  }
 }
 
 export function splitLocalModelTag(input) {

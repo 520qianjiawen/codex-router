@@ -623,7 +623,7 @@ function startPanel() {
     }
   }
 
-  async function startLocalInstall(model) {
+  async function startLocalInstall(model, { force = false } = {}) {
     state.localRemoveArmed = null;
     state.localModelBusy = { kind: "install", tag: model };
     state.localModels = {
@@ -632,15 +632,26 @@ function startPanel() {
     };
     renderLocalModels();
     try {
-      await call("install_local_model", { model });
+      // The router installs and starts Ollama headlessly as part of this call
+      // when it is missing, so one action covers the runtime and the model.
+      await call("install_local_model", { model, force });
       await pollLocalInstall(model);
     } catch (error) {
+      const detail = errorMessage(error);
       try {
         state.localModels = await call("local_models");
       } catch {}
-      showToast(errorMessage(error), true);
       state.localModelBusy = null;
       renderLocalModels();
+      // A model rated too large is refused once, not hidden. Ask, then retry
+      // with the override so every catalog entry stays installable.
+      if (!force && detail.includes("--force")) {
+        if (window.confirm(`${detail}\n\nDownload ${model} anyway?`)) {
+          await startLocalInstall(model, { force: true });
+        }
+        return;
+      }
+      showToast(detail, true);
     }
   }
 

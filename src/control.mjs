@@ -709,7 +709,7 @@ async function handleSubagents(action, value, flag) {
 async function runVisionBridgeSetup({ consent }) {
   const { readVisionBridgeSettings, setVisionBridgeLocal, setVisionBridgeEnabled } =
     await import("./vision-bridge-state.mjs");
-  const { suggestLocalVisionSetup, ollamaAvailable, pullOllamaModel, OLLAMA_INSTALL_HINT } =
+  const { suggestLocalVisionSetup, ollamaAvailable, pullOllamaModel, ollamaInstallMessage } =
     await import("./vision-host.mjs");
 
   const suggestion = await suggestLocalVisionSetup(readVisionBridgeSettings());
@@ -731,7 +731,7 @@ async function runVisionBridgeSetup({ consent }) {
     process.stderr.write(
       `No local vision runtime is running.\n` +
         `Recommended for this machine (${profile.memGib} GB ${profile.arch}): ${chosen}.\n` +
-        `${OLLAMA_INSTALL_HINT}\n` +
+        `${ollamaInstallMessage()}\n` +
         `Prefer llama.cpp? Start it, then: ./bin/control vision-bridge local ${chosen} http://127.0.0.1:8080/v1\n`,
     );
     return;
@@ -838,9 +838,9 @@ async function handleVisionBridge(action, value, extra) {
     // pinned by the worker only after it lands.
     const tag = String(value || "").trim();
     if (!tag) throw new Error("Usage: control vision-bridge pull <model-tag>");
-    const { ollamaAvailable, OLLAMA_INSTALL_HINT } = await import("./vision-host.mjs");
+    const { ollamaAvailable, ollamaInstallMessage } = await import("./vision-host.mjs");
     if (!ollamaAvailable()) {
-      throw new Error(`Ollama is not installed. ${OLLAMA_INSTALL_HINT}`);
+      throw new Error(`Ollama is not installed. ${ollamaInstallMessage()}`);
     }
     const { readVisionDownload, writeVisionDownload } = await import(
       "./vision-download.mjs"
@@ -969,10 +969,17 @@ async function handleVisionBridge(action, value, extra) {
 // Local models are managed as their own thing, not as a vision detail: the
 // operator installs, checks, and removes them here, and the vision bridge is
 // only one of the consumers.
-async function handleLocalModels(action, value, flag) {
+async function handleLocalModels(action, value, ...rest) {
+  // Variadic because `--yes` and `--force` answer different questions and an
+  // install can need both: `--yes` consents to installing Ollama itself,
+  // `--force` consents to a model this machine may not fit. A single flag slot
+  // made that combination unexpressible.
+  const options = rest.filter((item) => typeof item === "string");
+  const flags = new Set(options.filter((item) => item.startsWith("--")));
+  const positional = options.find((item) => !item.startsWith("--"));
   const {
+    isLocalModelEnabled,
     localModelsSnapshot,
-    readLocalModelSelection,
     removeLocalModel,
     setLocalModelEnabled,
   } = await import("./local-models.mjs");
@@ -993,7 +1000,7 @@ async function handleLocalModels(action, value, flag) {
     // single unbroken line, which only got worse once the snapshot grew a
     // download list. Explicit `--json` keeps the machine contract, and a bare
     // invocation is readable.
-    if (value === "--json" || flag === "--json" || !process.stdout.isTTY) {
+    if (value === "--json" || flags.has("--json") || !process.stdout.isTTY) {
       process.stdout.write(`${JSON.stringify(current)}\n`);
       return;
     }
@@ -1020,9 +1027,10 @@ async function handleLocalModels(action, value, flag) {
   if (action === "inspect") {
     // Answers "can Codex drive this?" for a few kilobytes instead of a
     // multi-gigabyte download.
+    // normalizeLocalModelTag throws on an empty or malformed reference, so
+    // there is no separate emptiness check to make here.
     const { normalizeLocalModelTag } = await import("./local-model-ref.mjs");
     const tag = normalizeLocalModelTag(value);
-    if (!tag) throw new Error("Usage: control local-models inspect <model-tag>");
     const {
       fetchRegistryCapabilities,
       fetchRegistryContext,
@@ -1066,14 +1074,16 @@ async function handleLocalModels(action, value, flag) {
       return;
     }
     if (subcommand === "update") {
-      if (flag !== "--yes") throw new Error("Updating Ollama changes system software. Pass --yes to confirm.");
+      if (!flags.has("--yes")) {
+        throw new Error("Updating Ollama changes system software. Pass --yes to confirm.");
+      }
       const result = updateOllamaRuntime();
       const running = await ensureOllamaHeadless({ install: false });
       process.stdout.write(`${JSON.stringify({ ...result, running: running.running })}\n`);
       return;
     }
     if (subcommand === "start") {
-      const result = await ensureOllamaHeadless({ install: flag === "--yes" });
+      const result = await ensureOllamaHeadless({ install: flags.has("--yes") });
       process.stdout.write(`${JSON.stringify(result)}\n`);
       return;
     }
@@ -1136,17 +1146,26 @@ async function handleLocalModels(action, value, flag) {
       const capacity = detectMachine();
       const fit = advertised ? rateModelFit(advertised.sizeGb, capacity) : undefined;
       const diskFit = advertised ? rateDiskFit(advertised.sizeGb, capacity) : undefined;
-      if ((fit === "too-large" || diskFit === "too-large") && flag !== "--force") {
+      if ((fit === "too-large" || diskFit === "too-large") && !flags.has("--force")) {
         throw new Error(
           `${fitAdvisory(tag, advertised.sizeGb, capacity) || `${tag} may not fit on this machine's free disk.`} Pass --force to download it anyway.`,
         );
       }
       writePhase("Preparing headless Ollama");
-      const { ensureOllamaHeadless } = await import("./ollama-runtime.mjs");
-      // A missing runtime is installed only as part of an explicit install click
-      // (`--yes`). Existing runtimes are started with `ollama serve`, detached
-      // from the tray so no GUI window is involved.
-      await ensureOllamaHeadless({ install: flag === "--yes" });
+      const { ensureOllamaHeadless, ollamaCommand } = await import("./ollama-runtime.mjs");
+      // One action installs both. `--yes` is the operator's consent to touch
+      // system software: with it a missing Ollama is installed headlessly (the
+      // Homebrew formula when available, otherwise the official installer with
+      // OLLAMA_NO_START=1) and then started as a detached `ollama serve`. The
+      // Ollama desktop app is never launched. Without `--yes`, say so plainly
+      // rather than surfacing the runtime layer's generic "not installed".
+      const installRuntime = flags.has("--yes");
+      if (!installRuntime && !ollamaCommand()) {
+        throw new Error(
+          `Ollama is not installed. Re-run with --yes to install it headlessly and then download ${tag}.`,
+        );
+      }
+      await ensureOllamaHeadless({ install: installRuntime });
       writePhase("Starting model download");
       const child = spawn(process.execPath, [path.join(REPO_ROOT, "src", "local-download.mjs"), tag], {
         detached: true,
@@ -1207,22 +1226,29 @@ async function handleLocalModels(action, value, flag) {
   if (action === "uninstall") {
     const tag = String(value || "").trim();
     if (!tag) throw new Error("Usage: control local-models uninstall <model-tag> --yes");
-    removeLocalModel(tag, { confirmed: flag === "--yes" || value === "--yes" });
+    removeLocalModel(tag, { confirmed: flags.has("--yes") || value === "--yes" });
     refreshModelSettingsCatalog({ routes: true });
     await restartRouterForLocalRoutes();
   } else if (action === "set") {
-    if (!["on", "off"].includes(flag)) {
+    if (!["on", "off"].includes(positional)) {
       throw new Error("Usage: control local-models set <model-tag> <on|off>");
     }
-    const enabled = flag === "on";
-    const wasEnabled = readLocalModelSelection().enabled.includes(String(value).trim());
+    const enabled = positional === "on";
+    // Compared across spellings: the downloader stores `gemma3:latest` and a
+    // hand-typed `gemma3` is the same model, so a raw string match here would
+    // skip the router restart that publishes the route change.
+    const wasEnabled = isLocalModelEnabled(value);
     setLocalModelEnabled(value, enabled);
     refreshModelSettingsCatalog({ routes: true });
     if (wasEnabled !== enabled) await restartRouterForLocalRoutes();
   } else {
     throw new Error(
-      "Usage: control local-models list|inspect <tag-or-url>|install <tag-or-url> [--yes]|" +
-        "benchmark <tag>|runtime status|start|update --yes|uninstall <tag> --yes|set <tag> <on|off>",
+      "Usage: control local-models list [--json]|inspect <tag-or-url>|" +
+        "install <tag-or-url> [--yes] [--force]|benchmark <tag>|" +
+        "runtime status|runtime start [--yes]|runtime update --yes|" +
+        "uninstall <tag> --yes|set <tag> <on|off>\n" +
+        "  --yes    consent to installing/starting Ollama itself (headless)\n" +
+        "  --force  download a model rated too large for this machine anyway",
     );
   }
   process.stdout.write(`${JSON.stringify(snapshot())}\n`);
@@ -1386,7 +1412,7 @@ if (args.includes("--probe")) {
 } else if (args[0] === "subagents") {
   await handleSubagents(args[1], args[2], args[3]);
 } else if (args[0] === "local-models") {
-  await handleLocalModels(args[1], args[2], args[3]);
+  await handleLocalModels(args[1], args[2], ...args.slice(3));
 } else if (args[0] === "vision-bridge") {
   await handleVisionBridge(args[1] || "status", args[2], args[3]);
 } else if (args[0] === "picker") {

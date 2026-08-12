@@ -287,23 +287,27 @@ async fn local_models(state: State<'_, RouterState>) -> Result<Value, String> {
     .await
 }
 
+// `--yes` is consent to install and start Ollama itself when it is missing, so
+// a single install action covers both the runtime and the model. `force` is a
+// separate decision -- the operator accepting a model this machine is rated too
+// small for -- and the two have to be expressible together.
 #[tauri::command]
 async fn install_local_model(
     state: State<'_, RouterState>,
     model: String,
+    force: Option<bool>,
 ) -> Result<Value, String> {
     validate_local_model_ref(&model)?;
-    run_json_command(
-        state.inner().clone(),
-        vec![
-            "local-models".into(),
-            "install".into(),
-            model,
-            "--yes".into(),
-        ],
-        None,
-    )
-    .await
+    let mut args: Vec<String> = vec![
+        "local-models".into(),
+        "install".into(),
+        model,
+        "--yes".into(),
+    ];
+    if force.unwrap_or(false) {
+        args.push("--force".into());
+    }
+    run_json_command(state.inner().clone(), args, None).await
 }
 
 #[tauri::command]
