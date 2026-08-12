@@ -287,9 +287,11 @@ enable the family:
 ./bin/model-router codex multi-agent on
 ```
 
-The desktop panel and macOS tray Settings tab also provide per-model controls:
-which enabled models can run as subagents, and which models appear in the
-Codex picker.
+The desktop panel and macOS tray Settings tab provide both per-model controls
+and provider-level Select all / Unselect all actions for which enabled models
+can run as subagents and which models appear in the Codex picker. Fully quit
+and reopen Codex after changing either list; an open task keeps the model and
+subagent picker it started with.
 
 | Picker label | Model ID |
 | --- | --- |

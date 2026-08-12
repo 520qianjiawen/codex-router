@@ -661,6 +661,7 @@ async function handleSubagents(action, value, flag) {
     replaceMultiAgentState,
     setMultiAgentMode,
     setMultiAgentModel,
+    setMultiAgentModels,
     subagentSettingsSnapshot,
   } = await import("./multi-agent-state.mjs");
   if (action === "status") {
@@ -691,9 +692,25 @@ async function handleSubagents(action, value, flag) {
       throw new Error(`Unknown model slug: ${value}`);
     }
     setMultiAgentModel(value, flag === "on");
+  } else if (action === "provider") {
+    if (!["on", "off"].includes(flag)) {
+      throw new Error("Usage: control subagents provider <provider-id> <on|off>");
+    }
+    const { canonicalProviderId, selectedConfiguredListedModels } = await import(
+      "./provider-selection.mjs"
+    );
+    const provider = canonicalProviderId(String(value || "").trim());
+    const slugs = selectedConfiguredListedModels()
+      .filter((model) => canonicalProviderId(model.provider) === provider)
+      .map((model) => model.slug);
+    if (slugs.length === 0) {
+      throw new Error(`No enabled models found for provider: ${value}`);
+    }
+    setMultiAgentModels(slugs, flag === "on");
   } else {
     throw new Error(
-      "Usage: control subagents status|select-all|unselect-all|mode <all|selected|proven>|set <model-slug> <on|off>",
+      "Usage: control subagents status|select-all|unselect-all|mode <all|selected|proven>|" +
+        "set <model-slug> <on|off>|provider <provider-id> <on|off>",
     );
   }
   refreshModelSettingsCatalog();
@@ -1259,6 +1276,7 @@ async function handlePicker(action, value, flag) {
     modelPickerSnapshot,
     setAllModelsVisible,
     setModelVisible,
+    setModelsVisible,
   } = await import("./model-picker-state.mjs");
   if (action === "status") {
     process.stdout.write(`${JSON.stringify(modelPickerSnapshot())}\n`);
@@ -1282,8 +1300,43 @@ async function handlePicker(action, value, flag) {
       throw new Error(`Unknown model slug: ${value}`);
     }
     setModelVisible(value, flag === "show");
+  } else if (action === "provider") {
+    if (!["show", "hide"].includes(flag)) {
+      throw new Error("Usage: control picker provider <provider-id> <show|hide>");
+    }
+    const provider = String(value || "").trim();
+    let slugs;
+    if (provider === "openai") {
+      const { NATIVE_CATALOG_PATH } = await import("./paths.mjs");
+      const parsed = JSON.parse(readFileSync(NATIVE_CATALOG_PATH, "utf8"));
+      slugs = Array.isArray(parsed.models)
+        ? parsed.models
+            .filter((model) => model.visibility === "list")
+            .map((model) => String(model.slug))
+        : [];
+    } else {
+      const { canonicalProviderId, readProviderSelection } = await import(
+        "./provider-selection.mjs"
+      );
+      const { LISTED_MODELS } = await import("./model-registry.mjs");
+      const canonical = canonicalProviderId(provider);
+      const selected = new Set(readProviderSelection());
+      slugs = LISTED_MODELS
+        .filter(
+          (model) =>
+            selected.has(model.provider) && canonicalProviderId(model.provider) === canonical,
+        )
+        .map((model) => model.slug);
+    }
+    if (slugs.length === 0) {
+      throw new Error(`No enabled models found for provider: ${value}`);
+    }
+    setModelsVisible(slugs, flag === "show");
   } else {
-    throw new Error("Usage: control picker status|all <show|hide>|set <model-slug> <show|hide>");
+    throw new Error(
+      "Usage: control picker status|all <show|hide>|set <model-slug> <show|hide>|" +
+        "provider <provider-id> <show|hide>",
+    );
   }
   refreshModelSettingsCatalog();
   process.stdout.write(`${JSON.stringify(modelPickerSnapshot())}\n`);

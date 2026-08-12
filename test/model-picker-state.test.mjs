@@ -13,6 +13,7 @@ const {
   readHiddenModels,
   setAllModelsVisible,
   setModelVisible,
+  setModelsVisible,
 } = await import("../src/model-picker-state.mjs");
 
 test("picker visibility defaults to no hidden models", () => {
@@ -36,4 +37,17 @@ test("picker bulk visibility hides and shows every supplied model", () => {
   assert.deepEqual([...readHiddenModels()].sort(), [...slugs].sort());
   setAllModelsVisible(slugs, true);
   assert.deepEqual([...readHiddenModels()], []);
+});
+
+test("provider-sized picker changes preserve other providers", () => {
+  setModelsVisible(["commandcode/kimi-k3", "commandcode-messages/claude-opus-4.8"], false);
+  setModelVisible("kimi-oauth/k3", false);
+  assert.deepEqual(modelPickerSnapshot().hidden, [
+    "commandcode-messages/claude-opus-4.8",
+    "commandcode/kimi-k3",
+    "kimi-oauth/k3",
+  ]);
+
+  setModelsVisible(["commandcode/kimi-k3", "commandcode-messages/claude-opus-4.8"], true);
+  assert.deepEqual(modelPickerSnapshot().hidden, ["kimi-oauth/k3"]);
 });

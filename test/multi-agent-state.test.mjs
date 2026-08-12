@@ -15,6 +15,7 @@ const {
   readMultiAgentSettings,
   setMultiAgentMode,
   setMultiAgentModel,
+  setMultiAgentModels,
   subagentSettingsSnapshot,
 } = await import("../src/multi-agent-state.mjs");
 
@@ -66,6 +67,26 @@ test("all mode promotes every model except explicit exclusions", () => {
       ["kimi-oauth/k3", "v2"],
     ],
   );
+});
+
+test("provider-sized subagent changes preserve other providers", () => {
+  setMultiAgentMode("all");
+  setMultiAgentModel("kimi-oauth/k3", false);
+  setMultiAgentModels(
+    ["commandcode/kimi-k3", "commandcode-messages/claude-opus-4.8"],
+    false,
+  );
+  assert.deepEqual(subagentSettingsSnapshot().disabled, [
+    "commandcode-messages/claude-opus-4.8",
+    "commandcode/kimi-k3",
+    "kimi-oauth/k3",
+  ]);
+
+  setMultiAgentModels(
+    ["commandcode/kimi-k3", "commandcode-messages/claude-opus-4.8"],
+    true,
+  );
+  assert.deepEqual(subagentSettingsSnapshot().disabled, ["kimi-oauth/k3"]);
 });
 
 test("all mode follows picker visibility before promoting models", () => {

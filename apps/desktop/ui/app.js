@@ -428,11 +428,15 @@ function startPanel() {
         }));
     }
 
-    function providerGroupsMarkup(groups, rowMarkup) {
+    function providerGroupsMarkup(groups, rowMarkup, setting) {
       return groups
         .map(
           (group) => `<details class="model-provider-group" open>
             <summary><span>${escapeHtml(providerLabel(group.provider))}</span><span class="model-provider-count">${group.items.length}</span></summary>
+            <div class="model-provider-toolbar">
+              <button class="text-button" type="button" data-provider-setting="${setting}" data-provider="${escapeHtml(group.provider)}" data-enabled="true">${setting === "picker" ? "Show all" : "Select all"}</button>
+              <button class="text-button" type="button" data-provider-setting="${setting}" data-provider="${escapeHtml(group.provider)}" data-enabled="false">Unselect all</button>
+            </div>
             <div class="model-settings-list">${group.items.map(rowMarkup).join("")}</div>
           </details>`,
         )
@@ -463,7 +467,7 @@ function startPanel() {
       };
 
     elements.subagentModelList.innerHTML = subagentGroups.length
-      ? providerGroupsMarkup(subagentGroups, subagentRow)
+      ? providerGroupsMarkup(subagentGroups, subagentRow, "subagents")
       : '<div class="empty-state">Enable a provider to choose subagent models here.</div>';
     const subagentCount = subagent.mode === "all"
       ? enabledModels.filter(
@@ -488,7 +492,7 @@ function startPanel() {
       };
 
     elements.pickerModelList.innerHTML = pickerGroups.length
-      ? providerGroupsMarkup(pickerGroups, pickerRow)
+      ? providerGroupsMarkup(pickerGroups, pickerRow, "picker")
       : '<div class="empty-state">No enabled models to show.</div>';
     const pickerCount = pickerModels.filter((model) => !hiddenModels.has(model.slug)).length;
     elements.pickerSummary.textContent = `${pickerCount} visible · ${hiddenModels.size} hidden`;
@@ -698,6 +702,31 @@ function startPanel() {
   }
 
   async function handleModelSettingsClick(event) {
+    const providerButton = event.target.closest("button[data-provider-setting]");
+    if (providerButton) {
+      const setting = providerButton.dataset.providerSetting;
+      const provider = providerButton.dataset.provider;
+      const enabled = providerButton.dataset.enabled === "true";
+      state.modelSettingsBusy = true;
+      renderModelSettings();
+      try {
+        if (setting === "subagents") {
+          state.snapshot = await call("set_subagent_provider", { provider, enabled });
+        } else {
+          state.snapshot = await call("set_picker_provider", { provider, visible: enabled });
+        }
+        showToast(
+          `${provider} models ${enabled ? "selected" : "unselected"}. Restart Codex to refresh its picker.`,
+        );
+        await refreshPanel({ quiet: true });
+      } catch (error) {
+        showToast(errorMessage(error), true);
+      } finally {
+        state.modelSettingsBusy = false;
+        renderModelSettings();
+      }
+      return;
+    }
     const button = event.target.closest("button[data-model-action]");
     if (!button) return;
     const group = button.dataset.modelAction;
@@ -708,11 +737,15 @@ function startPanel() {
       if (group === "subagents") {
         const selectAll = action === "select-all";
         state.snapshot = await call("set_subagent_selection", { selectAll });
-        showToast(selectAll ? "Every picker-visible model can now run as a subagent." : "Subagent selection cleared.");
+        showToast(
+          `${selectAll ? "Every picker-visible model can now run as a subagent." : "Subagent selection cleared."} Restart Codex to refresh its picker.`,
+        );
       } else {
         const showAll = action === "show-all";
         state.snapshot = await call("set_picker_models", { showAll });
-        showToast(showAll ? "Every model is visible in the picker." : "All models hidden from the picker.");
+        showToast(
+          `${showAll ? "Every model is visible in the picker." : "All models hidden from the picker."} Restart Codex to refresh its picker.`,
+        );
       }
       await refreshPanel({ quiet: true });
     } catch (error) {
@@ -735,11 +768,13 @@ function startPanel() {
           slug: subagent.dataset.subagent,
           enabled: subagent.checked,
         });
+        showToast("Subagent selection updated. Restart Codex to refresh its picker.");
       } else {
         state.snapshot = await call("set_picker_model", {
           slug: picker.dataset.picker,
           visible: picker.checked,
         });
+        showToast("Model picker updated. Restart Codex to refresh its picker.");
       }
       await refreshPanel({ quiet: true });
     } catch (error) {

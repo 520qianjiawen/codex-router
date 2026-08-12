@@ -101,17 +101,26 @@ export function setMultiAgentMode(mode) {
 }
 
 export function setMultiAgentModel(slug, enabled) {
-  const value = String(slug || "").trim();
-  if (!value) throw new Error("A model slug is required.");
+  return setMultiAgentModels([slug], enabled);
+}
+
+// Applies a provider-sized selection in one protected-state write. Besides
+// being faster than one command per model, this prevents a half-cleared
+// provider when the UI closes or a later catalog refresh fails.
+export function setMultiAgentModels(slugs, enabled) {
+  const values = [...new Set(slugs.map((slug) => String(slug || "").trim()).filter(Boolean))];
+  if (values.length === 0) throw new Error("At least one model slug is required.");
   const current = readMultiAgentSettings();
   const enabledSet = new Set(current.enabled);
   const disabledSet = new Set(current.disabled);
-  if (enabled) {
-    enabledSet.add(value);
-    disabledSet.delete(value);
-  } else {
-    enabledSet.delete(value);
-    disabledSet.add(value);
+  for (const value of values) {
+    if (enabled) {
+      enabledSet.add(value);
+      disabledSet.delete(value);
+    } else {
+      enabledSet.delete(value);
+      disabledSet.add(value);
+    }
   }
   const next = {
     version: 2,

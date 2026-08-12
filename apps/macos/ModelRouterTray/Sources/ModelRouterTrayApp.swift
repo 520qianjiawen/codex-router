@@ -1188,9 +1188,21 @@ final class RouterStore: ObservableObject {
     )
   }
 
+  func setSubagentProvider(_ provider: String, enabled: Bool) async {
+    await applyModelSettings(
+      arguments: ["subagents", "provider", provider, enabled ? "on" : "off"]
+    )
+  }
+
   func setPickerModel(_ slug: String, visible: Bool) async {
     await applyModelSettings(
       arguments: ["picker", "set", slug, visible ? "show" : "hide"]
+    )
+  }
+
+  func setPickerProvider(_ provider: String, visible: Bool) async {
+    await applyModelSettings(
+      arguments: ["picker", "provider", provider, visible ? "show" : "hide"]
     )
   }
 
@@ -2740,6 +2752,16 @@ private struct TrayView: View {
                 expanded: providerBinding(group.provider)
               ) {
                 VStack(alignment: .leading, spacing: 6) {
+                  toolbar(
+                    buttons: [
+                      ("Select all", {
+                        Task { await store.setSubagentProvider(group.provider, enabled: true) }
+                      }),
+                      ("Unselect all", {
+                        Task { await store.setSubagentProvider(group.provider, enabled: false) }
+                      }),
+                    ]
+                  )
                   ForEach(group.models) { model in
                     toggleRow(
                       title: model.displayName,
@@ -2781,6 +2803,16 @@ private struct TrayView: View {
                 expanded: providerBinding(group.provider)
               ) {
                 VStack(alignment: .leading, spacing: 6) {
+                  toolbar(
+                    buttons: [
+                      ("Show all", {
+                        Task { await store.setPickerProvider(group.provider, visible: true) }
+                      }),
+                      ("Unselect all", {
+                        Task { await store.setPickerProvider(group.provider, visible: false) }
+                      }),
+                    ]
+                  )
                   ForEach(group.models) { model in
                     toggleRow(
                       title: model.displayName,

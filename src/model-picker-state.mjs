@@ -36,11 +36,19 @@ export function modelPickerSnapshot() {
 }
 
 export function setModelVisible(slug, visible) {
-  const value = String(slug || "").trim();
-  if (!value) throw new Error("A model slug is required.");
+  return setModelsVisible([slug], visible);
+}
+
+// Changes only the supplied models so provider-level actions preserve every
+// other provider's picker choices.
+export function setModelsVisible(slugs, visible) {
+  const values = [...new Set(slugs.map((slug) => String(slug || "").trim()).filter(Boolean))];
+  if (values.length === 0) throw new Error("At least one model slug is required.");
   const hidden = readHiddenModels();
-  if (visible) hidden.delete(value);
-  else hidden.add(value);
+  for (const value of values) {
+    if (visible) hidden.delete(value);
+    else hidden.add(value);
+  }
 
   const stateDir = path.dirname(MODEL_PICKER_STATE_PATH);
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });

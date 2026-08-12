@@ -111,8 +111,10 @@ fn main() {
             set_provider_enabled,
             set_subagent_mode,
             set_subagent_model,
+            set_subagent_provider,
             set_subagent_selection,
             set_picker_model,
+            set_picker_provider,
             set_picker_models,
             set_login_free,
             set_island_enabled,
@@ -470,6 +472,25 @@ async fn set_subagent_model(
 }
 
 #[tauri::command]
+async fn set_subagent_provider(
+    state: State<'_, RouterState>,
+    provider: String,
+    enabled: bool,
+) -> Result<Value, String> {
+    run_json_command(
+        state.inner().clone(),
+        vec![
+            "subagents".into(),
+            "provider".into(),
+            provider,
+            (if enabled { "on" } else { "off" }).into(),
+        ],
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
 async fn set_subagent_selection(
     state: State<'_, RouterState>,
     select_all: bool,
@@ -502,6 +523,25 @@ async fn set_picker_model(
             "picker".into(),
             "set".into(),
             slug,
+            (if visible { "show" } else { "hide" }).into(),
+        ],
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn set_picker_provider(
+    state: State<'_, RouterState>,
+    provider: String,
+    visible: bool,
+) -> Result<Value, String> {
+    run_json_command(
+        state.inner().clone(),
+        vec![
+            "picker".into(),
+            "provider".into(),
+            provider,
             (if visible { "show" } else { "hide" }).into(),
         ],
         None,
