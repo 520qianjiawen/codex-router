@@ -100,7 +100,7 @@ wire_api = "responses"
     };
 
     try {
-      const catalog = child("catalog.mjs", ["--refresh-native", "--bundled-native"], env);
+      const catalog = child("catalog.mjs", ["--refresh-native"], env);
       assert.equal(catalog.status, 0, catalog.stderr);
       assert.equal(JSON.parse(catalog.stdout).routed_catalog_active, false);
 

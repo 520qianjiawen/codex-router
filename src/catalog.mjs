@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -15,6 +16,7 @@ import {
   ANNOUNCED_MODELS_PATH,
   CONFIG_PATH,
   MERGED_CATALOG_PATH,
+  MODELS_CACHE_PATH,
   NATIVE_ALIAS_PATH,
   NATIVE_CATALOG_PATH,
 } from "./paths.mjs";
@@ -41,7 +43,90 @@ import {
 } from "./native-catalog-source.mjs";
 
 const refresh = process.argv.includes("--refresh-native");
-const bundled = process.argv.includes("--bundled-native");
+
+function validNativeCatalog(parsed) {
+  return parsed && Array.isArray(parsed.models) && parsed.models.length > 0;
+}
+
+// The account cache stores the raw instruction template while the bundled
+// catalog ships `base_instructions` with the template variables already
+// substituted: for every shared slug that carries variables, the bundled
+// `base_instructions` equals the account template with `{{ personality }}`
+// replaced by `instructions_variables.personality_default`. Mirror that
+// substitution — and strip any placeholder without a default — so a literal
+// `{{ ... }}` token can never reach a model's system prompt.
+const INSTRUCTION_PLACEHOLDER = /\{\{\s*([\w.-]+)\s*\}\}/g;
+
+export function deriveBaseInstructions(modelMessages) {
+  const template = modelMessages?.instructions_template;
+  if (typeof template !== "string") return undefined;
+  const variables = modelMessages?.instructions_variables;
+  const substituted = template.replace(INSTRUCTION_PLACEHOLDER, (_token, name) => {
+    const fallback = variables?.[`${name}_default`];
+    return typeof fallback === "string" ? fallback : "";
+  });
+  // A default could itself contain a placeholder; the guarantee is that none
+  // survive, not that substitution is recursive.
+  return substituted.replace(INSTRUCTION_PLACEHOLDER, "");
+}
+
+// Codex has two native catalogs: the account-aware catalog (`debug models`)
+// and the static catalog shipped in the binary (`--bundled`). Neither is a
+// safe source by itself. The account catalog can add models or change their
+// visibility without a client update, while the bundled catalog can contain a
+// newer schema or models absent from a stale account cache. Preserve the
+// account entry for every slug it lists (first occurrence wins on a
+// duplicate), then append bundled-only entries.
+export function mergeNativeCatalogs(accountCatalog, bundledCatalog) {
+  const account = validNativeCatalog(accountCatalog) ? accountCatalog.models : [];
+  const fallback = validNativeCatalog(bundledCatalog) ? bundledCatalog.models : [];
+  const fallbackBySlug = new Map(
+    fallback.map((model) => [String(model?.slug || ""), model]),
+  );
+  const normalizedAccount = [];
+  const seen = new Set();
+  for (const model of account) {
+    const slug = String(model?.slug || "");
+    if (seen.has(slug)) continue;
+    seen.add(slug);
+    const base = fallbackBySlug.get(slug);
+    const merged = base ? { ...base, ...model } : { ...model };
+    // The remote cache may omit `base_instructions` because Codex can derive
+    // it internally. A custom model_catalog_json is parsed more strictly and
+    // requires the field, so derive it the same way for account-only models
+    // such as Codex Spark.
+    if (typeof merged.base_instructions !== "string") {
+      const derived = deriveBaseInstructions(merged.model_messages);
+      if (typeof derived === "string") merged.base_instructions = derived;
+    }
+    normalizedAccount.push(merged);
+  }
+  return {
+    models: [
+      ...normalizedAccount,
+      ...fallback.filter((model) => !seen.has(String(model?.slug || ""))),
+    ],
+  };
+}
+
+// One read serves both the catalog contents and the fingerprint; reading the
+// file twice would hash a possibly different snapshot than the one merged.
+function readModelsCache() {
+  const missing = { catalog: undefined, fingerprint: undefined };
+  if (!existsSync(MODELS_CACHE_PATH)) return missing;
+  try {
+    const parsed = JSON.parse(readFileSync(MODELS_CACHE_PATH, "utf8"));
+    if (!validNativeCatalog(parsed)) return missing;
+    return {
+      catalog: parsed,
+      fingerprint: createHash("sha256")
+        .update(JSON.stringify(parsed.models))
+        .digest("hex"),
+    };
+  } catch {
+    return missing;
+  }
+}
 
 function atomicContents(target, contents) {
   mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
@@ -73,27 +158,43 @@ function restoreFileSnapshot(target, snapshot) {
   }
 }
 
-function captureNative() {
-  const args = ["debug", "models"];
-  if (bundled) args.push("--bundled");
-  let output;
-  try {
-    output = runCodex(args, {
-      encoding: "utf8",
-      timeout: 30_000,
-      maxBuffer: 32 * 1024 * 1024,
-    });
-  } catch (error) {
-    if (bundled) throw error;
-    output = runCodex(["debug", "models", "--bundled"], {
-      encoding: "utf8",
-      timeout: 30_000,
-      maxBuffer: 32 * 1024 * 1024,
-    });
+function captureNative(cache = readModelsCache()) {
+  // This is the account-aware catalog Codex itself cached after signing in.
+  // Reading it directly also avoids asking `codex debug models` while the
+  // router catalog is active, which would merely return our own merged output.
+  let account = cache.catalog;
+  let fallback;
+  let accountError;
+  let fallbackError;
+  if (!account) {
+    try {
+      account = JSON.parse(runCodex(["debug", "models"], {
+        encoding: "utf8",
+        timeout: 30_000,
+        maxBuffer: 32 * 1024 * 1024,
+      }));
+    } catch (error) {
+      accountError = error;
+    }
   }
-  const parsed = JSON.parse(output);
-  if (!parsed || !Array.isArray(parsed.models) || parsed.models.length === 0) {
-    throw new Error("Codex returned an empty or invalid model catalog.");
+  // The bundled source supplies schema fields that the remote cache is allowed
+  // to omit, so use both when available. If it fails, account-only entries are
+  // still normalized above and remain preferable to an empty picker.
+  try {
+    fallback = JSON.parse(runCodex(["debug", "models", "--bundled"], {
+      encoding: "utf8",
+      timeout: 30_000,
+      maxBuffer: 32 * 1024 * 1024,
+    }));
+  } catch (error) {
+    fallbackError = error;
+  }
+  const parsed = mergeNativeCatalogs(account, fallback);
+  if (!validNativeCatalog(parsed)) {
+    const detail = accountError?.message || fallbackError?.message;
+    throw new Error(
+      `Codex returned no valid native model catalog${detail ? ` (${detail})` : ""}.`,
+    );
   }
   if (parsed.models.some((model) => MODEL_BY_SLUG.has(String(model.slug)))) {
     throw new Error(
@@ -101,8 +202,10 @@ function captureNative() {
     );
   }
   const capturedWith = codexVersion();
+  const sourceFingerprint = cache.fingerprint;
   atomicJson(NATIVE_CATALOG_PATH, {
     ...(capturedWith ? { captured_with: capturedWith } : {}),
+    ...(sourceFingerprint ? { native_source_fingerprint: sourceFingerprint } : {}),
     models: parsed.models,
   });
   return parsed;
@@ -113,11 +216,22 @@ function captureNative() {
 // carry different capability values for the same slug. An unknown current
 // version keeps the cache — with no binary to re-ask, stale is the best we
 // have.
-export function nativeCatalogIsReusable(parsed, currentVersion) {
+export function nativeCatalogIsReusable(
+  parsed,
+  currentVersion,
+  currentSourceFingerprint = undefined,
+) {
   if (!parsed || !Array.isArray(parsed.models) || parsed.models.length === 0) {
     return false;
   }
-  return !currentVersion || parsed.captured_with === currentVersion;
+  if (currentVersion && parsed.captured_with !== currentVersion) return false;
+  if (
+    currentSourceFingerprint &&
+    parsed.native_source_fingerprint !== currentSourceFingerprint
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function nativeCatalog() {
@@ -131,11 +245,14 @@ function nativeCatalog() {
     }
     return catalog;
   }
-  if (!existsSync(NATIVE_CATALOG_PATH) || refresh) return captureNative();
+  const cache = readModelsCache();
+  if (!existsSync(NATIVE_CATALOG_PATH) || refresh) return captureNative(cache);
   const parsed = JSON.parse(readFileSync(NATIVE_CATALOG_PATH, "utf8"));
-  if (nativeCatalogIsReusable(parsed, codexVersion())) return parsed;
+  if (nativeCatalogIsReusable(parsed, codexVersion(), cache.fingerprint)) {
+    return parsed;
+  }
   try {
-    return captureNative();
+    return captureNative(cache);
   } catch (error) {
     // Version-mismatched is still better than empty: serve the stale capture
     // when the re-capture fails, but say so instead of hiding it.
