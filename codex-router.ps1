@@ -10,7 +10,7 @@ $Commands = @(
   "setup", "install", "doctor", "status", "providers", "provider-key", "enable",
   "disable", "uninstall", "update", "rollback", "support-bundle",
   "smoke-test", "start", "test-model", "discover-models", "signed-routing",
-  "refresh-catalog"
+  "refresh-catalog", "media"
 )
 if ($Command -notin $Commands) {
   throw "Unknown command '$Command'. Choose: $($Commands -join ', ')."
@@ -71,6 +71,7 @@ switch ($Command) {
   "start" { Invoke-RouterNode "src\start.mjs" $Arguments }
   "test-model" { Invoke-RouterNode "src\compatibility-test.mjs" $Arguments }
   "discover-models" { Invoke-RouterNode "src\model-discovery.mjs" $Arguments }
+  "media" { Invoke-RouterNode "src\minimax-media.mjs" $Arguments }
 }
 
 exit 0

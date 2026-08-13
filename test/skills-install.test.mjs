@@ -31,6 +31,7 @@ import {
 // The repo's skill pack, installed into a throwaway codex home.
 const PACK = [
   "codex-router",
+  "codex-router-media",
   "codex-app-threads",
   "codex-in-app-browser",
   "codex-computer-use",
