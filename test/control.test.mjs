@@ -63,6 +63,7 @@ function probe(target, providers, usageEvents = [], options = {}) {
         CODEX_HOME: stateDir,
         MODEL_ROUTER_TARGET: target,
         MODEL_ROUTER_STATE_DIR: stateDir,
+        CODEX_ROUTER_TOOL_RESULT_AGING: "1",
       },
     });
     return JSON.parse(output);
@@ -157,6 +158,7 @@ test("codex probe includes native GPT models and the configured default", () => 
   assert.equal(slice.loginFreeManaged, false);
   assert.equal(slice.modelSettings.picker.hidden.length, 0);
   assert.ok(["all", "selected", "proven"].includes(slice.modelSettings.subagents.mode));
+  assert.equal(slice.modelSettings.toolResultAging.enabled, true);
 });
 
 test("codex probe exposes managed login-free mode without credential details", () => {
@@ -193,6 +195,32 @@ test("control exposes subagent and picker settings without credentials", () => {
       ),
     );
     assert.deepEqual(picker.hidden, []);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("control toggles tool-result aging without a router restart", () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-tool-result-aging-"));
+  const env = {
+    ...process.env,
+    MODEL_ROUTER_TARGET: "codex",
+    MODEL_ROUTER_STATE_DIR: stateDir,
+  };
+  delete env.CODEX_ROUTER_TOOL_RESULT_AGING;
+  const runControl = (action) =>
+    JSON.parse(
+      execFileSync(
+        process.execPath,
+        [path.join(root, "src", "control.mjs"), "tool-result-aging", action],
+        { cwd: root, encoding: "utf8", env },
+      ),
+    );
+  try {
+    assert.equal(runControl("status").enabled, true);
+    assert.equal(runControl("off").enabled, false);
+    assert.equal(runControl("status").enabled, false);
+    assert.equal(runControl("on").enabled, true);
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
   }

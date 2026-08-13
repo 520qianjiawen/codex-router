@@ -1226,6 +1226,15 @@ final class RouterStore: ObservableObject {
     await applyModelSettings(arguments: ["vision-bridge", enabled ? "on" : "off"])
   }
 
+  func setToolResultAgingEnabled(_ enabled: Bool) async {
+    await applyModelSettings(
+      arguments: ["tool-result-aging", enabled ? "on" : "off"],
+      successMessage: enabled
+        ? "Old tool-result compaction is on for the next external-model request."
+        : "Exact tool results will be sent on the next external-model request."
+    )
+  }
+
   /// Picks a cloud engine ("auto" or a model slug) as the image reader, and
   /// optionally the reasoning effort it reads at. Passing "default" for the
   /// effort hands the level back to the model. One command, so the two never
@@ -1417,14 +1426,17 @@ final class RouterStore: ObservableObject {
     }
   }
 
-  private func applyModelSettings(arguments: [String]) async {
+  private func applyModelSettings(
+    arguments: [String],
+    successMessage: String = "Model settings applied. Restart Codex to refresh its picker."
+  ) async {
     guard providerOperation == nil else { return }
     providerOperation = "models"
     defer { providerOperation = nil }
     do {
       _ = try await runControl(arguments: arguments)
       await refresh()
-      message = "Model settings applied. Restart Codex to refresh its picker."
+      message = successMessage
     } catch {
       message = error.localizedDescription
       await refresh()
@@ -1939,8 +1951,14 @@ struct RouterModel: Decodable, Identifiable {
 struct ModelSettingsSnapshot: Decodable {
   let subagents: SubagentSettingsSnapshot
   let picker: PickerSettingsSnapshot
+  let toolResultAging: ToolResultAgingSnapshot?
   let localModels: LocalModelsSnapshot?
   let visionBridge: VisionBridgeSnapshot?
+}
+
+struct ToolResultAgingSnapshot: Decodable {
+  let enabled: Bool
+  let environmentOverride: Bool?
 }
 
 struct LocalModelsSnapshot: Decodable {
@@ -2599,6 +2617,18 @@ private struct TrayView: View {
         set: { enabled in Task { await store.setLoginFree(enabled) } }
       ),
       isDisabled: store.providerOperation != nil || store.signedRouting
+    )
+    settingRow(
+      title: "Compact old tool results",
+      detail: target.modelSettings?.toolResultAging?.environmentOverride == true
+        ? "Forced off by CODEX_ROUTER_TOOL_RESULT_AGING=0"
+        : "External models · applies on the next request",
+      isOn: Binding(
+        get: { target.modelSettings?.toolResultAging?.enabled ?? true },
+        set: { enabled in Task { await store.setToolResultAgingEnabled(enabled) } }
+      ),
+      isDisabled: store.providerOperation != nil
+        || target.modelSettings?.toolResultAging?.environmentOverride == true
     )
     maintenanceRow
     AccordionPanel(

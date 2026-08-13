@@ -44,6 +44,7 @@ function startPanel() {
     localPollTimer: null,
     lastActivityState: null,
     loginFreeBusy: false,
+    toolResultAgingBusy: false,
     keyProvider: null,
     removeProvider: null,
     toastTimer: null,
@@ -87,6 +88,9 @@ function startPanel() {
     loginFreeSwitch: document.getElementById("login-free-switch"),
     loginFreeSwitchLabel: document.getElementById("login-free-switch-label"),
     loginFreeNote: document.getElementById("login-free-note"),
+    toolResultAgingSwitch: document.getElementById("tool-result-aging-switch"),
+    toolResultAgingSwitchLabel: document.getElementById("tool-result-aging-switch-label"),
+    toolResultAgingNote: document.getElementById("tool-result-aging-note"),
     refresh: document.getElementById("refresh-data"),
     islandSwitch: document.getElementById("island-switch"),
     islandSwitchLabel: document.getElementById("island-switch-label"),
@@ -131,6 +135,7 @@ function startPanel() {
   elements.localQuickPicks.addEventListener("click", handleLocalModelClick);
   elements.localModelForm.addEventListener("submit", handleLocalModelInstall);
   elements.loginFreeSwitch.addEventListener("change", handleLoginFreeToggle);
+  elements.toolResultAgingSwitch.addEventListener("change", handleToolResultAgingToggle);
   elements.islandSwitch.addEventListener("change", handleIslandToggle);
   elements.keyForm.addEventListener("submit", saveKey);
   elements.closeDialog.addEventListener("click", closeKeyDialog);
@@ -230,6 +235,7 @@ function startPanel() {
     renderLoginFreeSetting();
     renderIslandSetting();
     renderModelSettings();
+    renderToolResultAgingSetting();
     renderLocalModels();
   }
 
@@ -538,6 +544,19 @@ function startPanel() {
       : '<div class="empty-state">No enabled models to show.</div>';
     const pickerCount = pickerModels.filter((model) => !hiddenModels.has(model.slug)).length;
     elements.pickerSummary.textContent = `${pickerCount} visible · ${hiddenModels.size} hidden`;
+  }
+
+  function renderToolResultAgingSetting() {
+    const aging = state.snapshot?.targets?.codex?.modelSettings?.toolResultAging;
+    const overridden = aging?.environmentOverride === true;
+    elements.toolResultAgingSwitch.checked = aging?.enabled !== false;
+    elements.toolResultAgingSwitch.disabled = state.toolResultAgingBusy || overridden;
+    elements.toolResultAgingSwitchLabel.title = overridden
+      ? "Forced off by CODEX_ROUTER_TOOL_RESULT_AGING=0"
+      : "Applies to the next external-model request without a restart.";
+    elements.toolResultAgingNote.textContent = overridden
+      ? "Forced off by the environment override"
+      : "Receipts replace consumed results over 32 KiB; the four newest stay intact";
   }
 
   function renderLocalModels() {
@@ -935,6 +954,27 @@ function startPanel() {
     } finally {
       state.loginFreeBusy = false;
       renderLoginFreeSetting();
+    }
+  }
+
+  async function handleToolResultAgingToggle() {
+    const enabled = elements.toolResultAgingSwitch.checked;
+    state.toolResultAgingBusy = true;
+    renderToolResultAgingSetting();
+    try {
+      await call("set_tool_result_aging", { enabled });
+      await refreshPanel({ quiet: true });
+      showToast(
+        enabled
+          ? "Old tool-result compaction is on for the next external-model request."
+          : "Exact tool results will be sent on the next external-model request.",
+      );
+    } catch (error) {
+      elements.toolResultAgingSwitch.checked = !enabled;
+      showToast(errorMessage(error), true);
+    } finally {
+      state.toolResultAgingBusy = false;
+      renderToolResultAgingSetting();
     }
   }
 

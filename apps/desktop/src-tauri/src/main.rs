@@ -116,6 +116,7 @@ fn main() {
             set_picker_model,
             set_picker_provider,
             set_picker_models,
+            set_tool_result_aging,
             set_login_free,
             set_island_enabled,
             set_island_expanded,
@@ -557,6 +558,22 @@ async fn set_picker_models(state: State<'_, RouterState>, show_all: bool) -> Res
             "picker".into(),
             "all".into(),
             (if show_all { "show" } else { "hide" }).into(),
+        ],
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn set_tool_result_aging(
+    state: State<'_, RouterState>,
+    enabled: bool,
+) -> Result<Value, String> {
+    run_json_command(
+        state.inner().clone(),
+        vec![
+            "tool-result-aging".into(),
+            (if enabled { "on" } else { "off" }).into(),
         ],
         None,
     )

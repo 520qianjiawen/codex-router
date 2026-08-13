@@ -96,6 +96,7 @@ async function emitProbe() {
   const { readNativeAliases } = await import("./native-alias.mjs");
   const { subagentSettingsSnapshot } = await import("./multi-agent-state.mjs");
   const { modelPickerSnapshot } = await import("./model-picker-state.mjs");
+  const { toolResultAgingSnapshot } = await import("./tool-result-aging-state.mjs");
   const { readVisionBridgeSettings, visionBridgeSnapshot } = await import(
     "./vision-bridge-state.mjs"
   );
@@ -172,6 +173,7 @@ async function emitProbe() {
             modelSettings: {
               subagents: subagentSettingsSnapshot(),
               picker: modelPickerSnapshot(),
+              toolResultAging: toolResultAgingSnapshot(),
               localModels: localModelsSnapshot({ benchmarks: localAndVisionBenchmarks }),
               visionBridge: (() => {
                 const candidates = selectedConfiguredListedModels();
@@ -715,6 +717,22 @@ async function handleSubagents(action, value, flag) {
   }
   refreshModelSettingsCatalog();
   process.stdout.write(`${JSON.stringify(subagentSettingsSnapshot())}\n`);
+}
+
+async function handleToolResultAging(action) {
+  const { setToolResultAgingEnabled, toolResultAgingSnapshot } = await import(
+    "./tool-result-aging-state.mjs"
+  );
+  const desired = action || "status";
+  if (desired === "status") {
+    process.stdout.write(`${JSON.stringify(toolResultAgingSnapshot())}\n`);
+    return;
+  }
+  if (desired !== "on" && desired !== "off") {
+    throw new Error("Usage: control tool-result-aging status|on|off");
+  }
+  setToolResultAgingEnabled(desired === "on");
+  process.stdout.write(`${JSON.stringify(toolResultAgingSnapshot())}\n`);
 }
 
 // The bridge changes what the picker advertises (image input on text-only
@@ -1464,6 +1482,8 @@ if (args.includes("--probe")) {
   await setLoginFreeModel(args[1]);
 } else if (args[0] === "subagents") {
   await handleSubagents(args[1], args[2], args[3]);
+} else if (args[0] === "tool-result-aging") {
+  await handleToolResultAging(args[1]);
 } else if (args[0] === "local-models") {
   await handleLocalModels(args[1], args[2], ...args.slice(3));
 } else if (args[0] === "vision-bridge") {

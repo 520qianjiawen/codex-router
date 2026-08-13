@@ -4028,6 +4028,24 @@ test("router ages consumed large tool results but preserves the newest result fr
     const [event] = await waitForUsageEvents(stateDir, 1, router);
     assert.equal(event.toolResultsAged, 1);
     assert.ok(event.toolResultBytesSaved > 30_000);
+
+    // Settings are read for each routed request, so a UI toggle takes effect
+    // without restarting the router or interrupting a running Codex task.
+    writeFileSync(
+      path.join(stateDir, "tool-result-aging.json"),
+      `${JSON.stringify({ version: 1, enabled: false })}\n`,
+      { mode: 0o600 },
+    );
+    const exactResponse = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CODEX_CALLER_SECRET",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ model: "deepseek/deepseek-v4-pro", stream: false, input }),
+    });
+    assert.equal(exactResponse.status, 200, await exactResponse.text());
+    assert.equal(gatewayBodies[1].input[1].output, large);
   } finally {
     await stopChild(router);
     await closeServer(gateway.server);

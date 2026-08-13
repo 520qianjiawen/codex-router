@@ -77,6 +77,7 @@ import { readHiddenModels } from "./model-picker-state.mjs";
 import { readVisionBridgeSettings } from "./vision-bridge-state.mjs";
 import { installedNativeVisionEngines } from "./vision-engines.mjs";
 import { ageToolResults } from "./tool-result-aging.mjs";
+import { toolResultAgingEnabled } from "./tool-result-aging-state.mjs";
 import { VERSION } from "./version.mjs";
 
 const LISTEN_HOST =
@@ -116,11 +117,6 @@ const QUIET =
 // operator who would rather see the provider's own numbers can turn it off
 // without downgrading the router.
 const ZERO_INPUT_ESTIMATE = process.env.CODEX_ROUTER_ZERO_INPUT_ESTIMATE !== "0";
-// Old large tool results are replayed to routed models on every later turn.
-// Compact only results the model has already acted on, while keeping the
-// newest result frontier intact. This never changes native OpenAI traffic and
-// can be disabled immediately if a provider or workload needs exact history.
-const TOOL_RESULT_AGING = process.env.CODEX_ROUTER_TOOL_RESULT_AGING !== "0";
 // Kill switch for the empty-completion guard and its single retry. It is on
 // because an empty completion is otherwise invisible -- the client records the
 // turn as a silent success -- but the retry re-sends the whole prompt, so an
@@ -1404,7 +1400,7 @@ async function summarize(request, payload, route, signal) {
   // is cached by ciphertext, so a conversation whose turns already resolved
   // costs nothing extra here.
   const normalized = await normalizeRoutedAgentInput(request, originalInput, signal);
-  const aged = ageToolResults(normalized, { enabled: TOOL_RESULT_AGING });
+  const aged = ageToolResults(normalized, { enabled: toolResultAgingEnabled() });
   const bridged = await bridgeVisionInput(
     aged.input,
     route,
@@ -1701,7 +1697,7 @@ async function handleResponses(request, response, requestUrl) {
         payload.input,
         controller.signal,
       );
-      const aged = ageToolResults(normalized, { enabled: TOOL_RESULT_AGING });
+      const aged = ageToolResults(normalized, { enabled: toolResultAgingEnabled() });
       toolResultAging = aged.stats;
       const input = await bridgeVisionInput(
         aged.input,

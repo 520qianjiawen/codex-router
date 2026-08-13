@@ -517,8 +517,24 @@ respectively when a deliberately larger local workload requires it.
 For routed external models, old textual tool results larger than 32 KiB are
 compacted after the model has acted on them. The four newest tool results stay
 intact, and each compacted result keeps a hash, head/tail evidence, and an exact
-rerun instruction. Native OpenAI traffic is unchanged. Set
-`CODEX_ROUTER_TOOL_RESULT_AGING=0` to disable this optimization immediately.
+rerun instruction. Native OpenAI traffic is unchanged. Toggle **Compact old
+tool results** in the router Settings; the next external-model request sees the
+change without restarting Codex or the router. The equivalent CLI commands are
+`./bin/control tool-result-aging on`, `off`, and `status`. Set
+`CODEX_ROUTER_TOOL_RESULT_AGING=0` for a hard environment-level override.
+
+To estimate the effect without spending provider quota, run:
+
+```bash
+node scripts/measure-tool-result-aging.mjs /path/to/rollout.jsonl
+```
+
+The report compares each observed compaction boundary and the latest history
+before and after aging; this is an estimate and spends no provider quota. For a
+live check, leave the setting on and inspect `usage-events.jsonl` after a routed
+turn; events that compacted history include `toolResultsAged` and
+`toolResultBytesSaved`. Those counters measure serialized context bytes, while
+provider-billed token counts remain the authoritative cost measurement.
 
 The integration preserves the built-in OpenAI provider, native GPT models,
 ChatGPT sign-in, profiles, MCP settings, project trust, and reasoning defaults.
