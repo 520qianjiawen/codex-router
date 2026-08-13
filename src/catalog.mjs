@@ -48,34 +48,59 @@ function validNativeCatalog(parsed) {
   return parsed && Array.isArray(parsed.models) && parsed.models.length > 0;
 }
 
+// The account cache stores the raw instruction template while the bundled
+// catalog ships `base_instructions` with the template variables already
+// substituted: for every shared slug that carries variables, the bundled
+// `base_instructions` equals the account template with `{{ personality }}`
+// replaced by `instructions_variables.personality_default`. Mirror that
+// substitution — and strip any placeholder without a default — so a literal
+// `{{ ... }}` token can never reach a model's system prompt.
+const INSTRUCTION_PLACEHOLDER = /\{\{\s*([\w.-]+)\s*\}\}/g;
+
+export function deriveBaseInstructions(modelMessages) {
+  const template = modelMessages?.instructions_template;
+  if (typeof template !== "string") return undefined;
+  const variables = modelMessages?.instructions_variables;
+  const substituted = template.replace(INSTRUCTION_PLACEHOLDER, (_token, name) => {
+    const fallback = variables?.[`${name}_default`];
+    return typeof fallback === "string" ? fallback : "";
+  });
+  // A default could itself contain a placeholder; the guarantee is that none
+  // survive, not that substitution is recursive.
+  return substituted.replace(INSTRUCTION_PLACEHOLDER, "");
+}
+
 // Codex has two native catalogs: the account-aware catalog (`debug models`)
 // and the static catalog shipped in the binary (`--bundled`). Neither is a
 // safe source by itself. The account catalog can add models or change their
 // visibility without a client update, while the bundled catalog can contain a
 // newer schema or models absent from a stale account cache. Preserve the
-// account entry for every shared slug, then append bundled-only entries.
+// account entry for every slug it lists (first occurrence wins on a
+// duplicate), then append bundled-only entries.
 export function mergeNativeCatalogs(accountCatalog, bundledCatalog) {
   const account = validNativeCatalog(accountCatalog) ? accountCatalog.models : [];
   const fallback = validNativeCatalog(bundledCatalog) ? bundledCatalog.models : [];
   const fallbackBySlug = new Map(
     fallback.map((model) => [String(model?.slug || ""), model]),
   );
-  const normalizedAccount = account.map((model) => {
-    const base = fallbackBySlug.get(String(model?.slug || ""));
+  const normalizedAccount = [];
+  const seen = new Set();
+  for (const model of account) {
+    const slug = String(model?.slug || "");
+    if (seen.has(slug)) continue;
+    seen.add(slug);
+    const base = fallbackBySlug.get(slug);
     const merged = base ? { ...base, ...model } : { ...model };
     // The remote cache may omit `base_instructions` because Codex can derive
     // it internally. A custom model_catalog_json is parsed more strictly and
-    // requires the field, so preserve the same instructions template under
-    // the required spelling for account-only models such as Codex Spark.
-    if (
-      typeof merged.base_instructions !== "string" &&
-      typeof merged.model_messages?.instructions_template === "string"
-    ) {
-      merged.base_instructions = merged.model_messages.instructions_template;
+    // requires the field, so derive it the same way for account-only models
+    // such as Codex Spark.
+    if (typeof merged.base_instructions !== "string") {
+      const derived = deriveBaseInstructions(merged.model_messages);
+      if (typeof derived === "string") merged.base_instructions = derived;
     }
-    return merged;
-  });
-  const seen = new Set(normalizedAccount.map((model) => String(model?.slug || "")));
+    normalizedAccount.push(merged);
+  }
   return {
     models: [
       ...normalizedAccount,
@@ -84,26 +109,22 @@ export function mergeNativeCatalogs(accountCatalog, bundledCatalog) {
   };
 }
 
-function modelsCacheFingerprint() {
-  if (!existsSync(MODELS_CACHE_PATH)) return undefined;
+// One read serves both the catalog contents and the fingerprint; reading the
+// file twice would hash a possibly different snapshot than the one merged.
+function readModelsCache() {
+  const missing = { catalog: undefined, fingerprint: undefined };
+  if (!existsSync(MODELS_CACHE_PATH)) return missing;
   try {
     const parsed = JSON.parse(readFileSync(MODELS_CACHE_PATH, "utf8"));
-    if (!validNativeCatalog(parsed)) return undefined;
-    return createHash("sha256")
-      .update(JSON.stringify(parsed.models))
-      .digest("hex");
+    if (!validNativeCatalog(parsed)) return missing;
+    return {
+      catalog: parsed,
+      fingerprint: createHash("sha256")
+        .update(JSON.stringify(parsed.models))
+        .digest("hex"),
+    };
   } catch {
-    return undefined;
-  }
-}
-
-function accountNativeCatalog() {
-  if (!existsSync(MODELS_CACHE_PATH)) return undefined;
-  try {
-    const parsed = JSON.parse(readFileSync(MODELS_CACHE_PATH, "utf8"));
-    return validNativeCatalog(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
+    return missing;
   }
 }
 
@@ -137,11 +158,11 @@ function restoreFileSnapshot(target, snapshot) {
   }
 }
 
-function captureNative() {
+function captureNative(cache = readModelsCache()) {
   // This is the account-aware catalog Codex itself cached after signing in.
   // Reading it directly also avoids asking `codex debug models` while the
   // router catalog is active, which would merely return our own merged output.
-  let account = accountNativeCatalog();
+  let account = cache.catalog;
   let fallback;
   let accountError;
   let fallbackError;
@@ -181,7 +202,7 @@ function captureNative() {
     );
   }
   const capturedWith = codexVersion();
-  const sourceFingerprint = modelsCacheFingerprint();
+  const sourceFingerprint = cache.fingerprint;
   atomicJson(NATIVE_CATALOG_PATH, {
     ...(capturedWith ? { captured_with: capturedWith } : {}),
     ...(sourceFingerprint ? { native_source_fingerprint: sourceFingerprint } : {}),
@@ -224,15 +245,14 @@ function nativeCatalog() {
     }
     return catalog;
   }
-  if (!existsSync(NATIVE_CATALOG_PATH) || refresh) return captureNative();
+  const cache = readModelsCache();
+  if (!existsSync(NATIVE_CATALOG_PATH) || refresh) return captureNative(cache);
   const parsed = JSON.parse(readFileSync(NATIVE_CATALOG_PATH, "utf8"));
-  if (
-    nativeCatalogIsReusable(parsed, codexVersion(), modelsCacheFingerprint())
-  ) {
+  if (nativeCatalogIsReusable(parsed, codexVersion(), cache.fingerprint)) {
     return parsed;
   }
   try {
-    return captureNative();
+    return captureNative(cache);
   } catch (error) {
     // Version-mismatched is still better than empty: serve the stale capture
     // when the re-capture fails, but say so instead of hiding it.

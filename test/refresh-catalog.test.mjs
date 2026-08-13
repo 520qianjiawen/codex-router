@@ -35,7 +35,7 @@ test("refresh orchestration restores signed routing and republishes the routed c
   assert.deepEqual(runner.calls, [
     ["config-manager.mjs", ["status"]],
     ["config-manager.mjs", ["disable"]],
-    ["catalog.mjs", ["--refresh-native", "--bundled-native"]],
+    ["catalog.mjs", ["--refresh-native"]],
     ["config-manager.mjs", ["enable"]],
     ["config-manager.mjs", ["signed-enable"]],
     ["catalog.mjs", []],
@@ -52,7 +52,7 @@ test("refresh orchestration restores the active transport after catalog failure"
   assert.deepEqual(runner.calls, [
     ["config-manager.mjs", ["status"]],
     ["config-manager.mjs", ["disable"]],
-    ["catalog.mjs", ["--refresh-native", "--bundled-native"]],
+    ["catalog.mjs", ["--refresh-native"]],
     ["config-manager.mjs", ["enable"]],
     ["config-manager.mjs", ["signed-enable"]],
     ["catalog.mjs", []],
@@ -65,7 +65,7 @@ test("ordinary routed refresh also republishes external models after restore", (
   assert.deepEqual(runner.calls, [
     ["config-manager.mjs", ["status"]],
     ["config-manager.mjs", ["disable"]],
-    ["catalog.mjs", ["--refresh-native", "--bundled-native"]],
+    ["catalog.mjs", ["--refresh-native"]],
     ["config-manager.mjs", ["enable"]],
     ["catalog.mjs", []],
   ]);

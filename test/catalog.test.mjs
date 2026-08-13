@@ -18,6 +18,7 @@ import {
   clampModelEfforts,
   codexEffortVocabulary,
   nativeCatalogIsReusable,
+  deriveBaseInstructions,
   mergeNativeCatalogs,
   promoteNativeMultiAgent,
   routedCatalogConfigured,
@@ -640,6 +641,85 @@ test("account-only models satisfy the strict custom-catalog instruction schema",
     { models: [{ slug: "other", base_instructions: "other instructions" }] },
   ).models;
   assert.equal(spark.base_instructions, "spark instructions");
+});
+
+// The bundled catalog's base_instructions equals the account template with
+// `{{ personality }}` replaced by `instructions_variables.personality_default`
+// (verified against codex-cli for gpt-5.4, gpt-5.4-mini, and gpt-5.5).
+// Account-only models must get the same treatment: the literal placeholder
+// must never reach a system prompt.
+test("derived base_instructions substitutes template variable defaults", () => {
+  assert.equal(
+    deriveBaseInstructions({
+      instructions_template: "You are Codex.\n{{ personality }}\nBe fast.",
+      instructions_variables: {
+        personality_default: "# Personality\nStay neutral.",
+        personality_friendly: "# Personality\nBe warm.",
+      },
+    }),
+    "You are Codex.\n# Personality\nStay neutral.\nBe fast.",
+  );
+  // No default for the placeholder: strip it rather than leaking the token.
+  assert.equal(
+    deriveBaseInstructions({
+      instructions_template: "Intro {{ tone }} outro.",
+      instructions_variables: {},
+    }),
+    "Intro  outro.",
+  );
+  assert.equal(
+    deriveBaseInstructions({ instructions_template: "plain" }),
+    "plain",
+  );
+  assert.equal(deriveBaseInstructions(undefined), undefined);
+});
+
+test("no template placeholder survives into any merged base_instructions", () => {
+  const merged = mergeNativeCatalogs(
+    {
+      models: [
+        {
+          slug: "gpt-spark",
+          model_messages: {
+            instructions_template: "Spark. {{ personality }} End.",
+            instructions_variables: { personality_default: "Calm." },
+          },
+        },
+        {
+          slug: "gpt-undefaulted",
+          model_messages: {
+            instructions_template: "Head {{ mystery }} tail.",
+            instructions_variables: {
+              // A default may itself carry a placeholder; it must be stripped,
+              // not substituted recursively.
+              mystery_default: "nested {{ personality }} token",
+            },
+          },
+        },
+      ],
+    },
+    undefined,
+  );
+  for (const model of merged.models) {
+    assert.equal(typeof model.base_instructions, "string");
+    assert.doesNotMatch(model.base_instructions, /\{\{[\s\S]*?\}\}/);
+  }
+  assert.equal(merged.models[0].base_instructions, "Spark. Calm. End.");
+});
+
+test("duplicate account slugs collapse to the first occurrence", () => {
+  const merged = mergeNativeCatalogs(
+    {
+      models: [
+        { slug: "gpt-dupe", visibility: "list", base_instructions: "first" },
+        { slug: "gpt-dupe", visibility: "hide", base_instructions: "second" },
+      ],
+    },
+    { models: [{ slug: "gpt-dupe", base_instructions: "bundled" }] },
+  );
+  assert.equal(merged.models.length, 1);
+  assert.equal(merged.models[0].base_instructions, "first");
+  assert.equal(merged.models[0].visibility, "list");
 });
 
 test("native listed models follow the local subagent opt-in", () => {

@@ -47,7 +47,7 @@ export function refreshCatalog({ run = nodeRunner } = {}) {
       checked(run, "config-manager.mjs", ["disable"]);
       restoreNeeded = true;
     }
-    catalogResult = checked(run, "catalog.mjs", ["--refresh-native", "--bundled-native"]);
+    catalogResult = checked(run, "catalog.mjs", ["--refresh-native"]);
     if (restoreNeeded) {
       restoreTransport(run, signed);
       restoreNeeded = false;
