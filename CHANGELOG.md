@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Routed models that emit integer tool arguments as JSON floats no longer
+  get those calls rejected by Codex.** Grok 4.6 was sending
+  `timeout_ms: 20000.0`; Codex's native `shell_command` schema wants a `u64`,
+  so every agentic turn died before the command ran. The response rewrite now
+  turns whole-number tokens into integers on the way back, including native
+  tools that are not namespaced. Genuine fractions are left alone.
+
 ## 0.4.0-beta.3
 
 - **The usage panel shows what is left of your plan for xAI OAuth, MiniMax,

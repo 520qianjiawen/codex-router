@@ -2,6 +2,7 @@ import { Transform } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 
 import { HeaderlessSseDetector } from "./sse-prefix.mjs";
+import { coerceFunctionCallArguments } from "./tool-arguments.mjs";
 
 // The Codex client ships most of its toolset as `type: "namespace"` entries:
 // the collaboration runtime, the app toolset (threads, automations,
@@ -231,6 +232,13 @@ function sanitizeSpawnAgentModel(item, lookups) {
 // name (some models emit the unqualified form) is restored only when it is
 // unambiguous across every flattened namespace; a collision stays untouched
 // rather than guessing which runtime owns it.
+function rewriteFunctionCallArguments(item) {
+  if (!item || typeof item !== "object") return item;
+  const argumentsText = coerceFunctionCallArguments(item.arguments);
+  if (argumentsText === item.arguments) return item;
+  return { ...item, arguments: argumentsText };
+}
+
 function rewriteNamespaceFunctionCallItem(item, lookups, sessionModel) {
   if (!item || item.type !== "function_call") return undefined;
   let rewritten = item;
@@ -253,6 +261,7 @@ function rewriteNamespaceFunctionCallItem(item, lookups, sessionModel) {
   }
   rewritten = sanitizeSpawnAgentModel(rewritten, lookups);
   rewritten = injectSessionModelForSpawnCalls(rewritten, sessionModel);
+  rewritten = rewriteFunctionCallArguments(rewritten);
   return rewritten === item ? undefined : rewritten;
 }
 
@@ -281,6 +290,14 @@ export function rewriteNamespaceResponsePayload(payload, lookups, sessionModel) 
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
   let rewritten = rewriteNamespaceFunctionCall(payload, lookups, sessionModel) || payload;
   let changed = rewritten !== payload;
+
+  if (payload.type === "response.function_call_arguments.done") {
+    const argumentsText = coerceFunctionCallArguments(rewritten.arguments);
+    if (argumentsText !== rewritten.arguments) {
+      rewritten = { ...rewritten, arguments: argumentsText };
+      changed = true;
+    }
+  }
 
   const output = rewriteOutputItems(rewritten.output, lookups, sessionModel);
   if (output) {
