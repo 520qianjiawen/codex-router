@@ -408,7 +408,6 @@ function startPanel() {
     );
     const pickerModels = models.filter((model) => model.enabled);
     const subagent = settings?.subagents || { mode: "proven", enabled: [], disabled: [] };
-    const enabledSubagents = new Set(subagent.enabled || []);
     const disabledSubagents = new Set(subagent.disabled || []);
     const hiddenModels = new Set(settings?.picker?.hidden || []);
     const providerNames = new Map(
@@ -459,33 +458,29 @@ function startPanel() {
 
     elements.subagentAllSwitch.disabled = state.modelSettingsBusy;
     elements.subagentAllSwitch.checked = subagent.mode === "all";
-    elements.subagentAllSwitchLabel.title = subagent.mode === "all"
-      ? "Every enabled model is exposed as a Codex subagent."
-      : subagent.mode === "selected"
-        ? "Only selected models are exposed as Codex subagents."
-        : "Only registry-proven v2 models are exposed as Codex subagents.";
+    elements.subagentAllSwitchLabel.title =
+      "Only registry-proven v2 models can be exposed as Codex subagents.";
 
     // Models hidden from the picker are forced off as subagents, so their
     // rows here were permanently locked noise. They are filtered out; the
     // note under the list keeps the count visible and points at the picker
     // section, which is where unhiding brings a model back.
     const subagentModels = enabledModels.filter(
-      (model) => !model.native && model.visible !== false,
+      (model) =>
+        !model.native && model.visible !== false && model.multiAgentVersion === "v2",
     );
     const hiddenSubagentCount = enabledModels.filter(
-      (model) => !model.native && model.visible === false,
+      (model) =>
+        !model.native && model.visible === false && model.multiAgentVersion === "v2",
     ).length;
     const subagentGroups = groupModels(subagentModels);
     const isSubagentOn = (model) =>
       model.visible === false
         ? false
-        : subagent.mode === "all"
-        ? !disabledSubagents.has(model.slug)
-        : (model.multiAgentVersion === "v2" || enabledSubagents.has(model.slug)) &&
-          !disabledSubagents.has(model.slug);
+        : !disabledSubagents.has(model.slug);
     const subagentRow = (model) => {
         const checked = isSubagentOn(model);
-        const badge = model.multiAgentVersion === "v2" ? " · proven v2" : "";
+        const badge = " · proven v2";
         return `<label class="model-setting-row">
           <span><strong>${escapeHtml(model.displayName)}</strong><small>${escapeHtml(badge)}</small></span>
           <span class="provider-check"><input type="checkbox" data-subagent="${escapeHtml(model.slug)}" aria-label="Use ${escapeHtml(model.displayName)} as a subagent"${checked ? " checked" : ""}${state.modelSettingsBusy ? " disabled" : ""}></span>
@@ -509,17 +504,9 @@ function startPanel() {
           (group) => `${group.items.filter(isSubagentOn).length} of ${group.items.length} on`,
         ) + hiddenSubagentNote
       : `<div class="empty-state">Enable a provider to choose subagent models here.</div>${hiddenSubagentNote}`;
-    const subagentCount = subagent.mode === "all"
-      ? enabledModels.filter(
-          (model) => !model.native && model.visible !== false && !disabledSubagents.has(model.slug),
-        ).length
-      : enabledModels.filter(
-          (model) =>
-            !model.native &&
-            model.visible !== false &&
-            (model.multiAgentVersion === "v2" || enabledSubagents.has(model.slug)) &&
-            !disabledSubagents.has(model.slug),
-        ).length;
+    const subagentCount = subagentModels.filter(
+      (model) => !disabledSubagents.has(model.slug),
+    ).length;
     elements.subagentSummary.textContent = `${subagentCount} subagent model${subagentCount === 1 ? "" : "s"} · ${subagent.mode}`;
 
     const pickerGroups = groupModels(pickerModels);

@@ -310,7 +310,7 @@ test("unverified routed models retain conservative v1 collaboration", () => {
   assert.equal(model.multi_agent_version, "v1");
 });
 
-test("all-models multi-agent mode promotes every selected model to v2", () => {
+test("all-models multi-agent mode cannot manufacture v2 capability", () => {
   const models = [
     { slug: "opencode-go/deepseek-v4-flash" },
     { slug: "qwen-plan/qwen3.8-max", multiAgentVersion: "v1" },
@@ -318,7 +318,7 @@ test("all-models multi-agent mode promotes every selected model to v2", () => {
   const promoted = applyAllMultiAgent(models, true);
   assert.deepEqual(
     promoted.map((model) => model.multiAgentVersion),
-    ["v2", "v2"],
+    [undefined, "v1"],
   );
   assert.equal(applyAllMultiAgent(models, false), models);
 });

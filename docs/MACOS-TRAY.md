@@ -31,7 +31,7 @@ The router's background service is a separate launchd agent and keeps running
 regardless of this setting.
 
 The Settings tab's **Models** section has two accordions. **Subagent models**
-exposes every enabled model, or only selected models, as Codex v2 subagent
+controls which registry-proven v2 models remain available as Codex subagent
 overrides; **Model picker** hides or shows individual models without changing
 their provider connection. Restart Codex after changing either group so its
 model picker reloads the merged catalog.

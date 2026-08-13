@@ -284,14 +284,14 @@ enable the family:
 ```sh
 ./bin/model-router codex provider-key opencode-go set
 ./bin/model-router codex providers enable opencode-go
-./bin/model-router codex multi-agent on
 ```
 
 The desktop panel and macOS tray Settings tab provide both per-model controls
-and provider-level Select all / Unselect all actions for which enabled models
-can run as subagents and which models appear in the Codex picker. Fully quit
-and reopen Codex after changing either list; an open task keeps the model and
-subagent picker it started with.
+and provider-level Select all / Unselect all actions for which registry-proven
+v2 models can run as subagents and which models appear in the Codex picker.
+Local settings cannot promote an unverified model. Fully quit and reopen Codex
+after changing either list; an open task keeps the model and subagent picker it
+started with.
 
 | Picker label | Model ID |
 | --- | --- |
@@ -356,7 +356,6 @@ reads that file, so a signed-in machine needs no key of its own:
 npm install -g command-code
 command-code login
 ./bin/model-router codex providers enable commandcode
-./bin/model-router codex multi-agent on
 ```
 
 The macOS tray offers the same flow: the Command Code row has an
@@ -371,7 +370,6 @@ or deletes it — so `command-code logout` also revokes the router's access.
 ```sh
 ./bin/model-router codex provider-key commandcode set
 ./bin/model-router codex providers enable commandcode
-./bin/model-router codex multi-agent on
 ```
 
 When both exist, the exported environment variable wins, then the key stored

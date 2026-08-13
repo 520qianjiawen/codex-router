@@ -38,9 +38,9 @@ function legacySettings() {
   return undefined;
 }
 
-// Local opt-in that controls which selected models are advertised as native
-// v2 spawn-agent overrides. The checked-in registry stays conservative; this
-// state only changes how the merged catalog for this machine is rendered.
+// Local selection controls which proven models remain available as subagents.
+// Capability comes only from the registry's native collaboration proof; local
+// state must never manufacture a v2 claim for an unverified model.
 export function readMultiAgentSettings() {
   if (existsSync(MULTI_AGENT_STATE_PATH)) {
     try {
@@ -147,7 +147,6 @@ export function replaceMultiAgentState({ mode, enabled = [], disabled = [] }) {
 }
 
 export function applyMultiAgentSettings(models, settings, hidden = new Set()) {
-  const enabled = new Set(settings.enabled || []);
   const disabled = new Set(settings.disabled || []);
   return models.map((model) => {
     if (hidden.has(model.slug)) {
@@ -155,15 +154,6 @@ export function applyMultiAgentSettings(models, settings, hidden = new Set()) {
     }
     if (disabled.has(model.slug)) {
       return { ...model, multiAgentVersion: "v1" };
-    }
-    if (settings.mode === "all") {
-      return { ...model, multiAgentVersion: "v2" };
-    }
-    if (
-      settings.mode === "selected" &&
-      (enabled.has(model.slug) || model.multiAgentVersion === "v2")
-    ) {
-      return { ...model, multiAgentVersion: "v2" };
     }
     return model;
   });
@@ -176,7 +166,10 @@ export function applyMultiAgentSettings(models, settings, hidden = new Set()) {
 // nothing keeps every model callable by name the way it does today.
 export function subagentEligibleModels(models, settings) {
   const disabled = new Set(settings?.disabled || []);
-  return models.filter((model) => !disabled.has(String(model.slug)));
+  return models.filter(
+    (model) =>
+      model.multiAgentVersion === "v2" && !disabled.has(String(model.slug)),
+  );
 }
 
 // Compatibility helper for the original all-models switch.

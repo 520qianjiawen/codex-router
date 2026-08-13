@@ -2708,7 +2708,9 @@ private struct TrayView: View {
     // it can still change.
     private var enabledExternalModels: [RouterModel] {
       target.models
-        .filter { $0.enabled && $0.provider != "openai" }
+        .filter {
+          $0.enabled && $0.provider != "openai" && $0.multiAgentVersion == "v2"
+        }
         .sorted {
           if $0.provider != $1.provider { return $0.provider < $1.provider }
           return $0.slug < $1.slug
@@ -2773,10 +2775,10 @@ private struct TrayView: View {
         ) {
           VStack(alignment: .leading, spacing: 8) {
             toggleRow(
-              title: "All selected models",
+              title: "All proven models",
               detail: settings?.subagents.mode == "all"
-                ? "Every enabled model can run as a subagent"
-                : "Only selected models can run as subagents",
+                ? "Every proven v2 model can run as a subagent"
+                : "Only selected proven v2 models can run as subagents",
               isOn: Binding(
                 get: { settings?.subagents.mode == "all" },
                 set: { enabled in
@@ -4005,35 +4007,22 @@ private struct TrayView: View {
       Set(settings?.picker.hidden ?? [])
     }
 
-    private var enabledSubagentSet: Set<String> {
-      Set(settings?.subagents.enabled ?? [])
-    }
-
     private var disabledSubagentSet: Set<String> {
       Set(settings?.subagents.disabled ?? [])
     }
 
-    // Matches the catalog rule (`applyMultiAgentSettings`): a model hidden from
-    // the picker is never promoted to a subagent, whatever the subagent mode
-    // says.
+    // A local selection may withhold a proven model, but never promote an
+    // unverified one to native v2 collaboration.
     private func isSubagent(_ model: RouterModel) -> Bool {
       if model.visible == false { return false }
+      if model.multiAgentVersion != "v2" { return false }
       if disabledSubagentSet.contains(model.slug) { return false }
-      switch settings?.subagents.mode ?? "proven" {
-      case "all":
-        return true
-      case "selected":
-        return model.multiAgentVersion == "v2" || enabledSubagentSet.contains(model.slug)
-      default:
-        return model.multiAgentVersion == "v2"
-      }
+      return true
     }
 
     private func subagentDetail(for model: RouterModel) -> String {
       if model.visible == false { return "Hidden from picker — show it below to use it here" }
-      if isSubagent(model) {
-        return model.multiAgentVersion == "v2" ? "Proven v2" : "Subagent"
-      }
+      if isSubagent(model) { return "Proven v2" }
       return "Not selected"
     }
 

@@ -47,7 +47,7 @@ test("per-model subagent toggles promote selected mode and remember exclusions",
   assert.deepEqual(all.disabled, ["qwen-plan/qwen3.8-max"]);
 });
 
-test("all mode promotes every model except explicit exclusions", () => {
+test("all mode never promotes models without registry proof", () => {
   const models = [
     { slug: "opencode-go/deepseek-v4-flash" },
     { slug: "qwen-plan/qwen3.8-max", multiAgentVersion: "v1" },
@@ -62,7 +62,7 @@ test("all mode promotes every model except explicit exclusions", () => {
   assert.deepEqual(
     promoted.map((model) => [model.slug, model.multiAgentVersion]),
     [
-      ["opencode-go/deepseek-v4-flash", "v2"],
+      ["opencode-go/deepseek-v4-flash", undefined],
       ["qwen-plan/qwen3.8-max", "v1"],
       ["kimi-oauth/k3", "v2"],
     ],
@@ -89,7 +89,7 @@ test("provider-sized subagent changes preserve other providers", () => {
   assert.deepEqual(subagentSettingsSnapshot().disabled, ["kimi-oauth/k3"]);
 });
 
-test("all mode follows picker visibility before promoting models", () => {
+test("picker visibility can withhold but never promote models", () => {
   const models = [
     { slug: "opencode-go/deepseek-v4-flash" },
     { slug: "qwen-plan/qwen3.8-max" },
@@ -103,12 +103,12 @@ test("all mode follows picker visibility before promoting models", () => {
     promoted.map((model) => [model.slug, model.multiAgentVersion]),
     [
       ["opencode-go/deepseek-v4-flash", "v1"],
-      ["qwen-plan/qwen3.8-max", "v2"],
+      ["qwen-plan/qwen3.8-max", undefined],
     ],
   );
 });
 
-test("selected mode only promotes the chosen plus registry-proven models", () => {
+test("selected mode retains only registry-proven v2 claims", () => {
   const models = [
     { slug: "opencode-go/deepseek-v4-flash" },
     { slug: "qwen-plan/qwen3.8-max" },
@@ -123,7 +123,7 @@ test("selected mode only promotes the chosen plus registry-proven models", () =>
   assert.deepEqual(
     selected.map((model) => [model.slug, model.multiAgentVersion]),
     [
-      ["opencode-go/deepseek-v4-flash", "v2"],
+      ["opencode-go/deepseek-v4-flash", undefined],
       ["qwen-plan/qwen3.8-max", undefined],
       ["kimi-oauth/k3", "v2"],
     ],

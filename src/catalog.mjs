@@ -524,8 +524,7 @@ export function routedModel(template, model) {
 }
 
 export function applyAllMultiAgent(models, enabled) {
-  if (!enabled) return models;
-  return models.map((model) => ({ ...model, multiAgentVersion: "v2" }));
+  return models;
 }
 
 export const AUTO_ANNOUNCE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;

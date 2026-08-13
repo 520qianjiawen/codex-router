@@ -483,13 +483,11 @@ add(
   "Dynamic subagent models",
   (() => {
     const settings = readMultiAgentSettings();
-    if (settings.mode === "all") return "all selected models exposed as v2 spawn agents";
-    if (settings.mode === "selected") {
-      return `${settings.enabled.length} selected model(s) exposed as v2 spawn agents`;
-    }
-    return "only registry-proven v2 models";
+    return settings.disabled.length
+      ? `registry-proven v2 models except ${settings.disabled.length} disabled model(s)`
+      : "only registry-proven v2 models";
   })(),
-  "Run ./bin/multi-agent on to expose every selected model as a subagent.",
+  "Complete the native collaboration proof before adding multiAgentVersion v2 to a model.",
 );
 add(
   "ok",

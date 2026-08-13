@@ -33,8 +33,8 @@ and disables its activity-pill switch; router monitoring continues normally.
 - **Connections** includes a **Use without OpenAI login** switch for new Codex
   sessions. It requires a connected, enabled external provider and restores the
   prior model-provider setting when switched off.
-- **Models** has three accordions: **Subagent models** exposes every enabled
-  model, or only selected models, as Codex v2 subagent overrides, and
+- **Models** has three accordions: **Subagent models** controls which
+  registry-proven v2 models remain available as Codex subagent overrides, and
   **Model picker** hides or shows individual models without changing their
   provider connection.
 - **Local LLMs** installs, enables, and removes Ollama models on this machine.
