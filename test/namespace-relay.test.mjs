@@ -565,3 +565,55 @@ test("rewriteNamespaceFunctionCall rejects non-call events", () => {
   assert.equal(rewriteNamespaceFunctionCall({ item: { type: "message" } }, lookups), undefined);
   assert.equal(rewriteNamespaceFunctionCall(undefined, lookups), undefined);
 });
+
+test("response rewrite turns Grok whole-float tool arguments into integers", () => {
+  const lookups = buildNamespaceLookups(new Map());
+  const rewritten = rewriteNamespaceResponsePayload(
+    {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "shell_command",
+        call_id: "call_shell",
+        arguments: '{"command":"git status","timeout_ms":20000.0}',
+      },
+    },
+    lookups,
+  );
+  assert.equal(rewritten.item.arguments, '{"command":"git status","timeout_ms":20000}');
+  assert.equal(rewritten.item.name, "shell_command");
+
+  const done = rewriteNamespaceResponsePayload(
+    {
+      type: "response.function_call_arguments.done",
+      item_id: "item_1",
+      arguments: '{"timeout_ms":20000.0,"ratio":3.14}',
+    },
+    lookups,
+  );
+  assert.equal(done.arguments, '{"timeout_ms":20000,"ratio":3.14}');
+});
+
+test("response transform rewrites native shell_command integer floats in SSE", async () => {
+  const events = [
+    {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "shell_command",
+        call_id: "call_shell",
+        arguments: '{"timeout_ms":20000.0}',
+      },
+    },
+    {
+      type: "response.function_call_arguments.done",
+      item_id: "item_1",
+      arguments: '{"timeout_ms":15000.0}',
+    },
+  ].map((event) => `data: ${JSON.stringify(event)}\n\n`);
+  const transform = new NamespaceToolCallTransform(new Map());
+  const output = await collect(Readable.from(events).pipe(transform));
+  assert.match(output, /timeout_ms\\":20000/);
+  assert.match(output, /timeout_ms\\":15000/);
+  assert.doesNotMatch(output, /20000\.0|15000\.0/);
+});
