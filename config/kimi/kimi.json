@@ -13,7 +13,7 @@
       "displayName": "Kimi Platform API",
       "kind": "openai-compatible",
       "ownedBy": "kimi",
-      "baseUrl": "https://api.moonshot.cn/v1",
+      "baseUrl": "https://api.moonshot.ai/v1",
       "baseUrlEnv": "KIMI_API_BASE_URL",
       "credential": {
         "environment": [

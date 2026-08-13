@@ -151,6 +151,9 @@ test("provider registry exposes configured API and OAuth model families", () => 
     "COMMANDCODE_API_KEY",
   ]);
   assert.equal(PROVIDERS.get("grok-api").baseUrl, "https://api.x.ai/v1");
+  // Kimi API Platform uses the global endpoint by default; China/custom
+  // deployments can still override it with KIMI_API_BASE_URL.
+  assert.equal(PROVIDERS.get("kimi-api").baseUrl, "https://api.moonshot.ai/v1");
   assert.equal(PROVIDERS.get("github-copilot").authProfile, "github-copilot");
   assert.equal(PROVIDERS.get("github-copilot").protocol, "openai-responses");
   assert.deepEqual(PROVIDERS.get("github-copilot").credential.environment, [
