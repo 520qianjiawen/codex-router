@@ -213,15 +213,44 @@ final class RouterStore: ObservableObject {
     return formatter
   }()
 
+  // What the three stored signals mean, as one pure decision. Pulled out of
+  // `init` so it can be tested: the mode this picks is the difference between
+  // an overlay covering somebody's notch on every display and it never
+  // appearing, and asserting on the source text of an initializer proves only
+  // that the source says what it says.
+  //
+  // `storedMode` is the operator's own answer and is taken verbatim forever.
+  // `legacyVisible` is the pre-desktop-mode boolean, migrated once. When
+  // neither exists nobody has answered: the overlay is opt-in for a new
+  // install, but an install that has launched before keeps it, because
+  // silently retiring an overlay somebody has been using is its own surprise.
+  nonisolated static func resolveIslandMode(
+    storedMode: String?,
+    legacyVisible: Bool?,
+    hasLaunchedBefore: Bool
+  ) -> IslandMode {
+    if let storedMode, let mode = IslandMode(rawValue: storedMode) { return mode }
+    if let legacyVisible { return legacyVisible ? .notch : .off }
+    return hasLaunchedBefore ? .notch : .off
+  }
+
   init() {
     selectedUsageProviderID = "openai"
-    if let raw = defaults.string(forKey: islandModeKey), let mode = IslandMode(rawValue: raw) {
-      islandMode = mode
-    } else if defaults.object(forKey: islandVisibilityKey) == nil {
-      islandMode = .notch
-    } else {
-      // Migrate the pre-desktop-mode boolean setting.
-      islandMode = defaults.bool(forKey: islandVisibilityKey) ? .notch : .off
+    // retireLoginItem records the bundle path on every bundled launch and runs
+    // after this initializer, so its absence here means nothing has ever
+    // launched from a bundle.
+    let resolvedIslandMode = Self.resolveIslandMode(
+      storedMode: defaults.string(forKey: islandModeKey),
+      legacyVisible: defaults.object(forKey: islandVisibilityKey) == nil
+        ? nil
+        : defaults.bool(forKey: islandVisibilityKey),
+      hasLaunchedBefore: defaults.object(forKey: loginItemBundlePathKey) != nil
+    )
+    islandMode = resolvedIslandMode
+    // Persist it, so "never configured" and "explicitly chose notch" stop being
+    // the same state for every launch after this one.
+    if defaults.string(forKey: islandModeKey) == nil {
+      defaults.set(resolvedIslandMode.rawValue, forKey: islandModeKey)
     }
     if let raw = defaults.string(forKey: presenceModeKey),
       let mode = TrayPresenceMode(rawValue: raw)
@@ -2580,7 +2609,9 @@ private struct TrayView: View {
           .font(.system(size: 12, weight: .medium))
         Text(store.islandMode == .desktop
           ? "Quotas and live activity pinned to the desktop"
-          : "Show provider usage and activity status")
+          : store.islandMode == .notch
+            ? "Usage and activity over the notch on every display"
+            : "Off by default. The menu-bar panel stays available either way.")
           .font(.system(size: 10))
           .foregroundStyle(routerMuted)
       }

@@ -249,3 +249,54 @@ test("every tray assertion names its platform instead of inheriting the host", (
     assert.match(call, /platform:/, `missing explicit platform: ${call}`);
   }
 });
+
+// Regression for #180. The mode decision itself is covered by real Swift tests
+// (apps/macos/ModelRouterTray/Tests/IslandModeTests.swift), which CI runs on
+// the macOS matrix leg -- asserting on the source text of an initializer only
+// ever proved the source said something. What stays here is the wiring those
+// Swift tests cannot see.
+test("the tray ships a Swift test target and CI runs it", () => {
+  const manifest = readFileSync(
+    path.join(root, "apps", "macos", "ModelRouterTray", "Package.swift"),
+    "utf8",
+  );
+  assert.match(manifest, /\.testTarget\(\s*\n\s*name: "ModelRouterTrayTests"/);
+
+  const workflow = readFileSync(path.join(root, ".github", "workflows", "ci.yml"), "utf8");
+  assert.match(workflow, /working-directory: apps\/macos\/ModelRouterTray\s+run: swift test/);
+  assert.match(workflow, /if: runner\.os == 'macOS'/);
+});
+
+test("the island mode decision stays pure, so it stays testable", () => {
+  const source = readFileSync(
+    path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "ModelRouterTrayApp.swift"),
+    "utf8",
+  );
+  // nonisolated because it reads no stored state; if someone reaches for
+  // `defaults` inside it, that stops being true and the Swift tests stop
+  // being able to call it.
+  assert.match(source, /nonisolated static func resolveIslandMode\(/);
+  const declaration = source.slice(source.indexOf("nonisolated static func resolveIslandMode("));
+  const initIndex = declaration.search(/\r?\n  init\(\)/);
+  assert.ok(initIndex > 0, "resolveIslandMode still sits above init()");
+  assert.doesNotMatch(declaration.slice(0, initIndex), /defaults\./);
+});
+
+test("only one process may draw the Island overlay", () => {
+  const source = readFileSync(
+    path.join(root, "apps", "macos", "ModelRouterTray", "Sources", "IslandOverlay.swift"),
+    "utf8",
+  );
+  // An unbundled `swift run` binary has no identifier, reads a different
+  // UserDefaults domain, and could never see the preference change -- it must
+  // never claim the overlay.
+  assert.match(source, /guard let identifier = Bundle\.main\.bundleIdentifier else \{ return false \}/);
+  assert.match(source, /NSRunningApplication\.runningApplications\(withBundleIdentifier: identifier\)/);
+  assert.match(source, /if visible && ownsOverlay \{/);
+});
+
+test("the docs no longer claim the Island is on by default", () => {
+  const trayDoc = readFileSync(path.join(root, "docs", "MACOS-TRAY.md"), "utf8");
+  assert.doesNotMatch(trayDoc, /Island is shown by default/);
+  assert.match(trayDoc, /off on a new install/);
+});
