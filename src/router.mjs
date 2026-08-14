@@ -1856,6 +1856,7 @@ async function handleResponses(request, response, requestUrl) {
         provider: canonicalProviderId(route.provider),
         status: upstream.status,
         durationMs: Date.now() - startedAt,
+        responseStartMs: upstreamLatencyMs,
       });
       finalStatus = upstream.status;
       activityStatus = upstream.status;
@@ -2055,6 +2056,7 @@ async function handleResponses(request, response, requestUrl) {
       provider: route ? canonicalProviderId(route.provider) : "openai",
       status: finalStatus,
       durationMs: Date.now() - startedAt,
+      responseStartMs: upstreamLatencyMs,
       retries: upstreamRetries,
       ...usage,
       estimatedInputTokens,
@@ -2117,6 +2119,7 @@ async function handleResponses(request, response, requestUrl) {
           provider: route ? canonicalProviderId(route.provider) : "openai",
           status: 0,
           durationMs: Date.now() - startedAt,
+          responseStartMs: upstreamLatencyMs,
           retries: upstreamRetries,
           ...usage,
           estimatedInputTokens,
@@ -2140,6 +2143,7 @@ async function handleResponses(request, response, requestUrl) {
         provider: route ? canonicalProviderId(route.provider) : "openai",
         status: finalStatus,
         durationMs: Date.now() - startedAt,
+        responseStartMs: upstreamLatencyMs,
         retries: upstreamRetries,
         ...usage,
         estimatedInputTokens,

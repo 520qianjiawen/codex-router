@@ -77,6 +77,7 @@ test("breaks provider usage down by model, heaviest first", () => {
         model: "deepseek/deepseek-v4-flash",
         status: 200,
         durationMs: 2_000,
+        responseStartMs: 500,
         inputTokens: 100,
         outputTokens: 40,
         totalTokens: 140,
@@ -88,6 +89,7 @@ test("breaks provider usage down by model, heaviest first", () => {
         model: "deepseek/deepseek-v4-pro",
         status: 200,
         durationMs: 4_000,
+        responseStartMs: 1_500,
         inputTokens: 900,
         outputTokens: 100,
         totalTokens: 1_000,
@@ -119,7 +121,7 @@ test("breaks provider usage down by model, heaviest first", () => {
   assert.equal(flash.successfulRequests, 1);
   assert.equal(flash.totalTokens, 150);
   assert.equal(flash.inputTokens, 110);
-  assert.equal(flash.observedTokensPerSecond, 20);
+  assert.equal(flash.observedTokensPerSecond, 26.7);
   assert.equal(flash.speedSampleCount, 1);
   assert.equal(flash.lastUsedAt, "2026-07-21T12:00:00.000Z");
 
@@ -151,6 +153,65 @@ test("reports no observed speed when successful requests have no metered output"
 
   assert.equal(model.observedTokensPerSecond, null);
   assert.equal(model.speedSampleCount, 0);
+});
+
+test("uses only the latest 20 clean generation timings for observed speed", () => {
+  const now = Date.parse("2026-07-21T18:00:00Z");
+  const events = Array.from({ length: 22 }, (_, index) => ({
+    meteringVersion: 1,
+    at: new Date(now - (21 - index) * 60_000).toISOString(),
+    provider: "deepseek",
+    model: "deepseek/deepseek-v4-flash",
+    status: 200,
+    durationMs: index < 2 ? 11_000 : 3_000,
+    responseStartMs: 1_000,
+    outputTokens: 100,
+    totalTokens: 100,
+  }));
+  // These rows must not become speed samples: historical rows have no
+  // response-start timing, and retries do not describe one clean stream.
+  events.push({
+    ...events.at(-1),
+    at: new Date(now - 500).toISOString(),
+    responseStartMs: undefined,
+  });
+  events.push({
+    ...events.at(-1),
+    at: new Date(now).toISOString(),
+    responseStartMs: 1_000,
+    retries: 1,
+  });
+
+  const model = aggregateProviderUsage(events, { days: 7, now }).providers
+    .find((provider) => provider.id === "deepseek")
+    .models[0];
+
+  assert.equal(model.speedSampleCount, 20);
+  assert.equal(model.observedTokensPerSecond, 50);
+});
+
+test("accepts a response that starts within the first measured millisecond", () => {
+  const now = Date.parse("2026-07-21T18:00:00Z");
+  const model = aggregateProviderUsage(
+    [
+      {
+        meteringVersion: 1,
+        at: new Date(now).toISOString(),
+        provider: "deepseek",
+        model: "deepseek/deepseek-v4-flash",
+        status: 200,
+        durationMs: 2_000,
+        responseStartMs: 0,
+        outputTokens: 100,
+      },
+    ],
+    { days: 7, now },
+  ).providers
+    .find((provider) => provider.id === "deepseek")
+    .models[0];
+
+  assert.equal(model.speedSampleCount, 1);
+  assert.equal(model.observedTokensPerSecond, 50);
 });
 
 test("keeps unlabeled model traffic visible instead of dropping it", () => {

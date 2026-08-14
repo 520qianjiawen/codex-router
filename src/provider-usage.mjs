@@ -16,6 +16,11 @@ function nonnegative(value) {
   return Number.isFinite(number) && number >= 0 ? Math.round(number) : 0;
 }
 
+function optionalNonnegative(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.round(number) : undefined;
+}
+
 // Routed slugs are provider-qualified (`kimi-oauth/k3`); native ones are bare
 // (`gpt-5.6-sol`). The tray groups under a provider already, so drop the prefix.
 function modelDisplayName(slug) {
@@ -102,9 +107,7 @@ export function aggregateProviderUsage(events, { days = 90, now = Date.now() } =
       inputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
-      speedOutputTokens: 0,
-      speedDurationMs: 0,
-      speedSampleCount: 0,
+      speedSamples: [],
       lastUsedAt: new Date(at).toISOString(),
     };
     model.requests += 1;
@@ -120,10 +123,24 @@ export function aggregateProviderUsage(events, { days = 90, now = Date.now() } =
     model.outputTokens += outputTokens;
     model.totalTokens += totalTokens;
     const durationMs = nonnegative(event.durationMs);
-    if (event.status >= 200 && event.status < 400 && outputTokens > 0 && durationMs > 0) {
-      model.speedOutputTokens += outputTokens;
-      model.speedDurationMs += durationMs;
-      model.speedSampleCount += 1;
+    const responseStartMs = optionalNonnegative(event.responseStartMs);
+    const generationDurationMs = durationMs - (responseStartMs ?? durationMs);
+    if (
+      event.status >= 200 &&
+      event.status < 400 &&
+      outputTokens > 0 &&
+      responseStartMs !== undefined &&
+      generationDurationMs > 0 &&
+      !event.retries &&
+      event.emptyCompletion !== true &&
+      event.emptyCompletionRetried !== true &&
+      event.emptyCompletionGuardReleased !== true
+    ) {
+      model.speedSamples.push({ outputTokens, generationDurationMs });
+      // Keep the displayed rate current instead of averaging the model's
+      // entire 90-day usage history. Twenty replies smooth one-off bursts
+      // without letting old sessions dominate the result.
+      if (model.speedSamples.length > 20) model.speedSamples.shift();
     }
     if (at >= Date.parse(model.lastUsedAt)) model.lastUsedAt = new Date(at).toISOString();
     provider.models.set(slug, model);
@@ -138,13 +155,24 @@ export function aggregateProviderUsage(events, { days = 90, now = Date.now() } =
         left.startDate.localeCompare(right.startDate),
       ),
       models: [...models.values()]
-        .map(({ speedOutputTokens, speedDurationMs, ...model }) => ({
-          ...model,
-          observedTokensPerSecond:
-            speedDurationMs > 0
-              ? Math.round((speedOutputTokens * 1_000 * 10) / speedDurationMs) / 10
-              : null,
-        }))
+        .map(({ speedSamples, ...model }) => {
+          const speedOutputTokens = speedSamples.reduce(
+            (total, sample) => total + sample.outputTokens,
+            0,
+          );
+          const speedDurationMs = speedSamples.reduce(
+            (total, sample) => total + sample.generationDurationMs,
+            0,
+          );
+          return {
+            ...model,
+            speedSampleCount: speedSamples.length,
+            observedTokensPerSecond:
+              speedDurationMs > 0
+                ? Math.round((speedOutputTokens * 1_000 * 10) / speedDurationMs) / 10
+                : null,
+          };
+        })
         .sort(
           (left, right) => right.totalTokens - left.totalTokens || right.requests - left.requests,
         ),
