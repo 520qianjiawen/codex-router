@@ -30,10 +30,17 @@ final class IslandDisplayModel: ObservableObject {
 
   @Published private(set) var state: State = .compact
   @Published private(set) var activeRequestCount = 0
+  @Published private(set) var menuBarFit = false
+  @Published private(set) var menuBarHeight: CGFloat = 24
 
   var size: CGSize {
     switch state {
-    case .compact: return CGSize(width: 320, height: 40)
+    case .compact:
+      // Mac mini and other notchless displays: sit inside the menu bar
+      // instead of hanging a 320×40 notch tab over the desktop.
+      return menuBarFit
+        ? CGSize(width: 164, height: 18)
+        : CGSize(width: 320, height: 40)
     case .peek:
       let activityHeight = min(360, 126 + CGFloat(activeRequestCount) * 40)
       return CGSize(width: 404, height: activeRequestCount > 0 ? activityHeight : 148)
@@ -48,6 +55,22 @@ final class IslandDisplayModel: ObservableObject {
 
   func setActiveRequestCount(_ count: Int) {
     activeRequestCount = max(0, count)
+  }
+
+  func setMenuBarFit(_ fits: Bool) {
+    guard menuBarFit != fits else { return }
+    menuBarFit = fits
+  }
+
+  func setMenuBarHeight(_ height: CGFloat) {
+    let next = height > 0 ? height : 24
+    guard menuBarHeight != next else { return }
+    menuBarHeight = next
+  }
+
+  var compactTopInset: CGFloat {
+    guard menuBarFit, state == .compact else { return 0 }
+    return max(0, (menuBarHeight - size.height) / 2)
   }
 }
 
@@ -160,6 +183,8 @@ final class IslandWindowController {
 
   private func reposition() {
     guard let screen = screenUnderPointer() ?? NSScreen.main else { return }
+    display.setMenuBarFit(screen.safeAreaInsets.top < 1)
+    display.setMenuBarHeight(screen.frame.maxY - screen.visibleFrame.maxY)
     let frame = screen.frame
     window.setFrame(
       NSRect(
@@ -197,7 +222,7 @@ final class IslandWindowController {
     let visible = display.size
     let islandRect = NSRect(
       x: frame.midX - visible.width / 2,
-      y: frame.maxY - visible.height,
+      y: frame.maxY - display.compactTopInset - visible.height,
       width: visible.width,
       height: visible.height
     )
@@ -224,6 +249,9 @@ private struct IslandOverlayView: View {
 
   var body: some View {
     VStack(spacing: 0) {
+      if display.compactTopInset > 0 {
+        Color.clear.frame(height: display.compactTopInset)
+      }
       ZStack {
         IslandSilhouette()
           .fill(islandBezel.opacity(0.998))
@@ -237,10 +265,13 @@ private struct IslandOverlayView: View {
                 )
               )
           }
-        glow
+        if !(display.menuBarFit && display.state == .compact) {
+          glow
+        }
         content
       }
       .frame(width: display.size.width, height: display.size.height)
+      .clipShape(IslandSilhouette())
       .contentShape(IslandSilhouette())
       .onTapGesture {
         if display.state != .expanded { display.setState(.expanded) }
@@ -248,6 +279,10 @@ private struct IslandOverlayView: View {
       .animation(
         reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.82),
         value: display.state
+      )
+      .animation(
+        reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.88),
+        value: display.menuBarFit
       )
       Spacer(minLength: 0)
     }
@@ -276,47 +311,74 @@ private struct IslandOverlayView: View {
   }
 
   private var compactContent: some View {
-    HStack(spacing: 7) {
-      LiveOrb(state: store.activityState)
-      Text(store.activityState.label)
-        .font(.system(size: 10, weight: .semibold, design: .rounded))
-        .foregroundStyle(store.activityState.tint)
-        .fixedSize()
-      Text("·")
-        .foregroundStyle(routerMuted)
-        .fixedSize()
-      ProviderIcon(providerID: compactProviderID, size: 18)
-      BouncingSessionName(text: compactSessionName, fontSize: 10.5, weight: .medium)
-        .frame(maxWidth: .infinity)
-        .layoutPriority(1)
-      if !store.activeRequests.isEmpty {
-        Label("\(activeSessions.count)", systemImage: "bubble.left.and.bubble.right.fill")
-          .font(.system(size: 9.5, weight: .semibold, design: .rounded))
-          .foregroundStyle(.white.opacity(0.72))
-          .fixedSize()
-          .help("\(activeSessions.count) running \(activeSessions.count == 1 ? "chat" : "chats")")
-      }
-      if store.activeRequests.isEmpty {
-        Text(compactUsageSummary)
-          .font(.system(size: 10, weight: .medium, design: .monospaced))
-          .foregroundStyle(.white.opacity(0.78))
-          .lineLimit(1)
-          .minimumScaleFactor(0.75)
-      }
-      if let weeklyRemainingPercent {
-        VStack(alignment: .trailing, spacing: 0) {
-          Text("\(Int(weeklyRemainingPercent.rounded()))%")
-            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-            .foregroundStyle(.white.opacity(0.9))
-            .monospacedDigit()
-          Text("WEEKLY LEFT")
-            .font(.system(size: 6.5, weight: .semibold, design: .monospaced))
-            .foregroundStyle(routerMuted)
+    Group {
+      if display.menuBarFit {
+        HStack(spacing: 5) {
+          LiveOrb(state: store.activityState)
+            .scaleEffect(13 / 18)
+            .frame(width: 13, height: 13)
+          Text(store.activityState.label)
+            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .foregroundStyle(store.activityState.tint)
+            .fixedSize()
+          if store.activeRequests.isEmpty {
+            Text(compactUsageSummary)
+              .font(.system(size: 10, weight: .medium, design: .monospaced))
+              .foregroundStyle(.white.opacity(0.78))
+              .lineLimit(1)
+              .minimumScaleFactor(0.75)
+          } else {
+            Text("\(activeSessions.count)")
+              .font(.system(size: 10, weight: .semibold, design: .rounded))
+              .foregroundStyle(.white.opacity(0.78))
+              .fixedSize()
+          }
         }
-        .fixedSize()
+        .padding(.horizontal, 8)
+      } else {
+        HStack(spacing: 7) {
+          LiveOrb(state: store.activityState)
+          Text(store.activityState.label)
+            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .foregroundStyle(store.activityState.tint)
+            .fixedSize()
+          Text("·")
+            .foregroundStyle(routerMuted)
+            .fixedSize()
+          ProviderIcon(providerID: compactProviderID, size: 18)
+          BouncingSessionName(text: compactSessionName, fontSize: 10.5, weight: .medium)
+            .frame(maxWidth: .infinity)
+            .layoutPriority(1)
+          if !store.activeRequests.isEmpty {
+            Label("\(activeSessions.count)", systemImage: "bubble.left.and.bubble.right.fill")
+              .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+              .foregroundStyle(.white.opacity(0.72))
+              .fixedSize()
+              .help("\(activeSessions.count) running \(activeSessions.count == 1 ? "chat" : "chats")")
+          }
+          if store.activeRequests.isEmpty {
+            Text(compactUsageSummary)
+              .font(.system(size: 10, weight: .medium, design: .monospaced))
+              .foregroundStyle(.white.opacity(0.78))
+              .lineLimit(1)
+              .minimumScaleFactor(0.75)
+          }
+          if let weeklyRemainingPercent {
+            VStack(alignment: .trailing, spacing: 0) {
+              Text("\(Int(weeklyRemainingPercent.rounded()))%")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.9))
+                .monospacedDigit()
+              Text("WEEKLY LEFT")
+                .font(.system(size: 6.5, weight: .semibold, design: .monospaced))
+                .foregroundStyle(routerMuted)
+            }
+            .fixedSize()
+          }
+        }
+        .padding(.horizontal, 14)
       }
     }
-    .padding(.horizontal, 14)
   }
 
   @ViewBuilder
@@ -1247,6 +1309,10 @@ private struct IslandSilhouette: InsettableShape {
 
   func path(in rect: CGRect) -> Path {
     let r = rect.insetBy(dx: inset, dy: inset)
+    // Notchless menu-bar fit: a real capsule, not a hanging-from-notch tab.
+    if r.height <= 24 {
+      return Capsule().path(in: r)
+    }
     let radius = min(22, r.height * 0.34)
     var path = Path()
     path.move(to: CGPoint(x: r.minX, y: r.minY))
